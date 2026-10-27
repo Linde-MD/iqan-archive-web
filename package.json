@@ -1,0 +1,23 @@
+{
+  "name": "static-webapp-template",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stack-neutral static WebApp template for AI-assisted development demos.",
+  "engines": {
+    "node": ">=22.20.0"
+  },
+  "scripts": {
+    "setup": "npm install && npm run skills:install",
+    "skills:install": "npm run skills:sync && uipro init --ai universal",
+    "skills:sync": "skills experimental_sync",
+    "skills:list": "skills list",
+    "skills:preview": "skills experimental_sync --dry-run"
+  },
+  "skills": [
+    "VinkyDev/vibestart@vibestart"
+  ],
+  "devDependencies": {
+    "skills": "1.7.4",
+    "ui-ux-pro-max-cli": "2.15.0"
+  }
+}
