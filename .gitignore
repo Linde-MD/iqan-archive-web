@@ -76,3 +76,5 @@ Desktop.ini
 
 # Keep package-manager lockfiles, skills-lock.json, team-authored skills,
 # DESIGN.md, and .github/copilot-instructions.md under version control.
+
+references/

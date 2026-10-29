@@ -300,7 +300,9 @@ components:
 
 ## Overview
 
-This is a reusable warm-editorial visual specification. Brand names, logos, and marketing scenarios below illustrate the original reference, not mandatory product identity or features. Token references are design notation, not runtime CSS variables; framework choices, code mappings, and product-specific adaptations belong in implementation rules.
+This is an auxiliary warm-editorial design reference, not the mandatory visual baseline for this project. Suitable UI/UX Pro Max recommendations are the primary source for style, color, typography, components, layout, and interaction; explicit user requirements, confirmed product rules, and accessibility constraints take precedence. If this reference conflicts with a verified, applicable UI/UX Pro Max recommendation, prefer that recommendation. The cream/coral palette and reference font pairing are optional, not product requirements.
+
+Brand names, logos, and marketing scenarios below illustrate the original reference, not mandatory product identity or features. Prescriptive language in the reference sections applies only when that reference style is deliberately adopted. Token references are design notation, not runtime CSS variables; framework choices, code mappings, and product-specific adaptations belong in implementation rules.
 
 Claude.com is the warmest, most editorial interface in the AI-product category. The base atmosphere is a **tinted cream canvas** (`{colors.canvas}` — #faf9f5) — distinctly warm, deliberately not the cool gray-white that every other AI brand uses. Headlines run a **slab-serif display** ("Copernicus" / Tiempos Headline) at weight 400 with negative letter-spacing, paired with **StyreneB / Inter** body sans. The combination feels like a literary publication, not a SaaS marketing page.
 
@@ -583,8 +585,19 @@ When photography is used (rare — mostly testimonials), avatars crop to perfect
 3. Use `{token.refs}` everywhere — never inline hex.
 4. Document applicable interaction states and use short, targeted transitions; respect `prefers-reduced-motion` and avoid `transition: all`.
 5. Preserve the display/body font distinction and suitable fallbacks without requiring the exact reference typefaces.
-6. Preserve cream + coral application chrome, with optional warm-dark content surfaces; data and user-defined colors remain independent.
+6. When adopting this reference style, preserve cream + coral application chrome, with optional warm-dark content surfaces; otherwise use the selected product palette. Data and user-defined colors remain independent.
 7. When in doubt about emphasis: bigger Copernicus serif before bolder weight.
+
+## IQAN Version Management Workspace
+
+Product-specific guidance added on 2026-10-29. Style selection is led by suitable UI/UX Pro Max recommendations, with this document as an auxiliary reference; warm-canvas and coral application chrome are not required.
+
+- Prefer flat, consistent outline icons for toolbar and action controls. Keep accessible names, visible focus, tooltips on hover/focus, and applicable disabled/loading/selected/expanded states. Retain visible text where an icon alone is ambiguous; primary touch targets remain at least 44 by 44px.
+- Use distinct branch colors as data visualization colors, independent of the application accent palette. Pair them with branch names or other non-color identifiers, including at shared nodes and merge boundaries.
+- Show released/unreleased version status through an independent marker, label, or border treatment, not branch color alone. Selection and hover must preserve this status.
+- In the all-versions view and inside expanded tasks, display version labels directly and omit part numbers from nodes. The task-grouped view may collapse internal version nodes; task containers must expose their expanded state and a keyboard-equivalent expand action.
+- Keep right-click actions reachable through keyboard and an explicit alternative action menu. Optional Windows protocol actions must distinguish a request from success: installation and execution results are unknown to the webpage. Provide setup/manual guidance and explain unsupported states without blocking core graph features.
+- Use [the version graph SPEC](specs/SPEC-02-version-graph.md) for product interaction rules. This documentation update does not select a new font, logo, or palette; record and validate the actual design choices in the relevant SPEC before implementation.
 
 ## Known Gaps
 
