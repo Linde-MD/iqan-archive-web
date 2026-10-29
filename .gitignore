@@ -70,7 +70,8 @@ Thumbs.db
 Desktop.ini
 
 # Third-party skills installed through scripts
-/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/webapp-spec/
 /.github/skills/
 
 # Keep package-manager lockfiles, skills-lock.json, team-authored skills,
