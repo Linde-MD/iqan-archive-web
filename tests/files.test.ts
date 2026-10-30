@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
-import { candidateState, parseEngineeringName, rebindReference, registerCandidates, type FileCandidate } from '../src/domain/filenames';
+import { matchScannedFiles, parseEngineeringName, registerCandidates, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -48,35 +48,48 @@ describe('文件名和版本身份', () => {
   it.each(['001 V.idax', '001 v---.idax', '001 V1_2.idax', '001 R1.idax', 'abc V1.idax', '001 V1.idax.idsx', '001 V1.exe', '001 V中文.idax', '001 V1\n2026.idax'])('拒绝非法文件名：%s', name => {
     expect(() => parseEngineeringName(name)).toThrow();
   });
-  it('完整版本不同形成不同根节点，相同完整版本多快照，不推进分支', () => {
+  it('登记仅创建缺失根节点，同完整版本去重，不保存文件、不推进分支', () => {
     const graph = registerCandidates(createProject('项目', '001'), [
       candidate(), candidate('001 V1.0-3 20261023.idax'), candidate('001 V1.0-3  20261022.idsx', 'other'),
     ]);
     expect(graph.nodes.map(node => node.version)).toEqual(['V1.0-3 20261022', 'V1.0-3 20261023']);
-    expect(graph.files).toHaveLength(3);
-    expect(graph.files.every(item => item.candidateDate === null)).toBe(true);
+    expect(graph).not.toHaveProperty('files');
     expect(graph.edges).toEqual([]); expect(graph.branches).toEqual([]);
-    expect(candidateState(graph, candidate())).toContain('跳过');
-    expect(candidateState(graph, candidate('002 V1.idax'))).toContain('零件号不匹配');
-    expect(() => registerCandidates(graph, [candidate()])).toThrow('跳过');
+    expect(matchScannedFiles(graph, [candidate()]).rows[0]!.nodeId).toBe(graph.nodes[0]!.id);
+    expect(matchScannedFiles(graph, [candidate('002 V1.idax')]).rows[0]!.reason).toContain('零件号不匹配');
+    expect(() => registerCandidates(graph, [candidate()])).toThrow('无需登记');
   });
   it('版本大小写区分；空白归一冲突拒绝，路径字段不一致拒绝', () => {
     const graph = registerCandidates(createProject('项目', '001'), [candidate('001 V1.idax'), candidate('001 v1.idax')]);
     expect(graph.nodes).toHaveLength(2);
     graph.nodes[1]!.version = 'V1';
     expect(() => validateGraph(graph)).toThrow('重复');
-    expect(candidateState(createProject('项目', '001'), { fileName: '001 V1.idax', relativePath: '../001 V1.idax' })).toContain('安全的相对路径');
+    expect(matchScannedFiles(createProject('项目', '001'), [{ fileName: '001 V1.idax', relativePath: '../001 V1.idax' }]).rows[0]!.reason).toContain('安全的相对路径');
   });
-  it('重绑保留内部ID，只允许同项目完整版本，放行后新增/替换引用拒绝', () => {
+  it('自动匹配使用精确零件号和区分大小写的归一化完整版本，不推断日期或关系', () => {
+    const graph = registerCandidates(createProject('项目', '001'), [candidate('001 V1  20261022.idax')]);
+    const result = matchScannedFiles(graph, [candidate('001 V1\t20261022.IDSX'), candidate('001 v1 20261022.idax'), candidate('001 V1 20261023.idax'), candidate('1 V1 20261022.idax')]);
+    expect(result.rows.map(row => row.nodeId)).toEqual([graph.nodes[0]!.id, null, null, null]);
+    expect(result.rows[3]!.reason).toContain('零件号不匹配');
+    expect(graph.edges).toEqual([]);
+    expect(graph.branches).toEqual([]);
+  });
+  it('自动匹配已有放行版本的全部文件，无需登记，不写图；缺失和非法输入可区分', () => {
     const graph = registerCandidates(createProject('项目', '001'), [candidate()]);
-    const id = graph.files[0]!.id;
-    const next = rebindReference(graph, id, candidate(undefined, 'moved'));
-    expect(next.files[0]!.id).toBe(id);
-    expect(next.files[0]!.relativePath).toContain('moved/');
-    expect(() => rebindReference(graph, id, candidate('001 V2.idax'))).toThrow('同完整版本');
     const released = release(graph, graph.nodes[0]!.id, new Date().toISOString());
-    expect(() => rebindReference(released, id, candidate(undefined, 'moved'))).toThrow('已锁定');
-    expect(candidateState(released, candidate(undefined, 'other'))).toContain('已放行');
+    const before = structuredClone(released);
+    const result = matchScannedFiles(released, [candidate(), candidate(undefined, 'other'), candidate('001 V2.idax'), candidate('002 V3.idax'), candidate('bad.idax')]);
+    expect(result.matches.get(released.nodes[0]!.id)).toHaveLength(2);
+    expect(result.missing).toEqual([]);
+    expect(result.rows[2]!.nodeId).toBeNull();
+    expect(result.rows[2]!.reason).toBeNull();
+    expect(result.rows[3]!.reason).toContain('零件号');
+    expect(result.rows[4]!.reason).not.toBeNull();
+    expect(matchScannedFiles(released, []).missing).toEqual(released.nodes);
+    expect(released).toEqual(before);
+    const added = registerCandidates(released, [candidate(), candidate('001 V2.idax')]);
+    expect(added.nodes[0]).toEqual(released.nodes[0]);
+    expect(added.nodes).toHaveLength(2);
   });
 });
 
@@ -115,8 +128,8 @@ describe('只读目录扫描与定位', () => {
   });
 });
 
-describe('项目事务及v2迁移', () => {
-  it('登记/重绑/提示往返，修订冲突及批次非法输入完整回滚，快照无绑定', async () => {
+describe('项目事务及v3迁移', () => {
+  it('登记/零件号修改往返，修订冲突及批次非法输入完整回滚，快照无本地文件/目录', async () => {
     const repository = repo();
     let graph = await repository.create('项目', '001');
     const old = graph.project.revision;
@@ -124,13 +137,27 @@ describe('项目事务及v2迁移', () => {
     await expect(repository.register(graph.project.id, old, [candidate(undefined, 'other')])).rejects.toThrow('其他标签页');
     await expect(repository.register(graph.project.id, graph.project.revision, [candidate('001 V2.idax'), candidate('002 V3.idax')])).rejects.toThrow('零件号');
     expect(await repository.get(graph.project.id)).toEqual(graph);
-    graph = await repository.rebind(graph.project.id, graph.project.revision, graph.files[0]!.id, candidate(undefined, 'new'));
     graph = await repository.directoryHint(graph.project.id, graph.project.revision, 'word', ' C:\\Reports ');
     expect(graph.project.wordDirectoryHint).toBe('C:\\Reports');
-    expect(await repository.snapshot(graph.project.id)).not.toHaveProperty('directoryBindings');
+    const before = structuredClone(graph);
+    graph = await repository.setPartNumber(graph.project.id, graph.project.revision, ' 002 ');
+    expect(graph.project.id).toBe(before.project.id);
+    expect(graph.nodes).toEqual(before.nodes);
+    expect(graph.project.partNumber).toBe('002');
+    expect(matchScannedFiles(graph, [candidate()]).missing).toHaveLength(1);
+    expect(matchScannedFiles(graph, [candidate('002 V1.0-3 20261022.idax')]).missing).toEqual([]);
+    await expect(repository.setPartNumber(graph.project.id, before.project.revision, '003')).rejects.toThrow('其他标签页');
+    await expect(repository.setPartNumber(graph.project.id, graph.project.revision, ' ')).rejects.toThrow('不能为空');
+    expect(await repository.get(graph.project.id)).toEqual(graph);
+    const snapshot = await repository.snapshot(graph.project.id);
+    expect(snapshot.schemaVersion).toBe(2);
+    expect(snapshot.graph).not.toHaveProperty('files');
+    expect(snapshot.graph.project).not.toHaveProperty('wordDirectoryHint');
+    expect(snapshot.graph.project).not.toHaveProperty('engineeringDirectoryHint');
+    expect(snapshot).not.toHaveProperty('directoryBindings');
     expect(graph.nodes[0]!.version).toBe('V1.0-3 20261022');
     const other = await repository.create('其他项目', '001');
-    expect((await repository.get(other.project.id)).files).toEqual([]);
+    expect((await repository.get(other.project.id)).nodes).toEqual([]);
   });
   async function oldDatabase(conflict: boolean) {
     const name = `migration-${crypto.randomUUID()}`;
@@ -145,12 +172,12 @@ describe('项目事务及v2迁移', () => {
     const next = new ArchiveDatabase(name); databases.push(next);
     return { db, next, nodes, project: graph.project };
   }
-  it('v1升级到v2保留原图和旧文本，不自动重写身份', async () => {
+  it('v1升级到v3保留原图和旧文本，不自动重写身份', async () => {
     const { next, nodes, project } = await oldDatabase(false);
     const graph = await new ArchiveRepository(next).get(project.id);
     expect(graph.nodes).toEqual(nodes);
     expect(await next.directoryBindings.count()).toBe(0);
-    expect(next.backendDB().version).toBe(20);
+    expect(next.backendDB().version).toBe(30);
   });
   it('v1规范化碰撞拒绝升级且回滚，旧数据库可恢复', async () => {
     const { db, next, nodes } = await oldDatabase(true);
@@ -158,5 +185,44 @@ describe('项目事务及v2迁移', () => {
     await db.open();
     expect(db.backendDB().version).toBe(10);
     expect(await db.table('nodes').toArray()).toEqual(nodes);
+  });
+  it('零件号更新写入失败完整回滚，重新打开保留最新成功号码与图', async () => {
+    const repository = repo();
+    let graph = await repository.create('项目', '001');
+    graph = await repository.register(graph.project.id, 0, [candidate()]);
+    graph = await repository.setPartNumber(graph.project.id, graph.project.revision, '002');
+    repository.db.projects.hook('updating', () => { throw new DOMException('空间不足', 'QuotaExceededError'); });
+    await expect(repository.setPartNumber(graph.project.id, graph.project.revision, '003')).rejects.toThrow('空间不足');
+    repository.db.close();
+    await repository.db.open();
+    expect(await repository.get(graph.project.id)).toEqual(graph);
+  });
+  it('v2升级到v3移除文件表，保留放行图、任务、分支及目录绑定', async () => {
+    const name = `v2-${crypto.randomUUID()}`;
+    const old = new Dexie(name); databases.push(old);
+    old.version(2).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+loopId]', files: 'id, projectId, nodeId', directoryBindings: '[projectId+role], projectId' });
+    let graph = registerCandidates(createProject('旧项目', '001'), [candidate(), candidate('001 V2.idax')]);
+    graph.edges.push({ id: 'edge', projectId: graph.project.id, parentId: graph.nodes[0]!.id, childId: graph.nodes[1]!.id });
+    graph.tasks.push({ id: 'task', projectId: graph.project.id, name: '任务', description: '', loopId: '1479-1' });
+    graph.nodes[1]!.taskId = 'task';
+    graph.branches.push({ id: 'main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: graph.nodes[1]!.id });
+    graph = release(graph, graph.nodes[1]!.id, new Date().toISOString());
+    graph.nodes.sort((a, b) => a.id.localeCompare(b.id));
+    await old.table('projects').add(graph.project);
+    await old.table('nodes').bulkAdd(graph.nodes);
+    await old.table('edges').bulkAdd(graph.edges);
+    await old.table('tasks').bulkAdd(graph.tasks);
+    await old.table('branches').bulkAdd(graph.branches);
+    await old.table('files').add({ id: 'legacy', projectId: graph.project.id, nodeId: graph.nodes[0]!.id, relativePath: 'old.idax' });
+    await old.table('directoryBindings').add({ projectId: graph.project.id, role: 'engineering', handle: { name: 'root', kind: 'directory' } });
+    old.close();
+    const next = new ArchiveDatabase(name); databases.push(next);
+    const repository = new ArchiveRepository(next);
+    expect(await repository.get(graph.project.id)).toEqual(graph);
+    expect(next.tables.map(table => table.name)).not.toContain('files');
+    expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
+    const changed = await repository.setPartNumber(graph.project.id, 0, '002');
+    expect(changed.nodes).toEqual(graph.nodes);
+    expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
   });
 });

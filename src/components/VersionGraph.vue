@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { liveQuery } from 'dexie';
 import type { Branch, ProjectGraph, VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutDag, LAYOUT, type Point } from '../domain/layout';
@@ -10,6 +11,11 @@ const props = defineProps<{ repository: ArchiveRepository; projectId: string }>(
 const emit = defineEmits<{ busy: [value: boolean] }>();
 
 const graph = shallowRef<ProjectGraph>();
+const subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
+  next: value => { graph.value = value; },
+  error: cause => showError(cause),
+});
+onUnmounted(() => subscription.unsubscribe());
 const error = ref('');
 const status = ref('');
 const saving = ref(false);

@@ -21,6 +21,8 @@ button:hover { background: var(--primary-hover); }
 button:disabled { cursor: not-allowed; background: #e6ecf3; color: #52657b; border-color: var(--border); }
 .secondary { color: #294866; background: var(--surface); border-color: #778da8; }
 .secondary:hover { background: #eaf2fe; border-color: var(--primary); }
+.danger { background: #b91c1c; color: #fff; }
+.danger:hover { background: #991b1b; }
 .icon-button { width: 44px; min-width: 44px; height: 44px; padding: 0; flex-shrink: 0; position: relative; }
 .icon-button[title]:hover::after, .icon-button[title]:focus-visible::after { content: attr(title); position: absolute; z-index: 5; top: calc(100% + 6px); right: 0; width: max-content; max-width: min(250px, 65vw); white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; border-radius: 6px; background: #10233c; color: #fff; font-size: 12px; font-weight: 400; pointer-events: none; }
 .project-list .icon-button[title]:hover::after, .project-list .icon-button[title]:focus-visible::after { content: none; }
@@ -73,6 +75,8 @@ form button { width: 100%; }
 .project-info p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; white-space: nowrap; }
 .project-state { font-size: 11px; color: #146448; white-space: nowrap; }
 .project-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.project-part-number { display: flex; justify-content: flex-start; max-width: 100%; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.project-part-number:hover { background: var(--surface-soft); color: var(--primary); }
 code, .file-path { font-family: Consolas, "Microsoft YaHei", monospace; }
 .file-workspace { margin-top: 20px; border-top: 3px solid #287de1; }
 .workspace-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; font-size: 13px; }
@@ -110,14 +114,13 @@ tbody tr.row-selected { background: #eaf2fe; }
 .candidate-state { color: var(--muted); line-height: 1.7; }
 .candidate-state.eligible { color: #146448; display: inline-block; padding: 3px 8px; border-radius: 4px; background: #e5f5ee; white-space: nowrap; }
 .version-list { list-style: none; padding: 0; }
+.version-files-scroll { max-height: min(420px, 55vh); overflow: auto; scrollbar-gutter: stable; overscroll-behavior-y: contain; padding: 4px; }
+.version-files-scroll .version-list { margin: 0; }
 .version-list > li { padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; font-size: 12px; }
 .version-list ul { padding-left: 18px; }
 .version-list li li { padding: 4px 0; }
 .version-list button { margin-left: 8px; vertical-align: middle; }
 .subheading { margin-top: 24px; }
-.rebind-details { margin-top: 20px; border-top: 1px solid var(--border); }
-.rebind-form { max-width: 700px; padding: 8px 0 16px; }
-.rebind-form p { font-size: 12px; color: var(--muted); }
 .comparison-document-list { padding-left: 20px; font-size: 13px; line-height: 1.8; }
 .graph-workspace { margin-top: 20px; border-top: 3px solid #287de1; }
 .graph-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; font-size: 13px; }

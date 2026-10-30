@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { liveQuery } from 'dexie';
 import type { ProjectGraph } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
-import { candidateState, type FileCandidate } from '../domain/filenames';
+import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { locateFile, type DirectoryRole } from '../files/directories';
 import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
@@ -21,12 +22,13 @@ const saving = ref(false);
 const error = ref('');
 const status = ref('');
 const errorHeading = ref<HTMLElement>();
-const rebindFile = ref('');
-const rebindPath = ref('');
+let subscription: { unsubscribe(): void } | undefined;
 const busy = computed(() => saving.value || busyRoles.value.size > 0);
-const rows = computed(() => graph.value ? candidates.value.map(file => ({ ...file, reason: candidateState(graph.value!, file) })) : []);
+const association = computed(() => graph.value ? matchScannedFiles(graph.value, candidates.value) : undefined);
+const rows = computed(() => association.value?.rows ?? []);
+const versionRows = computed(() => graph.value?.nodes.map(node => ({ ...node, files: association.value?.matches.get(node.id) ?? [] })) ?? []);
 const selectedSet = computed(() => new Set(selected.value));
-const eligibleRows = computed(() => rows.value.filter(row => row.reason === null));
+const eligibleRows = computed(() => rows.value.filter(row => row.reason === null && row.nodeId === null));
 const selectedRows = computed(() => eligibleRows.value.filter(row => selectedSet.value.has(row.relativePath)));
 const allSelected = computed(() => eligibleRows.value.length > 0 && selectedRows.value.length === eligibleRows.value.length);
 const partlySelected = computed(() => selectedRows.value.length > 0 && !allSelected.value);
@@ -57,20 +59,27 @@ async function operation(action: () => Promise<void>) {
   finally { saving.value = false; emit('busy', busy.value); }
 }
 function invalidate() {
-  candidates.value = []; selected.value = []; scanned.value = false; rebindPath.value = '';
+  candidates.value = []; selected.value = []; scanned.value = false;
+}
+function receiveGraph(next: ProjectGraph) {
+  if (graph.value && graph.value.project.partNumber !== next.project.partNumber) {
+    invalidate();
+    status.value = '零件号已修改，请重新扫描工程目录。';
+  }
+  graph.value = next;
 }
 async function refresh() {
   await operation(async () => {
-    graph.value = await props.repository.get(props.projectId);
+    receiveGraph(await props.repository.get(props.projectId));
     invalidate(); comparisonDocuments.value = []; comparisonDocumentsScanned.value = false;
   });
 }
 async function register() {
   await operation(async () => {
     if (!graph.value) throw new Error('请先读取项目。');
-    if (rows.value.some(row => selectedSet.value.has(row.relativePath) && row.reason)) throw new Error('所选文件状态已变化，请重新检查。');
+    if (!selectedRows.value.length) throw new Error('请至少选择一个尚无对应版本的合法文件。');
     graph.value = await props.repository.register(props.projectId, graph.value.project.revision, selectedRows.value);
-    selected.value = []; status.value = '文件元数据已登记；未推断父边或推进分支头。';
+    selected.value = []; status.value = '缺失版本已创建并自动关联；未保存本地文件信息，未推断父边或推进分支头。';
   });
 }
 async function locate(path: string) {
@@ -81,19 +90,13 @@ async function locate(path: string) {
     status.value = `文件存在且可读取：${path}。未启动本机程序。`;
   });
 }
-async function rebind() {
-  await operation(async () => {
-    if (!graph.value) throw new Error('请先读取项目。');
-    const candidate = candidates.value.find(item => item.relativePath === rebindPath.value);
-    if (!candidate) throw new Error('请先扫描并明确选择一个候选文件。');
-    const root = engineering.value?.getHandle();
-    if (!root) throw new Error('工程目录未绑定。');
-    await locateFile(root, candidate.relativePath);
-    graph.value = await props.repository.rebind(props.projectId, graph.value.project.revision, rebindFile.value, candidate);
-    status.value = '文件引用已重绑，原磁盘文件未改动。';
+onMounted(() => {
+  subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
+    next: receiveGraph,
+    error: showError,
   });
-}
-onMounted(refresh);
+});
+onUnmounted(() => subscription?.unsubscribe());
 </script>
 
 <template>
@@ -105,8 +108,8 @@ onMounted(refresh);
     <div v-if="error" role="alert" class="error"><h3 ref="errorHeading" tabindex="-1">文件操作未完成</h3><p>{{ error }}</p><p>失败不会部分提交。扫描失败请重扫；若提示修订冲突，请重新读取项目并重扫。</p></div>
     <p role="status">{{ status }}</p>
     <template v-if="graph">
-      <div class="workspace-meta"><strong>{{ graph.project.name }}</strong><span>零件号 <code>{{ graph.project.partNumber }}</code></span><span class="count">{{ graph.nodes.length }} 个版本 · {{ graph.files.length }} 个文件</span></div>
-      <details class="workspace-details"><summary>项目标识与扫描规则</summary><p class="project-id">稳定项目 ID：<code>{{ graph.project.id }}</code></p><p>只读递归扫描，每次最多枚举 5000 个条目。文件名日期文本属于完整版本号；磁盘修改时间不决定身份。不支持目录 API 时仍可查看已保存元数据。</p></details>
+      <div class="workspace-meta"><strong>{{ graph.project.name }}</strong><span>零件号 <code>{{ graph.project.partNumber }}</code></span><span class="count">{{ graph.nodes.length }} 个版本 · {{ scanned ? rows.filter(row => row.nodeId !== null).length : '尚未扫描' }}{{ scanned ? ' 个关联文件' : '' }}</span></div>
+      <details class="workspace-details"><summary>项目标识与扫描规则</summary><p class="project-id">稳定项目 ID：<code>{{ graph.project.id }}</code></p><p>只读递归扫描，每次最多枚举 5000 个条目。文件名日期文本属于完整版本号；磁盘修改时间不决定身份。按当前零件号与完整版本自动关联，扫描结果只留在本次会话，配置快照不包含本地文件信息。不支持目录 API 时仍可查看版本图。</p></details>
       <div class="directory-grid">
         <DirectoryPanel ref="engineering" :repository="repository" :project-id="projectId" role="engineering" :disabled="busy" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="candidates = $event; scanned = true" />
         <DirectoryPanel :repository="repository" :project-id="projectId" role="word" :disabled="busy" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="comparisonDocuments = $event; comparisonDocumentsScanned = true" />
@@ -116,7 +119,7 @@ onMounted(refresh);
       <p v-if="!scanned">尚未扫描工程目录。</p>
       <p v-else-if="!rows.length">本次未找到 .idax、.idsx、.idvx 文件。</p>
       <template v-else>
-        <p class="form-help">仅可登记项参与全选。新版本无父节点；相同路径不覆盖，登记前需确认。</p>
+        <p class="form-help">已有版本自动关联，无需登记。仅没有对应版本的合法文件可选；登记只创建版本，不保存文件路径，不推断父边或推进分支。</p>
         <div class="selection-toolbar">
           <div class="actions">
             <button class="secondary" :disabled="busy || !eligibleRows.length || allSelected" @click="selectAll"><AppIcon name="check" />全选可登记项</button>
@@ -125,42 +128,32 @@ onMounted(refresh);
           <span role="status" class="selection-count">已选 {{ selectedRows.length }} / {{ eligibleRows.length }} 项 · 共 {{ rows.length }} 项</span>
         </div>
         <div class="table-scroll" tabindex="0" aria-label="工程候选文件表">
-          <table><thead><tr><th class="selection-cell"><label class="checkbox-target"><input type="checkbox" :checked="allSelected" :indeterminate.prop="partlySelected" :disabled="busy || !eligibleRows.length" aria-label="全选或取消全部可登记文件" @change="toggleAll" /></label></th><th>相对路径</th><th>登记状态</th></tr></thead>
-            <tbody><tr v-for="row in rows" :key="row.relativePath" :class="{ 'row-selected': selectedSet.has(row.relativePath) && !row.reason }">
-              <td class="selection-cell"><label class="checkbox-target"><input v-model="selected" type="checkbox" :value="row.relativePath" :disabled="busy || !!row.reason" :aria-label="`登记 ${row.relativePath}`" /></label></td>
-              <td class="file-path">{{ row.relativePath }}</td><td><span :class="['candidate-state', { eligible: !row.reason }]">{{ row.reason ?? '可登记' }}</span></td>
+          <table><thead><tr><th class="selection-cell"><label class="checkbox-target"><input type="checkbox" :checked="allSelected" :indeterminate.prop="partlySelected" :disabled="busy || !eligibleRows.length" aria-label="全选或取消全部可登记文件" @change="toggleAll" /></label></th><th>相对路径</th><th>匹配状态</th></tr></thead>
+            <tbody><tr v-for="row in rows" :key="row.relativePath" :class="{ 'row-selected': selectedSet.has(row.relativePath) && !row.reason && !row.nodeId }">
+              <td class="selection-cell"><label class="checkbox-target"><input v-model="selected" type="checkbox" :value="row.relativePath" :disabled="busy || !!row.reason || row.nodeId !== null" :aria-label="`登记 ${row.relativePath}`" /></label></td>
+              <td class="file-path">{{ row.relativePath }}</td><td><span :class="['candidate-state', { eligible: !row.reason }]">{{ row.reason ?? (row.nodeId ? '已自动关联' : '可登记创建版本') }}</span></td>
             </tr></tbody>
           </table>
         </div>
-        <div class="registration-bar"><span>仅登记元数据，不修改原文件</span><button :disabled="busy || !selectedRows.length" @click="register"><AppIcon name="check" />确认登记 {{ selectedRows.length }} 个文件</button></div>
+        <div class="registration-bar"><span>同完整版本只创建一次，不修改原文件</span><button :disabled="busy || !selectedRows.length" @click="register"><AppIcon name="plus" />从 {{ selectedRows.length }} 个所选文件创建缺失版本</button></div>
       </template>
 
-      <h3 class="subheading">已登记版本与文件</h3>
-      <p v-if="!graph.nodes.length">尚无版本节点。请扫描、预览并确认登记工程文件。</p>
+      <p v-if="scanned && graph.nodes.length" class="form-help" role="status">{{ association?.missing.length ? `本次扫描：${association.missing.length} 个版本缺少源文件（不影响版本图配置）。` : '本次扫描：所有版本均已找到匹配源文件。' }}</p>
+      <h3 class="subheading">版本与自动关联文件</h3>
+      <p v-if="!graph.nodes.length">尚无版本节点。可在版本图创建，或从扫描文件登记创建。</p>
+      <div class="version-files-scroll" tabindex="0" role="region" aria-label="版本与自动关联文件，可滚动">
       <ul class="version-list">
-        <li v-for="node in graph.nodes" :key="node.id">
-          <strong>{{ node.version }}</strong> · {{ node.releasedAt ? '已放行，文件引用锁定' : '未放行' }}
-          <ul><li v-for="file in graph.files.filter(item => item.nodeId === node.id)" :key="file.id">
+        <li v-for="node in versionRows" :key="node.id">
+          <strong>{{ node.version }}</strong> · {{ node.releasedAt ? '已放行' : '未放行' }}
+          <span v-if="!scanned" class="form-help"> · 尚未扫描源文件</span>
+          <span v-else-if="!node.files.length" class="form-help"> · 本次扫描未找到源文件</span>
+          <ul><li v-for="file in node.files" :key="file.relativePath">
             <span>{{ file.relativePath }}</span>
             <button class="secondary icon-button" :disabled="busy" :aria-label="`检查文件 ${file.fileName}`" :title="`检查文件 ${file.fileName}`" @click="locate(file.relativePath)"><AppIcon name="scan" /></button>
           </li></ul>
         </li>
       </ul>
-
-      <details class="rebind-details"><summary>高级操作 · 显式重绑文件引用</summary><form class="rebind-form" @submit.prevent="rebind">
-        <p>先扫描新位置，再选择原引用与候选；仅同完整版本可重绑。已放行引用须先在后续版本图流程撤销放行。</p>
-        <label for="rebind-file">原文件引用</label>
-        <select id="rebind-file" v-model="rebindFile" :disabled="busy" required>
-          <option value="">请选择原引用</option>
-          <option v-for="file in graph.files" :key="file.id" :value="file.id">{{ file.relativePath }}</option>
-        </select>
-        <label for="rebind-path">扫描到的新文件</label>
-        <select id="rebind-path" v-model="rebindPath" :disabled="busy" required>
-          <option value="">请选择扫描候选</option>
-          <option v-for="file in candidates" :key="file.relativePath" :value="file.relativePath">{{ file.relativePath }}</option>
-        </select>
-        <button :disabled="busy || !rebindFile || !rebindPath"><AppIcon name="refresh" />确认替换所选文件引用</button>
-      </form></details>
+      </div>
 
       <h3 class="subheading">软件对比文档</h3>
       <p>用于存放软件版本对比说明。首版支持 .doc/.docx 格式，按项目列出，不关联版本。通过本机 Word 打开原文件将在 Launcher 集成后提供，当前不能直接打开。</p>

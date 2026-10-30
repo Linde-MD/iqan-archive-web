@@ -40,29 +40,19 @@ export interface Task {
   loopId: string | null;
 }
 
-export interface FileReference {
-  id: string;
-  projectId: string;
-  nodeId: string;
-  fileName: string;
-  relativePath: string;
-  extension: '.idax' | '.idsx' | '.idvx';
-  candidateDate: string | null;
-  parsingStatus: 'unparsed' | 'parsed' | 'invalid';
-}
-
 export interface ProjectGraph {
   project: Project;
   nodes: VersionNode[];
   edges: Edge[];
   branches: Branch[];
   tasks: Task[];
-  files: FileReference[];
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 1;
-  graph: ProjectGraph;
+  schemaVersion: 2;
+  graph: Omit<ProjectGraph, 'project'> & {
+    project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision'>;
+  };
 }
 
 export class DomainError extends Error {
@@ -106,6 +96,6 @@ export function createProject(name: string, partNumber: string): ProjectGraph {
       wordDirectoryHint: '',
       revision: 0,
     },
-    nodes: [], edges: [], branches: [], tasks: [], files: [],
+    nodes: [], edges: [], branches: [], tasks: [],
   };
 }

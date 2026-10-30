@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
-import type { Project } from './domain/model';
+import type { Project, ProjectGraph } from './domain/model';
 import ProjectFiles from './components/ProjectFiles.vue';
 import VersionGraph from './components/VersionGraph.vue';
 import AppIcon from './components/AppIcon.vue';
@@ -12,6 +12,12 @@ const repository = new ArchiveRepository(db);
 const projects = ref<Project[]>([]);
 const name = ref('');
 const partNumber = ref('');
+const editingProject = ref<Project | null>(null);
+const editedPartNumber = ref('');
+const editInput = ref<HTMLInputElement>();
+const deletion = ref<ProjectGraph | null>(null);
+const confirmedProjectName = ref('');
+const deleteInput = ref<HTMLInputElement>();
 const loading = ref(true);
 const readFailed = ref(false);
 const saving = ref(false);
@@ -46,7 +52,10 @@ async function watchProjects() {
     await db.open();
     if (attempt !== loadAttempt) return;
     subscription = liveQuery(() => repository.listProjects()).subscribe({
-      next: value => { projects.value = value; loading.value = false; },
+      next: value => {
+        projects.value = value; loading.value = false;
+        if (activeProjectId.value && !value.some(project => project.id === activeProjectId.value)) activeProjectId.value = '';
+      },
       error: cause => { readFailed.value = true; showError(cause); },
     });
   } catch (cause) {
@@ -68,6 +77,68 @@ async function addProject() {
     partNumber.value = '';
     status.value = '项目已保存到当前浏览器。';
     submitted.value = false;
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function editPartNumber(project: Project) {
+  deletion.value = null;
+  editingProject.value = { ...project };
+  editedPartNumber.value = project.partNumber;
+  error.value = ''; status.value = '';
+  await nextTick();
+  editInput.value?.focus();
+  editInput.value?.select();
+}
+
+async function previewProjectDeletion() {
+  const project = editingProject.value;
+  if (!project) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    deletion.value = await repository.get(project.id);
+    confirmedProjectName.value = '';
+    saving.value = false;
+    await nextTick();
+    deleteInput.value?.focus();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function deleteProject() {
+  const target = deletion.value;
+  if (!target) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    await repository.deleteProject(target.project.id, target.project.revision, confirmedProjectName.value);
+    if (activeProjectId.value === target.project.id) activeProjectId.value = '';
+    editingProject.value = null; deletion.value = null;
+    status.value = `项目“${target.project.name}”及其浏览器配置已删除；磁盘文件未删除，其他项目未改变。`;
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+    if (!deletion.value) {
+      await nextTick();
+      document.getElementById('project-name')?.focus();
+    }
+  }
+}
+
+async function savePartNumber() {
+  const project = editingProject.value;
+  if (!project) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    await repository.setPartNumber(project.id, project.revision, editedPartNumber.value);
+    editingProject.value = null;
+    status.value = '零件号已保存，版本图与本机目录绑定未改变。请重新扫描工程目录；原磁盘文件未改名。';
   } catch (cause) {
     showError(cause);
   } finally {
@@ -138,7 +209,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
                 <h3>{{ project.name }}</h3>
                 <span class="project-state">已保存</span>
               </div>
-              <p><code>{{ project.partNumber }}</code></p>
+              <button class="project-part-number" :disabled="saving || filesBusy || graphBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
             </div>
             <div class="project-actions">
               <button class="secondary icon-button" :disabled="filesBusy || graphBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
@@ -146,10 +217,36 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
             </div>
           </li>
         </ul>
-        <p class="boundary">选择项目进入文件工作区或版本图。文件与图共享同一项目配置。</p>
+        <p class="boundary">选择项目进入文件工作区或版本图，点击零件号可修改。文件按扫描结果自动关联，不写入版本图配置。</p>
       </section>
 
       <section class="panel" aria-labelledby="create-title">
+        <template v-if="deletion">
+          <p class="eyebrow">DELETE PROJECT</p>
+          <h2 id="create-title">确认删除项目</h2>
+          <p class="form-help">将永久删除“{{ deletion.project.name }}”（{{ deletion.project.partNumber }}）的 {{ deletion.nodes.length }} 个版本、{{ deletion.edges.length }} 条父边、{{ deletion.branches.length }} 个分支、{{ deletion.tasks.length }} 个任务及浏览器目录绑定，包括已放行版本。</p>
+          <p class="form-help">不会删除磁盘上的工程或软件对比文档，不影响其他项目。本操作不可撤销，当前尚无 JSON 备份界面。</p>
+          <form @submit.prevent="deleteProject">
+            <label for="delete-project-name">输入完整项目名称确认</label>
+            <input id="delete-project-name" ref="deleteInput" v-model="confirmedProjectName" :disabled="saving" autocomplete="off" required />
+            <button class="danger" :disabled="saving || filesBusy || graphBusy || confirmedProjectName !== deletion.project.name"><AppIcon name="trash" />{{ saving ? '正在删除…' : '永久删除项目' }}</button>
+            <button type="button" class="secondary" :disabled="saving" @click="deletion = null">取消删除</button>
+          </form>
+        </template>
+        <template v-else-if="editingProject">
+          <p class="eyebrow">EDIT PROJECT</p>
+          <h2 id="create-title">修改项目零件号</h2>
+          <p class="form-help">{{ editingProject.name }} · 不改变版本图或目录绑定，不重命名磁盘文件。保存后请重新扫描。</p>
+          <form @submit.prevent="savePartNumber">
+            <label for="edit-part-number">零件号 <span>必填</span></label>
+            <input id="edit-part-number" ref="editInput" v-model="editedPartNumber" required :disabled="saving || filesBusy || graphBusy" :aria-invalid="!editedPartNumber.trim()" :aria-describedby="!editedPartNumber.trim() ? 'edit-part-error' : undefined" />
+            <p v-if="!editedPartNumber.trim()" id="edit-part-error" class="field-error">请输入非空零件号。</p>
+            <button :disabled="saving || filesBusy || graphBusy || !editedPartNumber.trim()"><AppIcon name="check" />{{ saving ? '正在保存…' : '保存零件号' }}</button>
+            <button type="button" class="secondary" :disabled="saving" @click="editingProject = null">取消修改</button>
+            <button type="button" class="secondary" :disabled="saving || filesBusy || graphBusy" @click="previewProjectDeletion"><AppIcon name="trash" />删除此项目…</button>
+          </form>
+        </template>
+        <template v-else>
         <p class="eyebrow">NEW PROJECT</p>
         <h2 id="create-title">建立项目</h2>
         <p class="form-help">相同零件号可以用于不同项目，内部身份独立保存。</p>
@@ -162,10 +259,11 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
           <p v-if="partError" id="part-error" class="field-error">请输入软件零件号，不能仅包含空白。</p>
           <button type="submit" :disabled="saving || loading"><AppIcon name="plus" />{{ saving ? '正在保存…' : '创建项目' }}</button>
         </form>
+        </template>
       </section>
     </div>
 
-    <ProjectFiles v-if="activeProjectId && view === 'files'" :key="`files-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
+    <ProjectFiles v-if="activeProjectId" v-show="view === 'files'" :key="`files-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
     <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" />
     </div>
 

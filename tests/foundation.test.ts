@@ -37,12 +37,8 @@ describe('领域基础', () => {
     expect(() => createProject(' ', '123')).toThrow();
   });
 
-  it('同版本多个文件快照，不允许重复版本节点', () => {
+  it('不允许重复版本节点', () => {
     const graph = fixture();
-    graph.files = ['20260101', '20260102'].map(date => ({
-      id: date, projectId: graph.project.id, nodeId: 'A', fileName: `${date}.idax`,
-      relativePath: `${date}.idax`, extension: '.idax', candidateDate: date, parsingStatus: 'parsed',
-    }));
     expect(() => validateGraph(graph)).not.toThrow();
     graph.nodes.push({ ...graph.nodes[0]!, id: 'other' });
     expect(() => validateGraph(graph)).toThrow('版本号重复');
@@ -59,16 +55,8 @@ describe('领域基础', () => {
     expect(() => appendVersion(graph, node, ['B'], 'target')).toThrow('当前头');
   });
 
-  it('文件越界、文件名不匹配和重复主键被拒绝', () => {
+  it('重复主键被拒绝', () => {
     const graph = fixture();
-    graph.files.push({
-      id: 'f', projectId: graph.project.id, nodeId: 'A', fileName: 'a.idax',
-      relativePath: '../a.idax', extension: '.idax', candidateDate: null, parsingStatus: 'unparsed',
-    });
-    expect(() => validateGraph(graph)).toThrow('安全的相对路径');
-    graph.files[0]!.relativePath = 'b.idax';
-    expect(() => validateGraph(graph)).toThrow('不一致');
-    graph.files = [];
     graph.nodes.push({ ...graph.nodes[0]! });
     expect(() => validateGraph(graph)).toThrow('ID 为空或重复');
   });
@@ -165,9 +153,47 @@ describe('Dexie 原子持久化', () => {
     return repo.get(graph.project.id);
   }
 
-  it('未知未来 schema 不被 v2 客户端降级打开', async () => {
+  it('删除项目需名称确认和最新修订，原子删除所有所属数据及绑定，不影响其他项目', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'delete-task', null));
+    graph = await repo.addBranch(graph.project.id, graph.project.revision, { id: 'delete-branch', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'A' });
+    graph = await repo.release(graph.project.id, graph.project.revision, 'M');
+    const other = await repo.create('保留项目', graph.project.partNumber);
+    await repo.db.table('directoryBindings').bulkAdd([
+      { projectId: graph.project.id, role: 'engineering', handle: { name: 'engineering' } },
+      { projectId: graph.project.id, role: 'word', handle: { name: 'reports' } },
+      { projectId: other.project.id, role: 'engineering', handle: { name: 'other' } },
+    ]);
+    await expect(repo.deleteProject(graph.project.id, graph.project.revision, 'wrong')).rejects.toThrow('完整项目名称');
+    await expect(repo.deleteProject(graph.project.id, graph.project.revision - 1, graph.project.name)).rejects.toThrow('项目已更新');
+    expect(await repo.get(graph.project.id)).toEqual(graph);
+    await repo.deleteProject(graph.project.id, graph.project.revision, graph.project.name);
+    await expect(repo.get(graph.project.id)).rejects.toThrow('项目不存在');
+    for (const table of [repo.db.nodes, repo.db.edges, repo.db.branches, repo.db.tasks, repo.db.directoryBindings]) {
+      expect(await table.where('projectId').equals(graph.project.id).count()).toBe(0);
+    }
+    expect(await repo.get(other.project.id)).toEqual(other);
+    expect(await repo.db.directoryBindings.where('projectId').equals(other.project.id).count()).toBe(1);
+    repo.db.close();
+    await repo.db.open();
+    expect(await repo.listProjects()).toEqual([other.project]);
+  });
+
+  it('删除中途失败全部回滚，版本图与绑定仍完整可读', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'rollback-task', null));
+    await repo.db.table('directoryBindings').put({ projectId: graph.project.id, role: 'engineering', handle: { name: 'root' } });
+    repo.db.tasks.hook('deleting', () => { throw new Error('删除写入失败'); });
+    await expect(repo.deleteProject(graph.project.id, graph.project.revision, graph.project.name)).rejects.toThrow('删除写入失败');
+    expect(await repo.get(graph.project.id)).toEqual(graph);
+    expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
+  });
+
+  it('未知未来 schema 不被 v3 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(3).stores({ projects: 'id' });
+    future.db.version(4).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -186,8 +212,10 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes[0]).not.toHaveProperty('command');
     repo.db.close();
     await repo.db.open();
-    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(1);
-    expect((await repo.snapshot(graph.project.id)).graph).toEqual(stored);
+    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(2);
+    const snapshot = (await repo.snapshot(graph.project.id)).graph;
+    expect(snapshot.nodes).toEqual(stored.nodes);
+    expect(snapshot.project).toEqual({ id: stored.project.id, name: stored.project.name, partNumber: stored.project.partNumber, revision: stored.project.revision });
   });
 
   it('Loop 修改不改节点身份，同项目唯一、跨项目可重复、多个 null 可共存', async () => {

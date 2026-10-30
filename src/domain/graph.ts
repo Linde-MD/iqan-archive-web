@@ -12,11 +12,11 @@ function uniqueIds(items: readonly { id: string }[], label: string) {
 }
 
 export function validateGraph(graph: ProjectGraph): void {
-  const { project, nodes, edges, branches, tasks, files } = graph;
+  const { project, nodes, edges, branches, tasks } = graph;
   requireCondition(project.id.trim() && project.name.trim() && project.partNumber.trim(), 'PROJECT', '项目身份、名称和零件号不能为空。');
   requireCondition(Number.isSafeInteger(project.revision) && project.revision >= 0, 'REVISION', '项目修订号无效。');
   for (const [label, items] of [
-    ['版本', nodes], ['关系', edges], ['分支', branches], ['任务', tasks], ['文件', files],
+    ['版本', nodes], ['关系', edges], ['分支', branches], ['任务', tasks],
   ] as const) {
     uniqueIds(items, label);
     for (const item of items) requireCondition(item.projectId === project.id, 'CROSS_PROJECT', `${label}不能跨项目引用。`);
@@ -68,21 +68,14 @@ export function validateGraph(graph: ProjectGraph): void {
     requireCondition(branch.name.trim() && nodeMap.has(branch.headId), 'BRANCH', '分支名称为空或头节点不存在。');
     requireCondition(/^#[0-9a-f]{6}$/i.test(branch.color), 'COLOR', '分支颜色须为六位十六进制颜色。');
   }
-  for (const file of files) {
-    requireCondition(nodeMap.has(file.nodeId), 'FILE_REFERENCE', '文件所属版本不存在。');
-    requireCondition(
-      file.relativePath && !/^[\\/]|^[a-z]:|[\u0000:]/i.test(file.relativePath)
-      && !file.relativePath.split(/[\\/]/).some(part => part === '..' || part === '' || part === '.'),
-      'FILE_PATH', '文件必须使用目录内安全的相对路径。',
-    );
-    requireCondition(
-      ['.idax', '.idsx', '.idvx'].includes(file.extension)
-      && file.fileName.trim().toLowerCase().endsWith(file.extension)
-      && file.relativePath.split(/[\\/]/).at(-1) === file.fileName,
-      'FILE_FORMAT', '工程文件类型或文件名与相对路径不一致。',
-    );
-    requireCondition(['unparsed', 'parsed', 'invalid'].includes(file.parsingStatus), 'PARSE_STATUS', '解析状态无效。');
-  }
+}
+
+export function updatePartNumber(graph: ProjectGraph, value: string): ProjectGraph {
+  requireCondition(value.trim(), 'REQUIRED', '项目零件号不能为空。');
+  const next = structuredClone(graph);
+  next.project.partNumber = value.trim();
+  validateTransition(graph, next);
+  return next;
 }
 
 function getNode(graph: ProjectGraph, id: string): VersionNode {
@@ -204,7 +197,6 @@ export function applyDeletion(graph: ProjectGraph, plan: DeletionPlan, confirmed
   );
   const next = structuredClone(graph);
   next.nodes = next.nodes.filter(item => item.id !== node.id);
-  next.files = next.files.filter(file => file.nodeId !== node.id);
   const children = new Set(Object.keys(plan.childParents));
   next.edges = next.edges.filter(edge => edge.parentId !== node.id && edge.childId !== node.id && !children.has(edge.childId));
   for (const [childId, parents] of Object.entries(plan.childParents)) {
@@ -229,12 +221,10 @@ export function validateTransition(before: ProjectGraph, after: ProjectGraph): v
     const updated = after.nodes.find(item => item.id === node.id);
     requireCondition(updated, 'RELEASE_LOCK', '已放行节点删除必须使用额外确认的删除命令。');
     const parents = (graph: ProjectGraph) => graph.edges.filter(edge => edge.childId === node.id).map(edge => edge.parentId).sort();
-    const files = (graph: ProjectGraph) => graph.files.filter(file => file.nodeId === node.id).sort((a, b) => a.id.localeCompare(b.id));
     requireCondition(
       node.version === updated.version
-      && JSON.stringify(parents(before)) === JSON.stringify(parents(after))
-      && JSON.stringify(files(before)) === JSON.stringify(files(after)),
-      'RELEASE_LOCK', '已放行版本的版本号、父边和文件快照引用已锁定，请先撤销放行。',
+      && JSON.stringify(parents(before)) === JSON.stringify(parents(after)),
+      'RELEASE_LOCK', '已放行版本的版本号和父边已锁定，请先撤销放行。',
     );
   }
 }

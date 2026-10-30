@@ -91,7 +91,7 @@ async function unbind() {
   await operation(async () => {
     await props.repository.db.directoryBindings.delete([props.projectId, props.role]);
     handle.value = undefined; permission.value = '未绑定'; emit('invalidate');
-    message.value = '仅解除本机授权绑定，文件与配置引用均未删除。';
+    message.value = '仅解除本机授权绑定，原文件与版本图均未删除。';
   });
 }
 

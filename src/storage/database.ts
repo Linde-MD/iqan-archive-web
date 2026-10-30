@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie';
-import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type FileReference, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, appendVersion, createBranch, mergeVersion, release, revokeRelease, updateBranch, updateNode, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type NodeUpdate } from '../domain/graph';
-import { registerCandidates, rebindReference, type FileCandidate } from '../domain/filenames';
+import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
+import { applyDeletion, appendVersion, createBranch, mergeVersion, release, revokeRelease, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type NodeUpdate } from '../domain/graph';
+import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
@@ -16,7 +16,6 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
     edges: graph.edges.map(({ id, projectId, parentId, childId }) => ({ id, projectId, parentId, childId })),
     tasks: graph.tasks.map(({ id, projectId, name, description, loopId }) => ({ id, projectId, name, description, loopId })),
     branches: graph.branches.map(({ id, projectId, name, description, color, headId }) => ({ id, projectId, name, description, color, headId })),
-    files: graph.files.map(({ id, projectId, nodeId, fileName, relativePath, extension, candidateDate, parsingStatus }) => ({ id, projectId, nodeId, fileName, relativePath, extension, candidateDate, parsingStatus })),
   };
 }
 
@@ -26,7 +25,6 @@ export class ArchiveDatabase extends Dexie {
   edges!: Table<Edge, string>;
   branches!: Table<Branch, string>;
   tasks!: Table<Task, string>;
-  files!: Table<FileReference, string>;
   directoryBindings!: Table<DirectoryBinding, [string, DirectoryRole]>;
 
   constructor(name = 'iqan-archive-web') {
@@ -50,6 +48,7 @@ export class ArchiveDatabase extends Dexie {
         versions.add(key);
       }
     });
+    this.version(3).stores({ files: null });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -72,20 +71,19 @@ export class ArchiveRepository {
   }
 
   private get tables() {
-    return [this.db.projects, this.db.nodes, this.db.edges, this.db.branches, this.db.tasks, this.db.files];
+    return [this.db.projects, this.db.nodes, this.db.edges, this.db.branches, this.db.tasks];
   }
 
   private async read(projectId: string): Promise<ProjectGraph> {
     const project = await this.db.projects.get(projectId);
     requireCondition(project, 'PROJECT_NOT_FOUND', '项目不存在。');
-    const [nodes, edges, branches, tasks, files] = await Promise.all([
+    const [nodes, edges, branches, tasks] = await Promise.all([
       this.db.nodes.where('projectId').equals(projectId).toArray(),
       this.db.edges.where('projectId').equals(projectId).toArray(),
       this.db.branches.where('projectId').equals(projectId).toArray(),
       this.db.tasks.where('projectId').equals(projectId).toArray(),
-      this.db.files.where('projectId').equals(projectId).toArray(),
     ]);
-    const graph = { project, nodes, edges, branches, tasks, files };
+    const graph = { project, nodes, edges, branches, tasks };
     validateGraph(graph);
     return graph;
   }
@@ -96,7 +94,7 @@ export class ArchiveRepository {
 
   private async write(graph: ProjectGraph): Promise<void> {
     const id = graph.project.id;
-    for (const table of [this.db.nodes, this.db.edges, this.db.branches, this.db.tasks, this.db.files]) {
+    for (const table of [this.db.nodes, this.db.edges, this.db.branches, this.db.tasks]) {
       await table.where('projectId').equals(id).delete();
     }
     // add (rather than put) prevents a foreign project's ID from being overwritten.
@@ -104,7 +102,6 @@ export class ArchiveRepository {
     await this.db.edges.bulkAdd(graph.edges);
     await this.db.branches.bulkAdd(graph.branches);
     await this.db.tasks.bulkAdd(graph.tasks);
-    await this.db.files.bulkAdd(graph.files);
     await this.db.projects.put(graph.project);
   }
 
@@ -144,8 +141,20 @@ export class ArchiveRepository {
     return this.change(projectId, revision, graph => registerCandidates(graph, candidates));
   }
 
-  async rebind(projectId: string, revision: number, fileId: string, candidate: FileCandidate) {
-    return this.change(projectId, revision, graph => rebindReference(graph, fileId, candidate));
+  async setPartNumber(projectId: string, revision: number, partNumber: string) {
+    return this.change(projectId, revision, graph => updatePartNumber(graph, partNumber));
+  }
+
+  async deleteProject(projectId: string, revision: number, confirmedName: string): Promise<void> {
+    await this.db.transaction('rw', [...this.tables, this.db.directoryBindings], async () => {
+      const current = await this.read(projectId);
+      requireCondition(current.project.revision === revision, 'STALE_REVISION', '项目已更新，请取消删除，重新读取项目并确认。');
+      requireCondition(confirmedName === current.project.name, 'DELETE_CONFIRMATION', '请输入完整项目名称以确认删除。');
+      for (const table of [this.db.nodes, this.db.edges, this.db.branches, this.db.tasks, this.db.directoryBindings]) {
+        await table.where('projectId').equals(projectId).delete();
+      }
+      await this.db.projects.delete(projectId);
+    });
   }
 
   async directoryHint(projectId: string, revision: number, role: DirectoryRole, hint: string) {
@@ -196,6 +205,8 @@ export class ArchiveRepository {
 
   async snapshot(projectId: string): Promise<ProjectSnapshot> {
     const graph = await this.get(projectId);
-    return { schemaVersion: 1, graph: configurationOnly(graph) };
+    const clean = configurationOnly(graph);
+    const { id, name, partNumber, revision } = clean.project;
+    return { schemaVersion: 2, graph: { ...clean, project: { id, name, partNumber, revision } } };
   }
 }

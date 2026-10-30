@@ -88,7 +88,7 @@ export async function locateFile(root: DirectoryHandle, path: string): Promise<F
     return handle;
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'NotFoundError') {
-      throw new Error(`文件缺失或目录已移动：${path}。请重新选择根目录或显式重绑文件引用。`, { cause });
+      throw new Error(`文件缺失或目录已移动：${path}。请重新扫描工程目录。`, { cause });
     }
     if (cause instanceof DOMException && ['NotAllowedError', 'SecurityError'].includes(cause.name)) {
       throw new Error(`文件读取权限被拒绝：${path}。请重新授权目录。`, { cause });
