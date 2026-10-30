@@ -281,3 +281,52 @@ export function mergeVersion(
   requireCondition(new Set(parentIds).size >= 2, 'MERGE_PARENTS', '合并需至少两个不同父节点。');
   return appendVersion(graph, node, parentIds, targetBranchId);
 }
+
+export interface NodeUpdate {
+  version?: string;
+  description?: string;
+  taskId?: string | null;
+}
+
+export function updateNode(graph: ProjectGraph, nodeId: string, update: NodeUpdate): ProjectGraph {
+  validateGraph(graph);
+  const existing = getNode(graph, nodeId);
+  const next = structuredClone(graph);
+  const target = getNode(next, nodeId);
+  if (update.version !== undefined) {
+    if (existing.releasedAt !== null && update.version !== existing.version) {
+      throw new DomainError('RELEASE_LOCK', '已放行版本的版本号已锁定，请先撤销放行。');
+    }
+    target.version = normalizeVersion(update.version);
+  }
+  if (update.description !== undefined) target.description = update.description.trim();
+  if (update.taskId !== undefined) {
+    requireCondition(
+      update.taskId === null || graph.tasks.some(task => task.id === update.taskId),
+      'TASK_REFERENCE',
+      '版本引用的任务不存在。',
+    );
+    target.taskId = update.taskId;
+  }
+  validateGraph(next);
+  return next;
+}
+
+export interface BranchUpdate {
+  name?: string;
+  description?: string;
+  color?: string;
+}
+
+export function updateBranch(graph: ProjectGraph, branchId: string, update: BranchUpdate): ProjectGraph {
+  validateGraph(graph);
+  const branch = graph.branches.find(item => item.id === branchId);
+  requireCondition(branch, 'BRANCH_REFERENCE', '分支不存在。');
+  const next = structuredClone(graph);
+  const target = next.branches.find(item => item.id === branchId)!;
+  if (update.name !== undefined) target.name = update.name.trim();
+  if (update.description !== undefined) target.description = update.description.trim();
+  if (update.color !== undefined) target.color = update.color;
+  validateGraph(next);
+  return next;
+}

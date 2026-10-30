@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type FileReference, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, release, revokeRelease, updateTask, validateGraph, validateTransition, type DeletionPlan } from '../domain/graph';
+import { applyDeletion, appendVersion, createBranch, mergeVersion, release, revokeRelease, updateBranch, updateNode, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, rebindReference, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 
@@ -172,6 +172,26 @@ export class ArchiveRepository {
 
   async deleteNode(projectId: string, revision: number, plan: DeletionPlan, confirmedVersion: string | null): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => applyDeletion(graph, plan, confirmedVersion), true);
+  }
+
+  async addNode(projectId: string, revision: number, node: VersionNode, parentIds: readonly string[], targetBranchId: string | null): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => appendVersion(graph, node, parentIds, targetBranchId));
+  }
+
+  async addBranch(projectId: string, revision: number, branch: Branch): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => createBranch(graph, branch));
+  }
+
+  async merge(projectId: string, revision: number, node: VersionNode, parentIds: readonly string[], targetBranchId: string): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => mergeVersion(graph, node, parentIds, targetBranchId));
+  }
+
+  async saveNode(projectId: string, revision: number, nodeId: string, update: NodeUpdate): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => updateNode(graph, nodeId, update));
+  }
+
+  async saveBranch(projectId: string, revision: number, branchId: string, update: BranchUpdate): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => updateBranch(graph, branchId, update));
   }
 
   async snapshot(projectId: string): Promise<ProjectSnapshot> {

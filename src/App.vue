@@ -4,6 +4,7 @@ import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
 import type { Project } from './domain/model';
 import ProjectFiles from './components/ProjectFiles.vue';
+import VersionGraph from './components/VersionGraph.vue';
 import AppIcon from './components/AppIcon.vue';
 
 const db = new ArchiveDatabase();
@@ -19,6 +20,8 @@ const status = ref('');
 const submitted = ref(false);
 const activeProjectId = ref('');
 const filesBusy = ref(false);
+const graphBusy = ref(false);
+const view = ref<'files' | 'graph'>('files');
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const errorHeading = ref<HTMLElement | null>(null);
@@ -98,7 +101,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         <h1 id="page-title">工程版本工作台<span class="title-accent">.</span></h1>
         <p class="lead">为 IQAN 工程建立清晰的项目边界。配置留在本机，原始文件留在原目录。</p>
       </div>
-      <span class="stage">SPEC-01 · 项目与文件</span>
+      <span class="stage">SPEC-02 · 项目与版本图</span>
     </section>
 
     <div v-if="error" class="error" role="alert">
@@ -130,12 +133,20 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         <ul v-else class="project-list">
           <li v-for="project in projects" :key="project.id">
             <div class="project-symbol"><AppIcon name="folder" /></div>
-            <div class="project-info"><h3>{{ project.name }}</h3><p>软件零件号 <code>{{ project.partNumber }}</code></p></div>
-            <span class="project-state">已保存</span>
-            <button class="secondary icon-button" :disabled="filesBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id" @click="activeProjectId = project.id"><AppIcon name="arrow" /></button>
+            <div class="project-info">
+              <div class="project-title-line">
+                <h3>{{ project.name }}</h3>
+                <span class="project-state">已保存</span>
+              </div>
+              <p><code>{{ project.partNumber }}</code></p>
+            </div>
+            <div class="project-actions">
+              <button class="secondary icon-button" :disabled="filesBusy || graphBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
+              <button class="secondary icon-button" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="activeProjectId = project.id; view = 'graph'"><AppIcon name="branch" /></button>
+            </div>
           </li>
         </ul>
-        <p class="boundary">选择项目进入文件工作区。完整版本图编辑器将在 SPEC-02 接入。</p>
+        <p class="boundary">选择项目进入文件工作区或版本图。文件与图共享同一项目配置。</p>
       </section>
 
       <section class="panel" aria-labelledby="create-title">
@@ -154,7 +165,8 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </section>
     </div>
 
-    <ProjectFiles v-if="activeProjectId" :key="activeProjectId" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
+    <ProjectFiles v-if="activeProjectId && view === 'files'" :key="`files-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">
