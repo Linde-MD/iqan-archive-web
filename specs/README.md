@@ -21,7 +21,7 @@
 | --- | --- | --- | --- |
 | 应用实现 | 已有 Vue 入口、领域/存储模块、项目与文件工作区、Vitest 测试与 Vite 构建。 | SPEC-01 代码完成，待原生目录与键盘实机补验；完整图等后续 UI 未完成。 | DEC-001 |
 | 包管理 | `package.json`、`package-lock.json`、npm 的 dev/test/typecheck/build/preview。 | 沿用 npm，不新增文件管理依赖。 | DEC-001 |
-| 部署边界 | 用户已确认将来部署 GitHub Pages；当前无发布产物。 | HTTPS、仓库子路径 base 与路由刷新需验证；建议 hash 路由。仅发布应用产物，不发布用户文件/配置。 | DEC-002、DEC-011 |
+| 部署边界 | GitHub Pages 误发布源码导致空白页；已补 Actions 构建并部署 `dist`，待提交及切换 Source 后线上验收。 | 本地生产产物仓库子路径加载/刷新已验；线上另验。仅发布应用产物，不发布用户文件/配置。 | DEC-002、DEC-011 |
 | Windows 启动器 | 尚未开发或安装；已在相邻仓库建立独立 LSP 规格，用户确认 C#/.NET/WinForms、自包含、SDK/CLI 开发。 | 自定义 URI 按需激活，独立本机绑定、受限操作及每次确认；不监听端口。具体 .NET/Windows/架构与安装发布未定。 | DEC-011、DEC-013、Q-016、Q-017 |
 | UI 设计依据 | UI/UX Pro Max 经适用性核实的 Data-Dense Dashboard，深蓝顶栏、冷灰/蓝色工程工作台、响应式侧栏与图标操作；DESIGN 已补当前 token 映射。 | 原 Claude 暖色示例仅辅助，不沿用其品牌或字体；完整键盘/原生目录仍待实机补验，SPEC-01 记录本轮视觉和批量行为证据。 | DEC-003、REQ-025 |
 | 图形画布 | 当前无图形库或画布实现。 | 实施阶段按有向无环图、合并多父边、键盘/触屏、性能与许可证评估方案；暂不指定依赖。 | Q-003 |
@@ -113,7 +113,7 @@
 | [SPEC-00 基础与数据边界](./SPEC-00-foundation.md) | 基础工程、领域契约/校验、Dexie 原子事务和项目入口。 | 核心 | 无 | 可实施 | 已验收（基础范围） | 原阻塞已解决；不含完整图/文件/JSON UI |
 | [SPEC-01 项目与文件名解析](./SPEC-01-projects-and-filenames.md) | 双目录授权、递归扫描/解析、预览登记与定位重绑、软件对比文档列表。 | 核心；直接打开后续 | SPEC-00 项目/版本/事务契约 | 可实施 | 代码完成，待原生目录/键盘实机验收 | 首版规则已确认；AC-09/10 待补验 |
 | [SPEC-02 版本分支图](./SPEC-02-version-graph.md) | 分支/任务/放行、Loop ID 展示与编辑、双节点对比入口。 | 核心 | SPEC-00 图模型；可与 SPEC-01 并行；状态按 SPEC-04 | 框架 | 未开始（基础领域命令已有） | 领域问题已解决，待图布局选型/交互细化 |
-| [SPEC-03 本地持久化与发布准备](./SPEC-03-persistence-and-release.md) | 完整 JSON 恢复与 Pages 部署。 | 核心；无二进制备份 | SPEC-00、SPEC-01/02 数据往返 | 框架 | 未开始（v2 本机绑定/基础事务已有） | Q-012 |
+| [SPEC-03 本地持久化与发布准备](./SPEC-03-persistence-and-release.md) | 完整 JSON 恢复与 Pages 部署。 | 核心；无二进制备份 | SPEC-00、SPEC-01/02 数据往返 | 框架 | 完整阶段未开始；v2 基础事务已有，Pages 工作流已补、待线上验收 | Q-012 |
 | [SPEC-04 IQANdesign 本地打开与版本对比](./SPEC-04-iqandesign-integration.md) | 网页选择/预览、协议请求/降级和联调。 | 可选本机能力 | SPEC-00/01 文件契约、SPEC-02 选择/菜单、SPEC-05 协议 | 框架 | 未开始 | Q-015、Q-017；Q-014 已解决 |
 | [SPEC-05 Windows 协议启动器](./SPEC-05-windows-launcher.md) | 安装注册、本机绑定、逐次确认、路径校验和受限进程调用。 | 可选 | SPEC-00 项目/文件契约；与 SPEC-04 共享协议，不依赖其网页实现 | 框架 | 未开始 | Q-015、Q-016、Q-017 |
 | [SPEC-06 文档关联后续迭代](./SPEC-06-document-associations.md) | 首版后文档关联版本或版本对。 | 增强 | SPEC-01/02，直接打开另依赖 Launcher LSP-04 | 框架 | 未开始 | Q-019 |

@@ -5,7 +5,7 @@
 - 范围：核心基础能力与配置 JSON 恢复；不含工程/软件对比文档二进制备份
 - 关联需求：REQ-001、REQ-003、REQ-005、REQ-007、REQ-008、REQ-009、REQ-011–REQ-016、REQ-018、REQ-019（绑定隔离）、REQ-020
 - 真实前置依赖：SPEC-00、SPEC-01、SPEC-02 的数据、文件引用与图关系契约，供完整持久化往返使用
-- 未决阻塞：Q-012；Q-007/010/011/018 已由第八轮确认。基础事务已在 SPEC-00 实现，完整导入恢复/部署仍未实施。
+- 未决阻塞：Q-012；Q-007/010/011/018 已由第八轮确认。基础事务已实现，完整导入恢复未实施；Pages 构建发布工作流已补，线上切换与验收另行记录。
 
 ## 1. 目标
 
@@ -29,6 +29,7 @@
 - 导入成功后工程与软件对比文档目录均标记“待重新绑定”，不得把旧目录提示显示为实际绑定；用户显式授权后自动保存本机句柄、显示实际目录名并恢复定位，不自动运行导入 JSON 中的任何内容。
 - 确定发布至 GitHub Pages（HTTPS）；同时验证根站与仓库项目站的资源 base、刷新/深链接及适用的 worker/WASM。建议 hash 路由；若选 history 路由，必须给出并验证 Pages 刷新方案，不能依赖开发服务器兜底。
 - 只发布应用构建产物；排除用户项目 JSON、工程/软件对比文档原文件、参考手册和本机启动器配置，不把工作区整个上传到 Pages。安装包的发布渠道按 Q-016 单独确定，不夹带 IQANdesign 软件。
+- Pages 使用 `.github/workflows/deploy-pages.yml`：`main` 推送或手动触发后，Node 22.22.0 / `npm ci` → `npm test` → `npm run build` → 上传且只部署 `dist`。GitHub Settings → Pages → Build and deployment → Source 必须选择 **GitHub Actions**，不能用 Deploy from a branch 发布源码根目录。保留 Vite `base: './'`，当前无客户端路由，仓库子路径首页和刷新应加载构建后的相对资源。
 - IndexedDB 按 origin 而非仓库路径隔离。同一 `<owner>.github.io` 下多个仓库项目可能同源，应使用本产品独立数据库命名避免误读；命名不是安全隔离，不在不可信同源应用间承诺数据隔离。
 - 更换域名、浏览器/配置文件前提示导出 JSON，不能保证自动迁移或权限恢复。不保证离线可用，离线需另立需求并断网验证。
 - 目标浏览器需验证 Dexie/IndexedDB、目录选择和外部协议能力；目录 API 支持有限，Windows 支持协议也不代表浏览器允许激活。非 Windows/不支持目录或协议时提供明确说明，保留元数据/图/JSON 能力。
@@ -90,7 +91,7 @@
 | Loop 编号往返与迁移 | REQ-020 / SPEC-03-AC-11 | 带 `1479-1`/null 的任务刷新、导出恢复；支持的旧版缺字段 | 字符串与引用完整保留；旧版显式迁移为 null，不猜测编号 | 迁移与 JSON 集成测试 |
 | Loop 编号校验与隔离 | SPEC-03-AC-11 | 错误类型/同项目重复编号/并发重复；跨项目同编号/多个 null；模拟提交失败 | 非法写入整体拒绝或回滚，旧数据不变；跨项目同编号及多个 null 可保存，无远端请求 | 存储与导入集成测试 |
 
-基础工程已有 `npm test`、`npm run typecheck`、`npm run build`、`npm run preview`，Windows 可用 `npm.cmd`；当前无 Pages 发布工作流。此处完整往返、迁移和实站用例不能继承基础工程的通过状态。
+基础工程已有 `npm test`、`npm run typecheck`、`npm run build`、`npm run preview`，Windows 可用 `npm.cmd`；Pages 发布工作流见第 3 节。此处完整往返、迁移和实站用例不能继承基础工程的通过状态。
 
 ## 8. 验收标准
 
@@ -118,4 +119,12 @@
 
 ## 10. 实施后验收记录
 
-完整 JSON 导入恢复、备份 UI 和部署尚未实施；SPEC-00 已提供 Dexie v1、项目事务/修订冲突及显式字段快照，基础测试不能替代本阶段完整往返、迁移或 Pages 实站验收。
+完整 JSON 导入恢复、备份 UI 尚未实施；SPEC-00 已提供 Dexie v1、项目事务/修订冲突及显式字段快照，SPEC-01 已升级 v2。基础测试不能替代本阶段完整往返、迁移或 Pages 实站验收。
+
+### Pages 空白页修复记录（2026-10-30）
+
+- 线上 `https://linde-md.github.io/iqan-archive-web/` 返回源码 HTML，含 `<script type="module" src="/src/main.ts">`；GitHub API 显示 `build_type: legacy`、`main` / 根目录发布。根因是未构建的 Vue/Vite 源码被当作静态成品发布，而非现有相对 base 配置失效。
+- 新增独立构建/部署工作流，部署 job 仅授予 Pages 写入和 OIDC 权限，使用 `github-pages` 环境；测试或构建失败不发布。
+- 本地 `npm test` 42 项通过，`npm run build`（含类型检查）通过，产物不再引用源码。使用 `npm run preview -- --base /iqan-archive-web/ --port 4173 --strictPort` 挂载未修改的生产产物，验证仓库子路径 HTML、JS/CSS HTTP 200 且 MIME 正确，浏览器页面渲染及刷新正常；当前无客户端路由或 worker/WASM，未声称验证未来深链接。
+- 线上仍需提交/推送工作流、切换 Pages Source、成功执行工作流后再实站验收；新增本地工作流不等于已修复线上部署。AC-04/09 保留未勾，待线上验证及完整边界检查。
+- 本记录仅覆盖发布修复，不解除 Q-012、不代表完整 SPEC-03 已实施或验收，不更改浏览器 IndexedDB/授权数据。
