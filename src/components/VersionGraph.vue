@@ -4,10 +4,12 @@ import { liveQuery } from 'dexie';
 import type { Branch, ProjectGraph, VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutDag, LAYOUT, type Point } from '../domain/layout';
+import { orderedVersionNodes, type VersionOrder } from '../domain/version-order';
 import { planDeletion, type DeletionPlan } from '../domain/graph';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
+const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'oldest' });
 const emit = defineEmits<{ busy: [value: boolean] }>();
 
 const graph = shallowRef<ProjectGraph>();
@@ -40,7 +42,8 @@ const form = ref({
   deleteConfirmedVersion: '',
 });
 
-const layout = computed(() => (graph.value ? layoutDag(graph.value) : { positions: new Map<string, Point>(), width: 0, height: 0 }));
+const orderedNodes = computed(() => graph.value ? orderedVersionNodes(graph.value, versionOrder.value) : []);
+const layout = computed(() => (graph.value ? layoutDag(graph.value, versionOrder.value) : { positions: new Map<string, Point>(), width: 0, height: 0 }));
 const nodeById = computed(() => new Map((graph.value?.nodes ?? []).map(node => [node.id, node])));
 const parentIdsOf = computed(() => {
   const map = new Map<string, string[]>();
@@ -336,6 +339,7 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
     </div>
 
     <div v-if="graph" class="graph-toolbar">
+      <button class="secondary" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" />{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</button>
       <div class="actions">
         <button :disabled="saving || (selected.length !== 1 && graph.nodes.length !== 0)" @click="openNodeAdd"><AppIcon name="plus" />{{ graph.nodes.length === 0 ? '新增根版本' : '新增子版本' }}</button>
         <button class="secondary" :disabled="saving || selected.length !== 1" @click="openNodeEdit"><AppIcon name="edit" />编辑</button>
@@ -371,7 +375,7 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
             <path :d="edgePath(edge.parentId, edge.childId)" class="graph-edge" :marker-end="'url(#graph-arrow)'" />
           </g>
 
-          <g v-for="node in graph.nodes" :key="node.id">
+          <g v-for="node in orderedNodes" :key="node.id">
             <!-- branch head labels -->
             <g v-for="(branch, index) in branchHeads.get(node.id) ?? []" :key="branch.id" class="graph-branch-label" :transform="`translate(${layout.positions.get(node.id)!.x + 8} ${layout.positions.get(node.id)!.y + branchLabelOffset(branch, index).y})`">
               <rect :width="Math.max(56, branch.name.length * 12 + 20)" height="18" rx="4" :fill="branch.color" />
@@ -448,7 +452,7 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
         <input id="gf-description" v-model="form.description" :disabled="saving" placeholder="本次版本改动说明" />
         <label>父节点 <span>{{ panel === 'merge' ? '合并需至少两个不同父节点' : '留空则创建根版本，可多选以创建合并节点' }}</span></label>
         <div class="graph-parent-picker">
-          <label v-for="node in graph?.nodes ?? []" :key="node.id" class="graph-parent-option">
+          <label v-for="node in orderedNodes" :key="node.id" class="graph-parent-option">
             <input v-model="form.parentIds" type="checkbox" :value="node.id" :disabled="saving" />{{ node.version }}
           </label>
         </div>
@@ -493,7 +497,7 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
         <label :for="`gb-head-${branch.id}`">{{ branch.name }} 的新头</label>
         <select :id="`gb-head-${branch.id}`" v-model="deletionBranchTargets[branch.id]" :disabled="saving">
           <option :value="null">删除分支记录</option>
-          <option v-for="node in graph?.nodes.filter(node => node.id !== deletionNodeId) ?? []" :key="node.id" :value="node.id">{{ node.version }}</option>
+          <option v-for="node in orderedNodes.filter(node => node.id !== deletionNodeId)" :key="node.id" :value="node.id">{{ node.version }}</option>
         </select>
       </div>
       <div class="actions">

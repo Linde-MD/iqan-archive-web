@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import { liveQuery } from 'dexie';
 import type { ProjectGraph } from '../domain/model';
+import { orderedVersionNodes, type VersionOrder } from '../domain/version-order';
 import type { ArchiveRepository } from '../storage/database';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { locateFile, type DirectoryRole } from '../files/directories';
@@ -9,6 +10,7 @@ import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
+const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'oldest' });
 const emit = defineEmits<{ busy: [value: boolean] }>();
 const graph = shallowRef<ProjectGraph>();
 const engineering = ref<InstanceType<typeof DirectoryPanel>>();
@@ -26,7 +28,7 @@ let subscription: { unsubscribe(): void } | undefined;
 const busy = computed(() => saving.value || busyRoles.value.size > 0);
 const association = computed(() => graph.value ? matchScannedFiles(graph.value, candidates.value) : undefined);
 const rows = computed(() => association.value?.rows ?? []);
-const versionRows = computed(() => graph.value?.nodes.map(node => ({ ...node, files: association.value?.matches.get(node.id) ?? [] })) ?? []);
+const versionRows = computed(() => graph.value ? orderedVersionNodes(graph.value, versionOrder.value).map(node => ({ ...node, files: association.value?.matches.get(node.id) ?? [] })) : []);
 const selectedSet = computed(() => new Set(selected.value));
 const eligibleRows = computed(() => rows.value.filter(row => row.reason === null && row.nodeId === null));
 const selectedRows = computed(() => eligibleRows.value.filter(row => selectedSet.value.has(row.relativePath)));
@@ -140,6 +142,7 @@ onUnmounted(() => subscription?.unsubscribe());
 
       <p v-if="scanned && graph.nodes.length" class="form-help" role="status">{{ association?.missing.length ? `本次扫描：${association.missing.length} 个版本缺少源文件（不影响版本图配置）。` : '本次扫描：所有版本均已找到匹配源文件。' }}</p>
       <h3 class="subheading">版本与自动关联文件</h3>
+      <button class="secondary" :disabled="busy" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" />{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</button>
       <p v-if="!graph.nodes.length">尚无版本节点。可在版本图创建，或从扫描文件登记创建。</p>
       <div class="version-files-scroll" tabindex="0" role="region" aria-label="版本与自动关联文件，可滚动">
       <ul class="version-list">

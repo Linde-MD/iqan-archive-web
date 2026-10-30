@@ -1,5 +1,6 @@
 import { validateGraph } from './graph';
 import type { ProjectGraph } from './model';
+import { compareVersionNodes, type VersionOrder } from './version-order';
 
 export interface Point {
   x: number;
@@ -26,9 +27,9 @@ export const LAYOUT = {
  * their parents to reduce edge crossings. Deterministic and free of external
  * dependencies.
  */
-export function layoutDag(graph: ProjectGraph): GraphLayout {
+export function layoutDag(graph: ProjectGraph, versionOrder: VersionOrder = 'oldest'): GraphLayout {
   validateGraph(graph);
-  const nodeIds = graph.nodes.map(node => node.id);
+  const nodeIds = [...graph.nodes].sort((a, b) => compareVersionNodes(a, b, versionOrder)).map(node => node.id);
   if (nodeIds.length === 0) {
     return { positions: new Map(), width: 0, height: 0 };
   }

@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
 import type { Project, ProjectGraph } from './domain/model';
+import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
 import VersionGraph from './components/VersionGraph.vue';
 import AppIcon from './components/AppIcon.vue';
@@ -28,6 +29,7 @@ const activeProjectId = ref('');
 const filesBusy = ref(false);
 const graphBusy = ref(false);
 const view = ref<'files' | 'graph'>('files');
+const versionOrder = ref<VersionOrder>('oldest');
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const errorHeading = ref<HTMLElement | null>(null);
@@ -263,8 +265,8 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </section>
     </div>
 
-    <ProjectFiles v-if="activeProjectId" v-show="view === 'files'" :key="`files-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" />
+    <ProjectFiles v-if="activeProjectId" v-show="view === 'files'" :key="`files-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">

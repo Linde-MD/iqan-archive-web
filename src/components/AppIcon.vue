@@ -1,6 +1,7 @@
 <script setup lang="ts">
-defineProps<{ name: 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' }>();
 const paths = {
+  sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
   copy: 'M9 9h11v12H9Z M15 9V3H3v12h6',
   refresh: 'M20 7A9 9 0 1 0 21 14 M20 3v5h-5',
