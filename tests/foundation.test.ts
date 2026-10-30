@@ -165,9 +165,9 @@ describe('Dexie 原子持久化', () => {
     return repo.get(graph.project.id);
   }
 
-  it('未知未来 schema 不被 v1 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v2 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(2).stores({ projects: 'id' });
+    future.db.version(3).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -176,7 +176,7 @@ describe('Dexie 原子持久化', () => {
     await expect(older.open()).rejects.toThrow('数据库版本超出');
   });
 
-  it('v1 schema 保存/重开往返，快照显式排除额外属性和权限', async () => {
+  it('当前 schema 保存/重开往返，配置快照显式排除额外属性和权限', async () => {
     const repo = repository();
     const graph = await seed(repo);
     Object.assign(graph.nodes[0]!, { binary: new Blob(['not configuration']), command: 'not configuration' });

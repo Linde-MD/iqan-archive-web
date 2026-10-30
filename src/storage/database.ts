@@ -1,6 +1,8 @@
 import Dexie, { type Table } from 'dexie';
-import { createProject, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type FileReference, type ProjectSnapshot } from '../domain/model';
+import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type FileReference, type ProjectSnapshot } from '../domain/model';
 import { applyDeletion, release, revokeRelease, updateTask, validateGraph, validateTransition, type DeletionPlan } from '../domain/graph';
+import { registerCandidates, rebindReference, type FileCandidate } from '../domain/filenames';
+import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
   return {
@@ -25,6 +27,7 @@ export class ArchiveDatabase extends Dexie {
   branches!: Table<Branch, string>;
   tasks!: Table<Task, string>;
   files!: Table<FileReference, string>;
+  directoryBindings!: Table<DirectoryBinding, [string, DirectoryRole]>;
 
   constructor(name = 'iqan-archive-web') {
     super(name);
@@ -35,6 +38,17 @@ export class ArchiveDatabase extends Dexie {
       branches: 'id, projectId',
       tasks: 'id, projectId, &[projectId+loopId]',
       files: 'id, projectId, nodeId',
+    });
+    this.version(2).stores({
+      directoryBindings: '[projectId+role], projectId',
+    }).upgrade(async transaction => {
+      const versions = new Set<string>();
+      const nodes = await transaction.table<VersionNode>('nodes').toArray();
+      for (const node of nodes) {
+        const key = JSON.stringify([node.projectId, normalizeVersion(node.version)]);
+        requireCondition(!versions.has(key), 'MIGRATION_CONFLICT', '旧版本号空白归一后存在冲突，升级已取消，旧数据未改动；请使用旧版整理冲突后重试。');
+        versions.add(key);
+      }
     });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
@@ -124,6 +138,28 @@ export class ArchiveRepository {
 
   async saveTask(projectId: string, revision: number, task: Task): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => updateTask(graph, task));
+  }
+
+  async register(projectId: string, revision: number, candidates: readonly FileCandidate[]) {
+    return this.change(projectId, revision, graph => registerCandidates(graph, candidates));
+  }
+
+  async rebind(projectId: string, revision: number, fileId: string, candidate: FileCandidate) {
+    return this.change(projectId, revision, graph => rebindReference(graph, fileId, candidate));
+  }
+
+  async directoryHint(projectId: string, revision: number, role: DirectoryRole, hint: string) {
+    return this.change(projectId, revision, graph => {
+      graph.project[role === 'engineering' ? 'engineeringDirectoryHint' : 'wordDirectoryHint'] = hint.trim();
+      return graph;
+    });
+  }
+
+  async bind(projectId: string, role: DirectoryRole, handle: DirectoryHandle): Promise<void> {
+    await this.db.transaction('rw', [this.db.projects, this.db.directoryBindings], async () => {
+      requireCondition(await this.db.projects.get(projectId), 'PROJECT_NOT_FOUND', '项目不存在。');
+      await this.db.directoryBindings.put({ projectId, role, handle });
+    });
   }
 
   async release(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {

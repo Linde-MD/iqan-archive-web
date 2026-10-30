@@ -298,6 +298,20 @@ components:
     padding: 64px
 ---
 
+## IQAN Archive 当前设计适用说明（2026-10-30）
+
+当前产品采用适用于桌面工程工具的 UI/UX Pro Max Data-Dense Dashboard 布局与 Minimalism & Swiss Style 的清晰层级，不套用下方 Claude 示例品牌、字体或暖色。以下示例仅保留为辅助资料；本节为当前 UI 的实现映射。
+
+- 现代科技感来自深蓝顶栏、精确网格、冷灰背景、蓝色操作强调、轻描边与局部浅渐变，不采用霓虹发光、玻璃透明或循环动画。
+- token：主操作 `#0758c9`、悬浮 `#0647a3`、正文 `#172b45`、次要正文 `#4a6078`、背景 `#eef3f8`、面板 `#ffffff`、装饰边框 `#c6d3e2`、可操作控件边框 `#778da8`、焦点 `#0867d9`；顶栏 `#10233c` 配浅色文字。映射到现有 CSS，不引入主题切换或字体外链。
+- 系统字体 Segoe UI / Microsoft YaHei；路径/标识 Consolas，中文回退不变。正文 12–14px、区块标题 14–18px，间距主要 8/12/16/20px，主要交互命中区至少 44×44px。
+- 无活动项目时项目与创建并排；有项目时宽屏为 280px 项目侧栏与文件主区，1100px 以下改为上下布局，760px 以下单列。目录双卡、批量工具栏、局部滚动候选表、登记确认条组成文件操作闭环；规则与重绑置于原生可展开区域，保留所有功能。
+- 次要动作采用统一 20px 线性 SVG，原生按钮带可访问名称、title 及 hover/focus 文字提示；装饰 SVG 对辅助技术隐藏。主扫描、创建、全选/全不选与登记确认保留短文字；不把“图标为主”解释为删除必要标签。
+- 复选框视觉尺寸 18px，但标签命中区 44px；表头支持全选/未选/部分选中。锁定/非法行仍不可选，文字状态不依赖颜色。粘性表头仅在局部滚动容器内，不遮挡页面焦点。
+- 文本对比度至少 4.5:1，交互边界和焦点至少 3:1；减少动画时禁用按钮过渡。旧视觉验收不能代替本轮改版后的验证。
+
+检索依据：`engineering dashboard modern compact --design-system` 的营销 Hero 模式不适用于本产品，未采用；用 `data dense dashboard --domain style` 核实紧凑网格/表格方向。`computed derived state --stack vue` 用于选中计数和表头状态派生。复选框首次 UX 检索未命中，改用 `keyboard checkbox accessible name --domain ux`，采用原生控制、可访问名称及可见焦点；部分选中采用原生 checkbox `indeterminate` 属性。
+
 ## Overview
 
 This is an auxiliary warm-editorial design reference, not the mandatory visual baseline for this project. Suitable UI/UX Pro Max recommendations are the primary source for style, color, typography, components, layout, and interaction; explicit user requirements, confirmed product rules, and accessibility constraints take precedence. If this reference conflicts with a verified, applicable UI/UX Pro Max recommendation, prefer that recommendation. The cream/coral palette and reference font pairing are optional, not product requirements.

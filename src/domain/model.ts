@@ -91,6 +91,10 @@ export function normalizeLoopId(value: string | null): string | null {
   return normalized || null;
 }
 
+export function normalizeVersion(value: string): string {
+  return value.trim().replace(/[ \t]+/g, ' ');
+}
+
 export function createProject(name: string, partNumber: string): ProjectGraph {
   requireCondition(name.trim() && partNumber.trim(), 'REQUIRED', '项目名称和零件号不能为空。');
   return {

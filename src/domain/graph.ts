@@ -1,5 +1,5 @@
 import {
-  DomainError, normalizeLoopId, requireCondition,
+  DomainError, normalizeLoopId, normalizeVersion, requireCondition,
   type ProjectGraph, type Task, type VersionNode,
 } from './model';
 
@@ -36,8 +36,9 @@ export function validateGraph(graph: ProjectGraph): void {
   }
   for (const node of nodes) {
     requireCondition(node.version.trim() && node.version === node.version.trim(), 'VERSION', '版本号不能为空或含首尾空白。');
-    requireCondition(!versions.has(node.version), 'DUPLICATE_VERSION', `版本号重复：${node.version}`);
-    versions.add(node.version);
+    const versionKey = normalizeVersion(node.version);
+    requireCondition(!versions.has(versionKey), 'DUPLICATE_VERSION', `版本号重复：${node.version}`);
+    versions.add(versionKey);
     requireCondition(node.taskId === null || taskIds.has(node.taskId), 'TASK_REFERENCE', '版本引用的任务不存在。');
     requireCondition(node.releasedAt === null || Number.isFinite(Date.parse(node.releasedAt)), 'RELEASE_TIME', '放行时间无效。');
   }
@@ -76,7 +77,7 @@ export function validateGraph(graph: ProjectGraph): void {
     );
     requireCondition(
       ['.idax', '.idsx', '.idvx'].includes(file.extension)
-      && file.fileName.toLowerCase().endsWith(file.extension)
+      && file.fileName.trim().toLowerCase().endsWith(file.extension)
       && file.relativePath.split(/[\\/]/).at(-1) === file.fileName,
       'FILE_FORMAT', '工程文件类型或文件名与相对路径不一致。',
     );
@@ -257,7 +258,7 @@ export function appendVersion(
   requireCondition(new Set(parentIds).size === parentIds.length, 'DUPLICATE_PARENT', '父节点不能重复。');
   for (const id of parentIds) getNode(graph, id);
   const next = structuredClone(graph);
-  next.nodes.push({ ...node, version: node.version.trim() });
+  next.nodes.push({ ...node, version: normalizeVersion(node.version) });
   for (const parentId of parentIds) {
     next.edges.push({ id: crypto.randomUUID(), projectId: graph.project.id, parentId, childId: node.id });
   }

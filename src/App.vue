@@ -3,6 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
 import type { Project } from './domain/model';
+import ProjectFiles from './components/ProjectFiles.vue';
+import AppIcon from './components/AppIcon.vue';
 
 const db = new ArchiveDatabase();
 const repository = new ArchiveRepository(db);
@@ -15,6 +17,8 @@ const saving = ref(false);
 const error = ref('');
 const status = ref('');
 const submitted = ref(false);
+const activeProjectId = ref('');
+const filesBusy = ref(false);
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const errorHeading = ref<HTMLElement | null>(null);
@@ -84,17 +88,17 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </svg>
       <span>IQAN <strong>Archive</strong></span>
     </a>
-    <span class="local-label">本机工作区 <span aria-hidden="true">/</span> 基础阶段</span>
+    <span class="local-label"><AppIcon name="shield" /> 本地优先 <span aria-hidden="true">/</span> 工程版本工作台</span>
   </header>
 
   <main id="workspace">
     <section class="intro" aria-labelledby="page-title">
       <div>
         <p class="eyebrow">ENGINEERING WORKSPACE</p>
-        <h1 id="page-title">工程版本，从项目开始。</h1>
+        <h1 id="page-title">工程版本工作台<span class="title-accent">.</span></h1>
         <p class="lead">为 IQAN 工程建立清晰的项目边界。配置留在本机，原始文件留在原目录。</p>
       </div>
-      <span class="stage">SPEC-00 · 基础工程</span>
+      <span class="stage">SPEC-01 · 项目与文件</span>
     </section>
 
     <div v-if="error" class="error" role="alert">
@@ -108,6 +112,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
     </div>
     <p role="status" class="status">{{ status }}</p>
 
+    <div :class="['app-workspace', { 'has-project': activeProjectId }]">
     <div class="workspace-grid">
       <section class="panel projects" aria-labelledby="projects-title" :aria-busy="loading">
         <div class="section-heading">
@@ -124,12 +129,13 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         </div>
         <ul v-else class="project-list">
           <li v-for="project in projects" :key="project.id">
-            <div class="project-symbol" aria-hidden="true">P</div>
+            <div class="project-symbol"><AppIcon name="folder" /></div>
             <div class="project-info"><h3>{{ project.name }}</h3><p>软件零件号 <code>{{ project.partNumber }}</code></p></div>
             <span class="project-state">已保存</span>
+            <button class="secondary icon-button" :disabled="filesBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id" @click="activeProjectId = project.id"><AppIcon name="arrow" /></button>
           </li>
         </ul>
-        <p class="boundary">版本图与文件绑定将在后续阶段接入；当前没有可打开的图编辑器。</p>
+        <p class="boundary">选择项目进入文件工作区。完整版本图编辑器将在 SPEC-02 接入。</p>
       </section>
 
       <section class="panel" aria-labelledby="create-title">
@@ -143,16 +149,19 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
           <label for="part-number">软件零件号 <span>必填</span></label>
           <input id="part-number" v-model="partNumber" name="partNumber" required :disabled="saving" :aria-invalid="partError" :aria-describedby="partError ? 'part-error' : undefined" placeholder="例如：14798046801" />
           <p v-if="partError" id="part-error" class="field-error">请输入软件零件号，不能仅包含空白。</p>
-          <button type="submit" :disabled="saving || loading">{{ saving ? '正在保存…' : '创建项目' }}</button>
+          <button type="submit" :disabled="saving || loading"><AppIcon name="plus" />{{ saving ? '正在保存…' : '创建项目' }}</button>
         </form>
       </section>
+    </div>
+
+    <ProjectFiles v-if="activeProjectId" :key="activeProjectId" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">
       <div class="notice-mark" aria-hidden="true">i</div>
       <div>
         <h2 id="storage-title">本地存储，不等于永久备份</h2>
-        <p>项目配置保存在当前站点的浏览器 IndexedDB 中，不上传云端。清除浏览器数据可能导致配置丢失。工程和 Word 原文件不存入数据库；JSON 备份与恢复将在 SPEC-03 提供，当前尚不可用。</p>
+        <p>项目配置保存在当前站点的浏览器 IndexedDB 中，不上传云端。清除浏览器数据可能导致配置丢失。工程和软件对比文档原文件不存入数据库；JSON 备份与恢复将在 SPEC-03 提供，当前尚不可用。</p>
       </div>
     </section>
     <footer><span>IQAN Archive</span><span>静态前端 · 无需登录 · 不依赖启动器</span></footer>
