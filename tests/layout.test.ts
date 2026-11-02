@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
-import { layoutDag, LAYOUT } from '../src/domain/layout';
+import { layoutDag, LAYOUT, relationForDropPoint } from '../src/domain/layout';
 
 function graph(edges: [string, string][]) {
   const g = createProject('工程', '123');
@@ -12,6 +12,27 @@ function graph(edges: [string, string][]) {
 }
 
 describe('DAG 分层布局', () => {
+  it('拖放方向按版本排序模式决定，节点本体仍作为子节点投放', () => {
+    const position = { x: 100, y: 100 };
+    const points = {
+      top: { x: 200, y: 90 },
+      right: { x: 310, y: 128 },
+      bottom: { x: 200, y: 170 },
+      left: { x: 90, y: 128 },
+      inside: { x: 200, y: 128 },
+    };
+    expect(Object.fromEntries(
+      Object.entries(points).map(([direction, point]) => [
+        direction, relationForDropPoint(position, point, 'newest'),
+      ]),
+    )).toEqual({ top: 'child', right: 'child', bottom: 'parent', left: 'parent', inside: 'child' });
+    expect(Object.fromEntries(
+      Object.entries(points).map(([direction, point]) => [
+        direction, relationForDropPoint(position, point, 'oldest'),
+      ]),
+    )).toEqual({ top: 'parent', right: 'child', bottom: 'child', left: 'parent', inside: 'child' });
+  });
+
   it('线性链按深度依次排布，坐标落在网格上', () => {
     const layout = layoutDag(graph([['A', 'B'], ['B', 'C'], ['C', 'D']]));
     const pos = layout.positions;

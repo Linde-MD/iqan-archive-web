@@ -153,6 +153,21 @@ describe('Dexie 原子持久化', () => {
     return repo.get(graph.project.id);
   }
 
+  it('父节点集合通过项目修订事务持久化并拒绝陈旧修订', async () => {
+    const repo = repository();
+    const graph = await seed(repo);
+    const updated = await repo.saveNodeParents(graph.project.id, graph.project.revision, 'D', ['R']);
+    expect(updated.project.revision).toBe(graph.project.revision + 1);
+    expect(updated.edges.filter(edge => edge.childId === 'D').map(edge => edge.parentId)).toEqual(['R']);
+    await expect(repo.saveNodeParents(graph.project.id, graph.project.revision, 'D', ['M']))
+      .rejects.toThrow('其他标签页已更新项目');
+    const stored = await repo.get(graph.project.id);
+    expect(stored.project.revision).toBe(updated.project.revision);
+    expect(stored.edges.map(edge => [edge.parentId, edge.childId]).sort()).toEqual(
+      updated.edges.map(edge => [edge.parentId, edge.childId]).sort(),
+    );
+  });
+
   it('删除项目需名称确认和最新修订，原子删除所有所属数据及绑定，不影响其他项目', async () => {
     const repo = repository();
     let graph = await seed(repo);

@@ -20,6 +20,22 @@ export const LAYOUT = {
   verticalGap: 44,
 } as const;
 
+export function relationForDropPoint(position: Point, point: Point, order: VersionOrder): 'parent' | 'child' {
+  const left = position.x;
+  const right = left + LAYOUT.nodeWidth;
+  const top = position.y;
+  const bottom = top + LAYOUT.nodeHeight;
+  const dx = Math.max(left - point.x, 0, point.x - right);
+  const dy = Math.max(top - point.y, 0, point.y - bottom);
+  if (dx === 0 && dy === 0) return 'child';
+
+  if (dy >= dx) {
+    if (point.y < top) return order === 'oldest' ? 'parent' : 'child';
+    return order === 'oldest' ? 'child' : 'parent';
+  }
+  return point.x < left ? 'parent' : 'child';
+}
+
 /**
  * Layered DAG layout (Sugiyama first pass).
  * Depth is the longest path from any root, so merge targets land after all

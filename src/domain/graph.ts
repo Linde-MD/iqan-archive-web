@@ -272,6 +272,33 @@ export function mergeVersion(
   return appendVersion(graph, node, parentIds, targetBranchId);
 }
 
+export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: readonly string[]): ProjectGraph {
+  validateGraph(graph);
+  const child = getNode(graph, childId);
+  requireCondition(new Set(parentIds).size === parentIds.length, 'DUPLICATE_PARENT', '父节点不能重复。');
+  const currentParents = graph.edges.filter(edge => edge.childId === childId).map(edge => edge.parentId);
+  if (currentParents.length === parentIds.length && currentParents.every(id => parentIds.includes(id))) {
+    return structuredClone(graph);
+  }
+  requireCondition(child.releasedAt === null, 'RELEASE_LOCK', '已放行版本的父边已锁定，不能调整父节点。');
+  for (const id of parentIds) {
+    requireCondition(id !== childId, 'SELF_PARENT', '版本不能成为自己的父节点。');
+    getNode(graph, id);
+  }
+  const next = structuredClone(graph);
+  const retained = new Map(
+    next.edges.filter(edge => edge.childId === childId).map(edge => [edge.parentId, edge]),
+  );
+  next.edges = next.edges.filter(edge => edge.childId !== childId);
+  for (const parentId of parentIds) {
+    next.edges.push(retained.get(parentId) ?? {
+      id: crypto.randomUUID(), projectId: graph.project.id, parentId, childId,
+    });
+  }
+  validateTransition(graph, next);
+  return next;
+}
+
 export interface NodeUpdate {
   version?: string;
   description?: string;

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import { liveQuery } from 'dexie';
 import type { Branch, ProjectGraph, VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
-import { layoutDag, LAYOUT, type Point } from '../domain/layout';
+import { layoutDag, LAYOUT, relationForDropPoint, type Point } from '../domain/layout';
 import { orderedVersionNodes, type VersionOrder } from '../domain/version-order';
 import { planDeletion, type DeletionPlan } from '../domain/graph';
 import AppIcon from './AppIcon.vue';
@@ -23,11 +23,24 @@ const status = ref('');
 const saving = ref(false);
 const errorHeading = ref<HTMLElement>();
 const svgEl = ref<SVGSVGElement>();
+const graphScroller = ref<HTMLDivElement>();
 
 const viewport = ref({ scale: 1, x: 40, y: 40 });
 const selected = ref<string[]>([]);
 const menu = ref<{ x: number; y: number; nodeId: string } | null>(null);
-const panel = ref<'node-add' | 'node-edit' | 'branch-add' | 'branch-edit' | 'merge' | null>(null);
+const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'branch-add' | 'branch-edit' | 'merge' | null>(null);
+const parentEditNodeId = ref<string | null>(null);
+const dragPreview = ref<{ nodeId: string; x: number; y: number } | null>(null);
+const dropTarget = ref<{ nodeId: string; relation: 'parent' | 'child' } | null>(null);
+const pointerHint = ref('');
+const relationConflict = ref<{ parentId: string; childId: string; revision: number; oldParents: string[] } | null>(null);
+const isPanning = ref(false);
+
+type ActivePointer =
+  | { kind: 'pan'; pointerId: number; x: number; y: number; viewportX: number; viewportY: number }
+  | { kind: 'node'; pointerId: number; nodeId: string; x: number; y: number; offsetX: number; offsetY: number; moved: boolean };
+let activePointer: ActivePointer | null = null;
+let suppressClick: { nodeId: string; until: number } | null = null;
 
 // Form state
 const form = ref({
@@ -44,6 +57,10 @@ const form = ref({
 
 const orderedNodes = computed(() => graph.value ? orderedVersionNodes(graph.value, versionOrder.value) : []);
 const layout = computed(() => (graph.value ? layoutDag(graph.value, versionOrder.value) : { positions: new Map<string, Point>(), width: 0, height: 0 }));
+const canvasHeight = computed(() => Math.max(
+  420,
+  Math.ceil(viewport.value.y + layout.value.height * viewport.value.scale + 40),
+));
 const nodeById = computed(() => new Map((graph.value?.nodes ?? []).map(node => [node.id, node])));
 const parentIdsOf = computed(() => {
   const map = new Map<string, string[]>();
@@ -70,8 +87,16 @@ const selectedNode = computed(() => {
   if (selected.value.length !== 1) return undefined;
   return nodeById.value.get(selected.value[0]!);
 });
+const parentEditNode = computed(() => graph.value?.nodes.find(node => node.id === parentEditNodeId.value));
 const selectedSet = computed(() => new Set(selected.value));
 const editingBranch = computed(() => (form.value.branchId ? graph.value?.branches.find(item => item.id === form.value.branchId) : undefined));
+const parentSelectionUnchanged = computed(() => {
+  const node = parentEditNode.value;
+  if (!node) return true;
+  const current = [...(parentIdsOf.value.get(node.id) ?? [])].sort();
+  const updated = [...form.value.parentIds].sort();
+  return current.length === updated.length && current.every((id, index) => id === updated[index]);
+});
 
 function showError(cause: unknown) {
   error.value = cause instanceof Error ? cause.message : '图操作失败，请重试。';
@@ -96,11 +121,12 @@ async function refresh() {
 
 function centerViewport() {
   const target = graph.value;
-  if (!target || !svgEl.value) return;
-  const rect = svgEl.value.getBoundingClientRect();
+  if (!target || !graphScroller.value) return;
+  const rect = graphScroller.value.getBoundingClientRect();
   const l = layout.value;
-  const scale = Math.min(1, Math.max(0.2, (rect.width - 80) / Math.max(l.width, 1), (rect.height - 80) / Math.max(l.height, 1)));
+  const scale = Math.min(1, Math.max(0.2, (rect.width - 80) / Math.max(l.width, 1)));
   viewport.value = { scale, x: 40, y: 40 };
+  graphScroller.value.scrollTop = 0;
 }
 
 function zoomBy(factor: number) {
@@ -109,8 +135,10 @@ function zoomBy(factor: number) {
 }
 
 function onWheel(event: WheelEvent) {
+  if (!event.ctrlKey) return;
   event.preventDefault();
-  const rect = svgEl.value!.getBoundingClientRect();
+  const rect = svgEl.value?.getBoundingClientRect();
+  if (!rect) return;
   const px = event.clientX - rect.left;
   const py = event.clientY - rect.top;
   const factor = event.deltaY < 0 ? 1.1 : 0.9;
@@ -123,23 +151,201 @@ function onWheel(event: WheelEvent) {
   };
 }
 
-let panning = false;
-let panStart = { x: 0, y: 0, vx: 0, vy: 0 };
-function onCanvasPointerDown(event: PointerEvent) {
-  if (event.button !== 0) return;
-  panning = true;
-  panStart = { x: event.clientX, y: event.clientY, vx: viewport.value.x, vy: viewport.value.y };
-  (event.target as Element).setPointerCapture?.(event.pointerId);
-}
-function onCanvasPointerMove(event: PointerEvent) {
-  if (!panning) return;
-  viewport.value = {
-    ...viewport.value,
-    x: panStart.vx + (event.clientX - panStart.x),
-    y: panStart.vy + (event.clientY - panStart.y),
+function canvasPoint(clientX: number, clientY: number): Point | null {
+  const rect = svgEl.value?.getBoundingClientRect();
+  if (!rect) return null;
+  return {
+    x: (clientX - rect.left - viewport.value.x) / viewport.value.scale,
+    y: (clientY - rect.top - viewport.value.y) / viewport.value.scale,
   };
 }
-function onCanvasPointerUp() { panning = false; }
+
+function nodePosition(nodeId: string): Point {
+  if (dragPreview.value?.nodeId === nodeId) return { x: dragPreview.value.x, y: dragPreview.value.y };
+  return layout.value.positions.get(nodeId) ?? { x: 0, y: 0 };
+}
+
+function findDropTarget(draggedId: string, x: number, y: number) {
+  const threshold = 52 / viewport.value.scale;
+  let best: { nodeId: string; relation: 'parent' | 'child'; distance: number } | null = null;
+  for (const node of orderedNodes.value) {
+    if (node.id === draggedId) continue;
+    const position = layout.value.positions.get(node.id);
+    if (!position) continue;
+    const left = position.x;
+    const right = left + LAYOUT.nodeWidth;
+    const top = position.y;
+    const bottom = top + LAYOUT.nodeHeight;
+    const dx = Math.max(left - x, 0, x - right);
+    const dy = Math.max(top - y, 0, y - bottom);
+    const distance = Math.hypot(dx, dy);
+    if (distance > threshold || (best && distance >= best.distance)) continue;
+    const relation = relationForDropPoint(position, { x, y }, versionOrder.value);
+    best = { nodeId: node.id, relation, distance };
+  }
+  return best && { nodeId: best.nodeId, relation: best.relation };
+}
+
+function onCanvasPointerDown(event: PointerEvent) {
+  if (event.button !== 0 || saving.value || panel.value || relationConflict.value || deletionPlan.value) return;
+  menu.value = null;
+  const target = event.target instanceof Element ? event.target.closest<SVGGElement>('.graph-node') : null;
+  if (target?.dataset.nodeId) {
+    const nodeId = target.dataset.nodeId;
+    const position = layout.value.positions.get(nodeId);
+    const point = canvasPoint(event.clientX, event.clientY);
+    if (!position || !point) return;
+    activePointer = {
+      kind: 'node', pointerId: event.pointerId, nodeId, x: event.clientX, y: event.clientY,
+      offsetX: point.x - position.x, offsetY: point.y - position.y, moved: false,
+    };
+    target.setPointerCapture(event.pointerId);
+    return;
+  }
+  const svg = svgEl.value;
+  if (!svg) return;
+  activePointer = {
+    kind: 'pan', pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+    viewportX: viewport.value.x, viewportY: viewport.value.y,
+  };
+  isPanning.value = true;
+  svg.setPointerCapture(event.pointerId);
+}
+
+function onCanvasPointerMove(event: PointerEvent) {
+  const active = activePointer;
+  if (!active || active.pointerId !== event.pointerId) return;
+  if (active.kind === 'pan') {
+    viewport.value = {
+      ...viewport.value,
+      x: active.viewportX + (event.clientX - active.x),
+      y: active.viewportY + (event.clientY - active.y),
+    };
+    return;
+  }
+  if (!active.moved && Math.hypot(event.clientX - active.x, event.clientY - active.y) < 5) return;
+  active.moved = true;
+  const point = canvasPoint(event.clientX, event.clientY);
+  if (!point) return;
+  const x = point.x - active.offsetX;
+  const y = point.y - active.offsetY;
+  dragPreview.value = { nodeId: active.nodeId, x, y };
+  const pointer = canvasPoint(event.clientX, event.clientY);
+  const target = pointer ? findDropTarget(active.nodeId, pointer.x, pointer.y) : null;
+  dropTarget.value = target;
+  pointerHint.value = target
+    ? target.relation === 'child' ? `松开以使 ${nodeById.value.get(active.nodeId)?.version} 成为 ${nodeById.value.get(target.nodeId)?.version} 的子节点`
+      : `松开以使 ${nodeById.value.get(active.nodeId)?.version} 成为 ${nodeById.value.get(target.nodeId)?.version} 的父节点`
+    : '松开将取消关系修改，节点会回到原位';
+}
+
+function clearPointerState() {
+  activePointer = null;
+  isPanning.value = false;
+  dragPreview.value = null;
+  dropTarget.value = null;
+  pointerHint.value = '';
+}
+
+function onCanvasPointerUp(event: PointerEvent) {
+  const active = activePointer;
+  if (!active || active.pointerId !== event.pointerId) return;
+  if (active.kind !== 'node' || !active.moved) {
+    clearPointerState();
+    return;
+  }
+  const target = dropTarget.value;
+  const draggedId = active.nodeId;
+  suppressClick = { nodeId: draggedId, until: performance.now() + 250 };
+  clearPointerState();
+  if (!target) {
+    status.value = '未投放到有效节点，父子关系未修改。';
+    return;
+  }
+  const parentId = target.relation === 'child' ? target.nodeId : draggedId;
+  const childId = target.relation === 'child' ? draggedId : target.nodeId;
+  void requestParentChange(parentId, childId);
+}
+
+function onCanvasPointerCancel(event: PointerEvent) {
+  if (activePointer?.pointerId === event.pointerId) clearPointerState();
+}
+
+function onNodeClick(nodeId: string, additive: boolean) {
+  if (suppressClick?.nodeId === nodeId && performance.now() < suppressClick.until) {
+    suppressClick = null;
+    return;
+  }
+  selectNode(nodeId, additive);
+}
+
+async function requestParentChange(parentId: string, childId: string) {
+  const current = graph.value;
+  if (!current) return;
+  const child = nodeById.value.get(childId);
+  if (!child) return showError(new Error('子节点不存在，请刷新版本图后重试。'));
+  if (child.releasedAt) return showError(new Error('已放行版本的父边已锁定，不能调整父节点。'));
+  const currentParents = parentIdsOf.value.get(childId) ?? [];
+  if (currentParents.includes(parentId)) {
+    status.value = '该父子关系已存在，未写入。';
+    return;
+  }
+  if (currentParents.length) {
+    relationConflict.value = {
+      parentId, childId, revision: current.project.revision, oldParents: [...currentParents],
+    };
+    return;
+  }
+  await saveParentSet(childId, [parentId]);
+}
+
+async function saveParentSet(childId: string, parentIds: readonly string[]) {
+  await operation(async () => {
+    const current = graph.value!;
+    graph.value = await props.repository.saveNodeParents(
+      props.projectId, current.project.revision, childId, parentIds,
+    );
+    status.value = '父子关系已更新。';
+    relationConflict.value = null;
+    panel.value = null;
+  });
+}
+
+async function resolveParentConflict(choice: 'cancel' | 'replace' | 'merge') {
+  const conflict = relationConflict.value;
+  if (!conflict) return;
+  if (choice === 'cancel') {
+    relationConflict.value = null;
+    status.value = '已放弃父子关系修改。';
+    return;
+  }
+  const current = graph.value;
+  const currentParents = parentIdsOf.value.get(conflict.childId) ?? [];
+  if (!current || current.project.revision !== conflict.revision
+    || currentParents.length !== conflict.oldParents.length
+    || conflict.oldParents.some(id => !currentParents.includes(id))) {
+    relationConflict.value = null;
+    showError(new Error('项目已更新，父节点冲突信息已过期，请重新执行操作。'));
+    return;
+  }
+  const oldParents = conflict.oldParents;
+  const parents = choice === 'replace' ? [conflict.parentId] : [...oldParents, conflict.parentId];
+  await saveParentSet(conflict.childId, parents);
+}
+
+function openParentEdit() {
+  const node = selectedNode.value;
+  if (!node) return;
+  resetForm();
+  parentEditNodeId.value = node.id;
+  form.value.parentIds = [...(parentIdsOf.value.get(node.id) ?? [])];
+  panel.value = 'parent-edit';
+}
+
+async function submitParentEdit() {
+  const node = parentEditNode.value;
+  if (node) await saveParentSet(node.id, form.value.parentIds);
+}
 
 function selectNode(nodeId: string, additive: boolean) {
   if (additive) {
@@ -170,8 +376,7 @@ function branchLabelOffset(branch: Branch, index: number) {
 }
 
 function nodeCenter(id: string): Point {
-  const p = layout.value.positions.get(id);
-  if (!p) return { x: 0, y: 0 };
+  const p = nodePosition(id);
   return { x: p.x + LAYOUT.nodeWidth / 2, y: p.y + LAYOUT.nodeHeight / 2 };
 }
 function edgePath(parentId: string, childId: string): string {
@@ -315,7 +520,7 @@ async function toggleRelease() {
 
 watch(() => props.projectId, () => { void refresh(); });
 onMounted(() => { void refresh(); });
-watch(layout, () => { if (graph.value && !panning) centerViewport(); });
+watch(layout, () => { if (graph.value && !activePointer) centerViewport(); }, { flush: 'post' });
 </script>
 
 <template>
@@ -343,6 +548,7 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
       <div class="actions">
         <button :disabled="saving || (selected.length !== 1 && graph.nodes.length !== 0)" @click="openNodeAdd"><AppIcon name="plus" />{{ graph.nodes.length === 0 ? '新增根版本' : '新增子版本' }}</button>
         <button class="secondary" :disabled="saving || selected.length !== 1" @click="openNodeEdit"><AppIcon name="edit" />编辑</button>
+        <button class="secondary" :disabled="saving || selected.length !== 1" @click="openParentEdit"><AppIcon name="link" />编辑父节点</button>
         <button class="secondary" :disabled="saving || selected.length < 2" @click="openMerge"><AppIcon name="merge" />合并</button>
         <button class="secondary" :disabled="saving || selected.length !== 1" @click="toggleRelease"><AppIcon :name="selectedNode?.releasedAt ? 'unrelease' : 'release'" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
         <button class="secondary" :disabled="saving || selected.length !== 1" @click="openDelete"><AppIcon name="trash" />删除</button>
@@ -354,54 +560,71 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
     </div>
 
     <div v-if="graph" class="graph-layout">
-      <svg
-        ref="svgEl"
-        class="graph-svg"
-        role="application"
-        aria-label="版本分支图画布"
-        @wheel.prevent="onWheel"
-        @pointerdown="onCanvasPointerDown"
-        @pointermove="onCanvasPointerMove"
-        @pointerup="onCanvasPointerUp"
-        @pointercancel="onCanvasPointerUp"
+      <div
+        ref="graphScroller"
+        class="graph-canvas-scroll"
+        role="region"
+        tabindex="0"
+        aria-label="版本分支图滚动区域"
       >
-        <defs>
-          <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0L10 5L0 10Z" fill="#6b84a1" />
-          </marker>
-        </defs>
-        <g :transform="`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`">
-          <g v-for="edge in graph.edges" :key="edge.id">
-            <path :d="edgePath(edge.parentId, edge.childId)" class="graph-edge" :marker-end="'url(#graph-arrow)'" />
-          </g>
-
-          <g v-for="node in orderedNodes" :key="node.id">
-            <!-- branch head labels -->
-            <g v-for="(branch, index) in branchHeads.get(node.id) ?? []" :key="branch.id" class="graph-branch-label" :transform="`translate(${layout.positions.get(node.id)!.x + 8} ${layout.positions.get(node.id)!.y + branchLabelOffset(branch, index).y})`">
-              <rect :width="Math.max(56, branch.name.length * 12 + 20)" height="18" rx="4" :fill="branch.color" />
-              <text x="10" y="13" class="graph-branch-text">{{ branch.name }}</text>
+        <svg
+          ref="svgEl"
+          class="graph-svg"
+          :class="{ 'is-panning': isPanning }"
+          :style="{ height: `${canvasHeight}px` }"
+          role="application"
+          aria-label="版本分支图画布。普通滚轮上下滚动图区域，Ctrl 加滚轮缩放。"
+          @wheel="onWheel"
+          @pointerdown="onCanvasPointerDown"
+          @pointermove="onCanvasPointerMove"
+          @pointerup="onCanvasPointerUp"
+          @pointercancel="onCanvasPointerCancel"
+        >
+          <defs>
+            <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#6b84a1" />
+            </marker>
+          </defs>
+          <g :transform="`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`">
+            <g v-for="edge in graph.edges" :key="edge.id">
+              <path :d="edgePath(edge.parentId, edge.childId)" class="graph-edge" :marker-end="'url(#graph-arrow)'" />
             </g>
 
-            <g
-              class="graph-node"
-              :class="{ selected: selectedSet.has(node.id), released: node.releasedAt }"
-              :transform="`translate(${layout.positions.get(node.id)!.x} ${layout.positions.get(node.id)!.y})`"
-              role="button"
-              tabindex="0"
-              :title="node.description || undefined"
-              :aria-label="`版本 ${node.version}${node.releasedAt ? '，已放行' : '，未放行'}`"
-              @click="selectNode(node.id, $event.ctrlKey || $event.metaKey)"
-              @keydown.enter.prevent="selectNode(node.id, $event.ctrlKey || $event.metaKey)"
-              @keydown.space.prevent="selectNode(node.id, $event.ctrlKey || $event.metaKey)"
-              @contextmenu="openMenu($event, node.id)"
-            >
-              <rect width="200" height="56" rx="10" class="graph-node-box" />
-              <text :x="LAYOUT.nodeWidth / 2" y="24" text-anchor="middle" class="graph-node-version">{{ node.version }}</text>
-              <text :x="LAYOUT.nodeWidth / 2" y="43" text-anchor="middle" class="graph-node-state">{{ node.releasedAt ? '已放行' : '未放行' }}</text>
+            <g v-for="node in orderedNodes" :key="node.id">
+              <g v-for="(branch, index) in branchHeads.get(node.id) ?? []" :key="branch.id" class="graph-branch-label" :transform="`translate(${nodePosition(node.id).x + 8} ${nodePosition(node.id).y + branchLabelOffset(branch, index).y})`">
+                <rect :width="Math.max(56, branch.name.length * 12 + 20)" height="18" rx="4" :fill="branch.color" />
+                <text x="10" y="13" class="graph-branch-text">{{ branch.name }}</text>
+              </g>
+
+              <g
+                class="graph-node"
+                :class="{
+                  selected: selectedSet.has(node.id),
+                  released: node.releasedAt,
+                  'drag-preview': dragPreview?.nodeId === node.id,
+                  'drop-parent': dropTarget?.nodeId === node.id && dropTarget.relation === 'parent',
+                  'drop-child': dropTarget?.nodeId === node.id && dropTarget.relation === 'child',
+                }"
+                :data-node-id="node.id"
+                :transform="`translate(${nodePosition(node.id).x} ${nodePosition(node.id).y})`"
+                role="button"
+                tabindex="0"
+                :title="node.description || undefined"
+                :aria-label="`版本 ${node.version}${node.releasedAt ? '，已放行' : '，未放行'}`"
+                @click="onNodeClick(node.id, $event.ctrlKey || $event.metaKey)"
+                @keydown.enter.prevent="selectNode(node.id, $event.ctrlKey || $event.metaKey)"
+                @keydown.space.prevent="selectNode(node.id, $event.ctrlKey || $event.metaKey)"
+                @contextmenu="openMenu($event, node.id)"
+              >
+                <rect width="200" height="56" rx="10" class="graph-node-box" />
+                <text :x="LAYOUT.nodeWidth / 2" y="24" text-anchor="middle" class="graph-node-version">{{ node.version }}</text>
+                <text :x="LAYOUT.nodeWidth / 2" y="43" text-anchor="middle" class="graph-node-state">{{ node.releasedAt ? '已放行' : '未放行' }}</text>
+              </g>
             </g>
           </g>
-        </g>
-      </svg>
+        </svg>
+        <p class="graph-pointer-hint" aria-live="polite">{{ pointerHint }}</p>
+      </div>
 
       <div v-if="menu" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" :aria-label="`节点 ${menu.nodeId} 菜单`">
         <button role="menuitem" :disabled="saving" @click="selected = [menu.nodeId]; openNodeEdit(); menu = null"><AppIcon name="edit" />编辑节点</button>
@@ -416,6 +639,7 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
         <p class="workspace-details">状态：{{ selectedNode.releasedAt ? '已放行' : '未放行' }}<span v-if="selectedNode.releasedAt"> · {{ formatReleasedAt(selectedNode.releasedAt) }}</span></p>
         <p class="workspace-details">父节点：{{ (parentIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无（根节点）' }}</p>
         <p class="workspace-details">子节点：{{ (childIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无' }}</p>
+        <button class="secondary" :disabled="saving" @click="openParentEdit"><AppIcon name="link" />编辑父节点</button>
         <div v-if="(branchHeads.get(selectedNode.id) ?? []).length" class="workspace-details">
           <p>分支头：</p>
           <ul class="graph-branch-list">
@@ -438,6 +662,39 @@ watch(layout, () => { if (graph.value && !panning) centerViewport(); });
           </li>
         </ul>
       </aside>
+    </div>
+
+    <div v-if="relationConflict" class="graph-form" role="dialog" aria-modal="false" aria-labelledby="parent-conflict-title">
+      <h3 id="parent-conflict-title">该版本已有父节点</h3>
+      <p>
+        将 <strong>{{ nodeById.get(relationConflict.childId)?.version }}</strong>
+        设为 <strong>{{ nodeById.get(relationConflict.parentId)?.version }}</strong> 的子节点时，已有父节点：
+        {{ relationConflict.oldParents.map(id => nodeById.get(id)?.version ?? id).join('、') }}。
+      </p>
+      <p class="form-help">替换会移除全部旧父边；合并会保留旧父边并新增此次关系。放弃不会修改图。</p>
+      <div class="actions">
+        <button class="secondary" :disabled="saving" @click="resolveParentConflict('cancel')"><AppIcon name="clear" />放弃</button>
+        <button class="secondary" :disabled="saving" @click="resolveParentConflict('replace')"><AppIcon name="link" />替换旧父边</button>
+        <button :disabled="saving" @click="resolveParentConflict('merge')"><AppIcon name="merge" />合并父边</button>
+      </div>
+    </div>
+
+    <div v-if="panel === 'parent-edit'" class="graph-form" role="dialog" aria-modal="false" aria-labelledby="parent-edit-title">
+      <h3 id="parent-edit-title">编辑父节点 · {{ parentEditNode?.version }}</h3>
+      <p v-if="parentEditNode?.releasedAt" class="form-help">已放行版本的父边已锁定，当前仅可查看。</p>
+      <form @submit.prevent="submitParentEdit">
+        <fieldset class="graph-parent-picker" :disabled="saving || !!parentEditNode?.releasedAt">
+          <legend>选择完整父节点集合</legend>
+          <label v-for="node in orderedNodes.filter(node => node.id !== parentEditNode?.id)" :key="node.id" class="graph-parent-option">
+            <input v-model="form.parentIds" type="checkbox" :value="node.id" />{{ node.version }}
+          </label>
+        </fieldset>
+        <p class="form-help">留空表示该版本为根节点。关系修改不自动改变分支头。</p>
+        <div class="actions">
+          <button type="submit" :disabled="saving || !parentEditNode || !!parentEditNode.releasedAt || parentSelectionUnchanged"><AppIcon name="check" />保存父节点</button>
+          <button type="button" class="secondary" :disabled="saving" @click="panel = null"><AppIcon name="clear" />取消</button>
+        </div>
+      </form>
     </div>
 
     <p v-else class="empty">正在读取版本图…</p>

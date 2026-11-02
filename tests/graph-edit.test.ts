@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject, type ProjectGraph } from '../src/domain/model';
-import { createBranch, release, updateBranch, updateNode } from '../src/domain/graph';
+import { createBranch, release, setNodeParents, updateBranch, updateNode } from '../src/domain/graph';
 
 function fixture(): ProjectGraph {
   const graph = createProject('工程', '123');
@@ -12,6 +12,34 @@ function fixture(): ProjectGraph {
 }
 
 describe('节点与分支编辑', () => {
+  it('父节点集合可替换并保留其他图数据及未变化父边身份', () => {
+    const graph = fixture();
+    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null });
+    const next = setNodeParents(graph, 'B', ['C']);
+    expect(next.edges).toHaveLength(1);
+    expect(next.edges[0]).toMatchObject({ parentId: 'C', childId: 'B' });
+    expect(next.nodes).toEqual(graph.nodes);
+    expect(next.branches).toEqual(graph.branches);
+    expect(graph.edges[0]).toMatchObject({ id: 'e', parentId: 'A', childId: 'B' });
+  });
+
+  it('父节点合并保留既有边且拒绝重复、自引用、悬空和成环关系', () => {
+    const graph = fixture();
+    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null });
+    const next = setNodeParents(graph, 'B', ['A', 'C']);
+    expect(next.edges.map(edge => edge.id)).toContain('e');
+    expect(next.edges.filter(edge => edge.childId === 'B').map(edge => edge.parentId).sort()).toEqual(['A', 'C']);
+    expect(() => setNodeParents(graph, 'B', ['A', 'A'])).toThrow('不能重复');
+    expect(() => setNodeParents(graph, 'B', ['B'])).toThrow('自己的父节点');
+    expect(() => setNodeParents(graph, 'B', ['missing'])).toThrow('节点不存在');
+    expect(() => setNodeParents(graph, 'A', ['B'])).toThrow('成环');
+  });
+
+  it('已放行 child 的父边不可修改', () => {
+    const released = release(fixture(), 'B', '2026-01-01T00:00:00.000Z');
+    expect(() => setNodeParents(released, 'B', [])).toThrow('已放行版本的父边已锁定');
+  });
+
   it('updateNode 修改版本/说明/任务引用，保持身份', () => {
     const next = updateNode(fixture(), 'A', { version: 'v1', description: ' 说明 ', taskId: 't' });
     expect(next.nodes[0]!.id).toBe('A');

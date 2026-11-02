@@ -127,13 +127,18 @@ tbody tr.row-selected { background: #eaf2fe; }
 .graph-meta > span:not(.count) { color: var(--muted); font-size: 12px; }
 .graph-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; }
 .graph-layout { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
-.graph-svg { width: 100%; min-height: 420px; background: #fbfdff; border: 1px solid var(--border); border-radius: 10px; cursor: grab; touch-action: none; display: block; }
-.graph-svg:active { cursor: grabbing; }
+.graph-canvas-scroll { position: relative; min-width: 0; height: min(70vh, 640px); min-height: 420px; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior-y: contain; border-radius: 10px; }
+.graph-canvas-scroll:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.graph-svg { width: 100%; min-height: 420px; background: #fbfdff; border: 1px solid var(--border); border-radius: 10px; cursor: grab; touch-action: pan-y; display: block; overflow: visible; }
+.graph-svg.is-panning { cursor: grabbing; }
 .graph-edge { fill: none; stroke: #6b84a1; stroke-width: 1.6; }
-.graph-node { cursor: pointer; }
+.graph-node { cursor: grab; }
+.graph-node.drag-preview { opacity: .78; }
 .graph-node-box { fill: var(--surface); stroke: #8aa2be; stroke-width: 1.5; }
 .graph-node.released .graph-node-box { stroke: #146448; }
 .graph-node.selected .graph-node-box { fill: #eaf2fe; stroke: var(--primary); stroke-width: 2.4; }
+.graph-node.drop-parent .graph-node-box { stroke: #6d28d9; stroke-width: 3; stroke-dasharray: 6 3; }
+.graph-node.drop-child .graph-node-box { stroke: #146448; stroke-width: 3; }
 .graph-node:focus-visible { outline: none; }
 .graph-node:focus-visible .graph-node-box { stroke: var(--focus); stroke-width: 3; }
 .graph-node-version { font-size: 13px; font-weight: 650; fill: var(--ink); }
@@ -154,10 +159,14 @@ tbody tr.row-selected { background: #eaf2fe; }
 .graph-form { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px; padding: 16px; background: #fbfdff; }
 .graph-form form { max-width: 720px; }
 .graph-form label { justify-content: flex-start; gap: 8px; }
+.graph-form fieldset { min-width: 0; border: 0; padding: 0; }
+.graph-form legend { font-weight: 600; margin-bottom: 8px; }
 .graph-parent-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
 .graph-parent-option { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; font-weight: 400; }
 .graph-parent-option input { width: auto; min-height: 0; margin: 0; accent-color: var(--primary); }
 .graph-parent-option:has(input:checked) { background: #eaf2fe; border-color: var(--primary); }
+.graph-pointer-hint { position: sticky; left: 12px; bottom: 12px; z-index: 2; width: fit-content; max-width: calc(100% - 24px); margin: -44px 12px 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 12px; pointer-events: none; }
+.graph-pointer-hint:empty { display: none; }
 
 .notice { margin-top: 20px; display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; background: #e6effc; border: 1px solid #b8cee9; border-radius: 10px; }
 .notice-mark { width: 22px; height: 22px; border: 1px solid #285c98; color: #285c98; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; font-family: Georgia, serif; }

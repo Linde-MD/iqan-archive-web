@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, appendVersion, createBranch, mergeVersion, release, revokeRelease, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type NodeUpdate } from '../domain/graph';
+import { applyDeletion, appendVersion, createBranch, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 
@@ -197,6 +197,10 @@ export class ArchiveRepository {
 
   async saveNode(projectId: string, revision: number, nodeId: string, update: NodeUpdate): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => updateNode(graph, nodeId, update));
+  }
+
+  async saveNodeParents(projectId: string, revision: number, childId: string, parentIds: readonly string[]): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => setNodeParents(graph, childId, parentIds));
   }
 
   async saveBranch(projectId: string, revision: number, branchId: string, update: BranchUpdate): Promise<ProjectGraph> {
