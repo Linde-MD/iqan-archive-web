@@ -433,6 +433,7 @@ export function updateNode(graph: ProjectGraph, nodeId: string, update: NodeUpda
 }
 
 export interface BranchUpdate {
+  headId?: string;
   name?: string;
   description?: string;
   color?: string;
@@ -444,6 +445,7 @@ export function updateBranch(graph: ProjectGraph, branchId: string, update: Bran
   requireCondition(branch, 'BRANCH_REFERENCE', '分支不存在。');
   const next = structuredClone(graph);
   const target = next.branches.find(item => item.id === branchId)!;
+  if (update.headId !== undefined) target.headId = update.headId;
   if (update.name !== undefined) target.name = update.name.trim();
   if (update.description !== undefined) target.description = update.description.trim();
   if (update.color !== undefined) target.color = update.color;

@@ -76,4 +76,19 @@ describe('节点与分支编辑', () => {
     const withBranch = createBranch(base, { id: 'b', projectId: base.project.id, name: '主线', description: '', color: '#2563eb', headId: 'A' });
     expect(() => updateBranch(withBranch, 'b', { color: 'red' })).toThrow('六位十六进制');
   });
+
+  it('显式移动分支头允许回退、前进及游离放行版本，其他数据不变并拒绝悬空头', () => {
+    let graph = fixture();
+    graph.nodes.push({ ...graph.nodes[0]!, id: 'C', version: 'C', releasedAt: '2026-01-01T00:00:00.000Z' });
+    graph = createBranch(graph, { id: 'b', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'A' });
+    for (const headId of ['B', 'A', 'C']) {
+      const next = updateBranch(graph, 'b', { headId });
+      expect(next.branches[0]!.headId).toBe(headId);
+      expect(next.nodes).toEqual(graph.nodes);
+      expect(next.edges).toEqual(graph.edges);
+      expect(next.tasks).toEqual(graph.tasks);
+      expect(graph.branches[0]!.headId).toBe('A');
+    }
+    expect(() => updateBranch(graph, 'b', { headId: 'missing' })).toThrow('头节点不存在');
+  });
 });

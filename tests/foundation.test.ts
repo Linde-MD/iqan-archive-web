@@ -217,6 +217,26 @@ describe('Dexie 原子持久化', () => {
     );
   });
 
+  it('分支指针持久化、拒绝无效目标及陈旧修订并可恢复快照', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    graph = await repo.addBranch(graph.project.id, graph.project.revision, {
+      id: 'move-head', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'M',
+    });
+    const moved = await repo.saveBranch(graph.project.id, graph.project.revision, 'move-head', { headId: 'R' });
+    expect((await repo.get(graph.project.id)).branches.find(branch => branch.id === 'move-head')!.headId).toBe('R');
+    expect(moved.nodes).toEqual(graph.nodes);
+    expect(moved.edges).toEqual(graph.edges);
+    await expect(repo.saveBranch(graph.project.id, graph.project.revision, 'move-head', { headId: 'B' }))
+      .rejects.toThrow('其他标签页已更新项目');
+    await expect(repo.saveBranch(graph.project.id, moved.project.revision, 'move-head', { headId: 'missing' }))
+      .rejects.toThrow('头节点不存在');
+    expect(await repo.get(graph.project.id)).toEqual(moved);
+    const restored = await repo.restoreUndo(graph.project.id, moved.project.revision, graph);
+    expect(restored.branches).toEqual(graph.branches);
+    repo.db.close();
+  });
+
   it('删除项目需名称确认和最新修订，原子删除所有所属数据及绑定，不影响其他项目', async () => {
     const repo = repository();
     let graph = await seed(repo);

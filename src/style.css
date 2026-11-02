@@ -215,8 +215,6 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-sidebar .graph-form h3 { margin-top: 0; overflow-wrap: anywhere; }
 .graph-sidebar .graph-form label, .graph-sidebar .deletion-rewires label { display: flex; flex-wrap: wrap; }
 .graph-sidebar .graph-form input, .graph-sidebar .graph-form select, .graph-sidebar .graph-form textarea { min-width: 0; max-width: 100%; }
-.graph-sidebar .parent-candidate-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-.graph-sidebar .parent-candidate-row button { margin: 0 0 14px; }
 .graph-sidebar .graph-form .actions { display: grid; grid-template-columns: minmax(0, 1fr); }
 .graph-sidebar .graph-form .actions button { width: 100%; }
 .graph-sidebar .status:not(:empty) { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 8px; overflow-wrap: anywhere; }
@@ -252,6 +250,10 @@ tbody tr.row-selected { background: #1a3557; }
   transition: background-color 100ms ease;
 }
 .git-graph-row:hover { background: #14243a; }
+.git-graph-row.branch-drop-target { outline: 2px solid var(--focus); outline-offset: -2px; background: #18395b; }
+.git-branch-label[draggable="true"] { cursor: grab; }
+.branch-move-dialog { width: min(440px, calc(100% - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 24px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface); color: var(--ink); overflow-wrap: anywhere; }
+.branch-move-dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .git-graph-row.selected { background: #18395b; box-shadow: inset 3px 0 #7dc0ff; }
 .git-graph-row.isolated { background: #171628; }
 .git-graph-row.isolated:hover { background: #25213c; }
@@ -297,10 +299,6 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-form { margin-top: 16px; border: 1px solid #3c4e69; border-radius: 10px; padding: 16px; background: #152136; box-shadow: 0 12px 32px #02061735; }
 .graph-form form { max-width: 720px; }
 .graph-form label { justify-content: flex-start; gap: 8px; }
-.parent-candidate-row { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(180px, 1fr) auto; align-items: center; gap: 8px; }
-.parent-candidate-row label { margin: 0; }
-.parent-candidate-row select { min-width: 0; margin-bottom: 14px; }
-.parent-candidate-row button { min-height: 44px; margin-bottom: 14px; }
 .selected-parent-list, .deletion-preview-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 14px; list-style: none; }
 .selected-parent-list li, .deletion-preview-list li { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #52647e; border-radius: 6px; background: #101a2a; color: #eaf1fc; font-size: 12px; }
 .selected-parent-list .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
@@ -327,8 +325,6 @@ tbody tr.row-selected { background: #1a3557; }
 @media (max-width: 720px) {
   .graph-filter { width: 100%; }
   .branch-filter-picker { flex: 1; }
-  .parent-candidate-row { grid-template-columns: 1fr; }
-  .parent-candidate-row button { margin: 0 0 14px; }
   .graph-branch-actions { align-items: stretch; }
   .branch-selected-indicator { width: 100%; }
   .graph-form .actions button { flex: 1 1 100%; }

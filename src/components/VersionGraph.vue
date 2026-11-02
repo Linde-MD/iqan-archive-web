@@ -5,8 +5,9 @@ import type { Branch, ProjectGraph, VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, type GitGraphEdge } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
-import type { VersionOrder } from '../domain/version-order';
+import { compareVersions, type VersionOrder } from '../domain/version-order';
 import AppIcon from './AppIcon.vue';
+import ParentVersionPicker from './ParentVersionPicker.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'oldest' });
@@ -52,11 +53,65 @@ const deletionPlan = ref<MultiDeletionPlan | null>(null);
 const deletionChildParentChoices = ref<Record<string, string[]>>({});
 const deletionBranchChoices = ref<Record<string, string>>({});
 const deletionConfirmations = ref<Record<string, string>>({});
-const parentQuery = ref('');
-const parentCandidateId = ref('');
 const nodeForm = ref({ version: '', description: '', parentIds: [] as string[], targetBranchId: '' });
 const branchForm = ref({ id: '', name: '', description: '', color: '#2563eb', headId: '' });
+const branchEditRevision = ref(0);
 const editorOpen = computed(() => !!(panel.value || branchDeleteTarget.value || deletionPlan.value));
+const branchMoveDialog = ref<HTMLDialogElement>();
+const draggedBranch = ref<{ branchId: string; headId: string; revision: number } | null>(null);
+const dropTargetId = ref<string | null>(null);
+const pendingBranchMove = ref<{ branchId: string; headId: string; revision: number; targetId: string; name: string } | null>(null);
+const branchHeadOptions = computed(() => [...(graph.value?.nodes ?? [])]
+  .sort((a, b) => compareVersions(a.version, b.version)));
+
+watch(pendingBranchMove, async value => {
+  await nextTick();
+  if (value) branchMoveDialog.value?.showModal();
+  else branchMoveDialog.value?.close();
+});
+
+function startBranchDrag(event: DragEvent, branch: Branch) {
+  if (saving.value || editorOpen.value || !event.dataTransfer || !graph.value) {
+    event.preventDefault();
+    return;
+  }
+  draggedBranch.value = { branchId: branch.id, headId: branch.headId, revision: graph.value.project.revision };
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', branch.name);
+  closeMenu(false);
+}
+
+function endBranchDrag() {
+  draggedBranch.value = null;
+  dropTargetId.value = null;
+}
+
+function onBranchDragOver(event: DragEvent, nodeId: string) {
+  if (!draggedBranch.value || saving.value || draggedBranch.value.headId === nodeId) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropTargetId.value = nodeId;
+}
+
+function dropBranch(event: DragEvent, targetId: string) {
+  const drag = draggedBranch.value;
+  const branch = graph.value?.branches.find(item => item.id === drag?.branchId);
+  if (!drag || !branch || saving.value || drag.headId === targetId) return;
+  event.preventDefault();
+  pendingBranchMove.value = { ...drag, targetId, name: branch.name };
+  endBranchDrag();
+}
+
+async function confirmBranchMove() {
+  const move = pendingBranchMove.value;
+  if (!move || saving.value) return;
+  await operation(`移动分支 ${move.name}`, async () => {
+    graph.value = await props.repository.saveBranch(props.projectId, move.revision, move.branchId, { headId: move.targetId });
+    status.value = `分支“${move.name}”指针已更新。`;
+  });
+  pendingBranchMove.value = null;
+  graphScroller.value?.focus({ preventScroll: true });
+}
 
 function updateSidebarHeight() {
   const sidebar = editorSidebar.value;
@@ -84,11 +139,21 @@ interface UndoEntry {
 }
 
 const undoHistory = ref<UndoEntry[]>([]);
+const redoHistory = ref<UndoEntry[]>([]);
 const undoAvailable = computed(() => {
   const last = undoHistory.value.at(-1);
   return !!last && !saving.value && graph.value?.project.revision === last.afterRevision;
 });
 const undoLabel = computed(() => undoHistory.value.at(-1)?.label ?? '');
+const redoAvailable = computed(() => {
+  const last = redoHistory.value.at(-1);
+  return !!last && !saving.value && graph.value?.project.revision === last.afterRevision;
+});
+
+function clearHistory() {
+  undoHistory.value = [];
+  redoHistory.value = [];
+}
 
 function showError(cause: unknown) {
   error.value = cause instanceof Error ? cause.message : '图操作失败，请重试。';
@@ -103,10 +168,10 @@ const subscription = liveQuery(() => props.repository.get(props.projectId)).subs
   next: value => {
     const previousRevision = graph.value?.project.revision;
     if (previousRevision !== undefined && value.project.revision !== previousRevision
-      && !saving.value && undoHistory.value.length
-      && value.project.revision !== undoHistory.value.at(-1)?.afterRevision) {
-      undoHistory.value = [];
-      status.value = '版本图已在其他标签页更新，撤销记录已清除。';
+      && !saving.value && (undoHistory.value.length || redoHistory.value.length)
+      && value.project.revision !== (undoHistory.value.at(-1) ?? redoHistory.value.at(-1))?.afterRevision) {
+      clearHistory();
+      status.value = '版本图已在其他标签页更新，撤销和重做记录已清除。';
     }
     graph.value = value;
   },
@@ -142,12 +207,6 @@ const rankedParentOptions = computed(() => {
   return recommendedParentNodes(graph.value, parentTarget.value, parentExcludedId.value)
     .filter(node => !nodeForm.value.parentIds.includes(node.id));
 });
-const parentOptions = computed(() => {
-  const query = parentQuery.value.toLocaleLowerCase();
-  return rankedParentOptions.value
-    .filter(node => !query || `${node.version} ${node.description}`.toLocaleLowerCase().includes(query));
-});
-const recommendedParentIds = computed(() => new Set(rankedParentOptions.value.slice(0, 5).map(node => node.id)));
 const parentSelectionUnchanged = computed(() => {
   if (!selectedNode.value) return true;
   const current = [...(parentIdsOf.value.get(selectedNode.value.id) ?? [])].sort();
@@ -203,12 +262,14 @@ watch(panel, value => {
   deletionPlan.value = null;
 });
 watch(() => props.projectId, () => {
+  pendingBranchMove.value = null;
+  endBranchDrag();
   selectedNodeIds.value = [];
   activeBranchId.value = null;
   branchFilter.value = null;
   branchQuery.value = '';
   if (branchFilterDetails.value) branchFilterDetails.value.open = false;
-  undoHistory.value = [];
+  clearHistory();
   void refresh();
 });
 
@@ -222,6 +283,7 @@ async function operation(label: string, action: () => Promise<void>, recordUndo 
     await action();
     const after = graph.value;
     if (recordUndo && before && after && after.project.revision > before.project.revision) {
+      redoHistory.value = [];
       undoHistory.value.push({ before, afterRevision: after.project.revision, label });
       if (undoHistory.value.length > 50) undoHistory.value.shift();
     }
@@ -230,10 +292,10 @@ async function operation(label: string, action: () => Promise<void>, recordUndo 
   } finally {
     saving.value = false;
     emit('busy', false);
-    const last = undoHistory.value.at(-1);
+    const last = undoHistory.value.at(-1) ?? redoHistory.value.at(-1);
     if (last && graph.value && graph.value.project.revision !== last.afterRevision) {
-      undoHistory.value = [];
-      status.value = '版本图已在其他标签页更新，撤销记录已清除。请确认最新状态后继续。';
+      clearHistory();
+      status.value = '版本图已在其他标签页更新，撤销和重做记录已清除。请确认最新状态后继续。';
     }
   }
 }
@@ -250,12 +312,19 @@ async function refresh() {
 }
 
 async function undo() {
-  const entry = undoHistory.value.at(-1);
+  await restoreHistory(false);
+}
+
+async function restoreHistory(redo: boolean) {
+  const source = redo ? redoHistory.value : undoHistory.value;
+  const destination = redo ? undoHistory.value : redoHistory.value;
+  const label = redo ? '重做' : '撤销';
+  const entry = source.at(-1);
   const current = graph.value;
   if (!entry || !current || saving.value) return;
   if (current.project.revision !== entry.afterRevision) {
-    undoHistory.value = [];
-    showError(new Error('其他标签页已更新项目，撤销已取消；请重新读取版本图后重试。'));
+    clearHistory();
+    showError(new Error(`其他标签页已更新项目，${label}已取消；请重新读取版本图后重试。`));
     return;
   }
   saving.value = true;
@@ -263,15 +332,19 @@ async function undo() {
   error.value = '';
   status.value = '';
   try {
+    const before = structuredClone(current);
     graph.value = await props.repository.restoreUndo(props.projectId, current.project.revision, entry.before);
-    undoHistory.value.pop();
-    const previous = undoHistory.value.at(-1);
-    if (previous) previous.afterRevision = graph.value.project.revision;
+    source.pop();
+    destination.push({ before, afterRevision: graph.value.project.revision, label: entry.label });
+    for (const history of [source, destination]) {
+      const previous = history.at(-1);
+      if (previous) previous.afterRevision = graph.value.project.revision;
+    }
     selectedNodeIds.value = [];
     activeBranchId.value = null;
-    status.value = `已撤销：${entry.label}`;
+    status.value = `已${label}：${entry.label}`;
   } catch (cause) {
-    undoHistory.value = [];
+    clearHistory();
     showError(cause);
   } finally {
     saving.value = false;
@@ -280,12 +353,14 @@ async function undo() {
 }
 
 function onGlobalKeyDown(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
+  if (pendingBranchMove.value) return;
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (key === 'z' || key === 'y')) {
     const target = event.target;
     if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return;
-    if (!undoAvailable.value) return;
+    if (key === 'z' ? !undoAvailable.value : !redoAvailable.value) return;
     event.preventDefault();
-    void undo();
+    void restoreHistory(key === 'y');
   }
   if (event.key === 'Escape') {
     if (menu.value) {
@@ -441,8 +516,6 @@ function openBranchMenu(event: MouseEvent, branchId: string) {
 
 function openNodeAdd(parentIds: readonly string[] = []) {
   nodeForm.value = { version: '', description: '', parentIds: [...parentIds], targetBranchId: '' };
-  parentQuery.value = '';
-  parentCandidateId.value = '';
   panel.value = 'node-add';
   closeMenu(false);
 }
@@ -455,7 +528,6 @@ function openNodeEdit() {
     parentIds: [],
     targetBranchId: '',
   };
-  parentQuery.value = '';
   panel.value = 'node-edit';
 }
 
@@ -467,22 +539,17 @@ function openParentEdit() {
     parentIds: [...(parentIdsOf.value.get(selectedNode.value.id) ?? [])],
     targetBranchId: '',
   };
-  parentQuery.value = '';
-  parentCandidateId.value = '';
   panel.value = 'parent-edit';
 }
 
 function openMerge() {
   nodeForm.value = { version: '', description: '', parentIds: [...selectedNodeIds.value], targetBranchId: '' };
-  parentQuery.value = '';
-  parentCandidateId.value = '';
   panel.value = 'merge';
 }
 
-function addParentCandidate() {
-  if (!parentCandidateId.value || nodeForm.value.parentIds.includes(parentCandidateId.value)) return;
-  nodeForm.value.parentIds.push(parentCandidateId.value);
-  parentCandidateId.value = '';
+function addParentCandidate(id: string) {
+  if (saving.value || !rankedParentOptions.value.some(node => node.id === id)) return;
+  nodeForm.value.parentIds.push(id);
 }
 
 function removeParent(parentId: string) {
@@ -560,6 +627,7 @@ function openBranchEdit() {
   const branch = selectedBranch.value;
   if (!branch) return;
   branchForm.value = { ...branch };
+  branchEditRevision.value = graph.value!.project.revision;
   panel.value = 'branch-edit';
 }
 
@@ -578,7 +646,8 @@ async function submitBranch() {
       activeBranchId.value = branch.id;
       status.value = `分支“${branch.name}”已创建。`;
     } else if (panel.value === 'branch-edit') {
-      graph.value = await props.repository.saveBranch(props.projectId, current.project.revision, branchForm.value.id, {
+      graph.value = await props.repository.saveBranch(props.projectId, branchEditRevision.value, branchForm.value.id, {
+        headId: branchForm.value.headId,
         name: branchForm.value.name,
         description: branchForm.value.description,
         color: branchForm.value.color,
@@ -800,7 +869,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 v-for="row in graphLayout?.rows ?? []"
                 :key="row.node.id"
                 class="git-graph-row"
-                :class="{ selected: selectedNodeIds.includes(row.node.id), isolated: row.isolated }"
+                :class="{ selected: selectedNodeIds.includes(row.node.id), isolated: row.isolated, 'branch-drop-target': dropTargetId === row.node.id }"
+                @dragover="onBranchDragOver($event, row.node.id)"
+                @dragleave="dropTargetId === row.node.id && (dropTargetId = null)"
+                @drop="dropBranch($event, row.node.id)"
                 :style="{ gridTemplateColumns: `${laneWidth}px minmax(720px, 1fr) 280px` }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
@@ -826,6 +898,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                       :class="{ selected: activeBranchId === branch.id }"
                       :style="{ '--branch-color': branch.color }"
                       :aria-pressed="activeBranchId === branch.id"
+                      :draggable="!saving && !editorOpen"
+                      title="拖到版本行以移动分支指针，或通过编辑分支选择版本"
+                      @dragstart="startBranchDrag($event, branch)"
+                      @dragend="endBranchDrag"
                       @click="selectBranch(branch.id)"
                       @contextmenu="openBranchMenu($event, branch.id)"
                     >{{ branch.name }}</button>
@@ -845,6 +921,17 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     <span class="git-commit-version">{{ row.node.version }}</span>
                     <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                   </button>
+                  <span v-if="row.isolated && row.branchHeads.length" class="git-branch-labels">
+                    <button
+                      v-for="branch in row.branchHeads" :key="branch.id" class="git-branch-label"
+                      :class="{ selected: activeBranchId === branch.id }"
+                      :style="{ '--branch-color': branch.color }" :aria-pressed="activeBranchId === branch.id"
+                      :draggable="!saving && !editorOpen"
+                      title="拖到版本行以移动分支指针，或通过编辑分支选择版本"
+                      @dragstart="startBranchDrag($event, branch)" @dragend="endBranchDrag"
+                      @click="selectBranch(branch.id)" @contextmenu="openBranchMenu($event, branch.id)"
+                    >{{ branch.name }}</button>
+                  </span>
                 </div>
               </div>
               <p v-if="!graph.nodes.length" class="git-graph-empty">暂无版本。可新增未关联版本，或从已有版本创建子版本。</p>
@@ -860,6 +947,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         </template>
         <template v-else-if="menu.kind === 'node'">
           <button role="menuitem" :disabled="saving" @click="openNodeAdd([menu.id]); closeMenu(false)"><AppIcon name="plus" />新增子版本</button>
+          <button role="menuitem" :disabled="saving" @click="openBranchAdd(menu.id)"><AppIcon name="branch" />创建分支</button>
           <button role="menuitem" :disabled="saving" @click="openNodeEdit(); closeMenu(false)"><AppIcon name="edit" />编辑</button>
           <button role="menuitem" :disabled="saving || !!selectedNode?.releasedAt" @click="openParentEdit(); closeMenu(false)"><AppIcon name="link" />设置父版本</button>
           <button role="menuitem" :disabled="saving" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
@@ -937,21 +1025,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <label for="git-description">改动说明</label>
         <textarea id="git-description" v-model="nodeForm.description" :disabled="saving" rows="3" placeholder="记录本次版本改动"></textarea>
         <template v-if="panel !== 'node-edit'">
-          <label for="git-parent-search">搜索父版本</label>
-          <input id="git-parent-search" v-model="parentQuery" :disabled="saving" placeholder="按版本号或说明搜索" />
-          <div class="parent-candidate-row">
-            <label for="git-parent-candidate">可选父版本</label>
-            <select id="git-parent-candidate" v-model="parentCandidateId" :disabled="saving || !parentOptions.length">
-              <option value="">选择父版本…</option>
-              <optgroup v-if="parentOptions.some(node => recommendedParentIds.has(node.id))" label="推荐 · 版本号相邻">
-                <option v-for="node in parentOptions.filter(node => recommendedParentIds.has(node.id))" :key="node.id" :value="node.id">{{ node.version }}</option>
-              </optgroup>
-              <optgroup v-if="parentOptions.some(node => !recommendedParentIds.has(node.id))" label="其他版本">
-                <option v-for="node in parentOptions.filter(node => !recommendedParentIds.has(node.id))" :key="node.id" :value="node.id">{{ node.version }}</option>
-              </optgroup>
-            </select>
-            <button type="button" class="secondary" :disabled="saving || !parentCandidateId" @click="addParentCandidate">添加父版本</button>
-          </div>
+          <ParentVersionPicker :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />
           <ul v-if="nodeForm.parentIds.length" class="selected-parent-list" aria-label="已选父版本">
             <li v-for="id in nodeForm.parentIds" :key="id">
               {{ nodeById.get(id)?.version ?? id }}
@@ -982,21 +1056,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
     <div v-if="panel === 'parent-edit'" class="graph-form" role="dialog" aria-modal="false" aria-label="设置父版本">
       <h3 tabindex="-1">设置父版本 · {{ selectedNode?.version }}</h3>
       <form @submit.prevent="submitParentEdit">
-        <label for="git-parent-search">搜索父版本</label>
-        <input id="git-parent-search" v-model="parentQuery" :disabled="saving" placeholder="按版本号或说明搜索" />
-        <div class="parent-candidate-row">
-          <label for="git-parent-candidate">可选父版本</label>
-          <select id="git-parent-candidate" v-model="parentCandidateId" :disabled="saving || !parentOptions.length">
-            <option value="">选择父版本…</option>
-            <optgroup v-if="parentOptions.some(node => recommendedParentIds.has(node.id))" label="推荐 · 版本号相邻">
-              <option v-for="node in parentOptions.filter(node => recommendedParentIds.has(node.id))" :key="node.id" :value="node.id">{{ node.version }}</option>
-            </optgroup>
-            <optgroup v-if="parentOptions.some(node => !recommendedParentIds.has(node.id))" label="其他版本">
-              <option v-for="node in parentOptions.filter(node => !recommendedParentIds.has(node.id))" :key="node.id" :value="node.id">{{ node.version }}</option>
-            </optgroup>
-          </select>
-          <button type="button" class="secondary" :disabled="saving || !parentCandidateId" @click="addParentCandidate">添加父版本</button>
-        </div>
+        <ParentVersionPicker :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />
         <ul v-if="nodeForm.parentIds.length" class="selected-parent-list" aria-label="已选父版本">
           <li v-for="id in nodeForm.parentIds" :key="id">
             {{ nodeById.get(id)?.version ?? id }}
@@ -1020,6 +1080,13 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <textarea id="git-branch-description" v-model="branchForm.description" rows="2" :disabled="saving"></textarea>
         <label for="git-branch-color">分支颜色</label>
         <input id="git-branch-color" v-model="branchForm.color" type="color" :disabled="saving" />
+        <template v-if="panel === 'branch-edit'">
+          <label for="git-branch-head">分支指针</label>
+          <select id="git-branch-head" v-model="branchForm.headId" :disabled="saving">
+            <option v-for="node in branchHeadOptions" :key="node.id" :value="node.id">{{ node.version }}</option>
+          </select>
+          <p class="form-help">仅移动分支头，不修改父子关系或放行状态。</p>
+        </template>
         <p class="form-help">分支头：{{ nodeById.get(branchForm.headId)?.version ?? '未知' }}。删除分支记录不会删除版本历史。</p>
         <div class="actions">
           <button type="submit" :disabled="saving || !branchForm.name.trim()"><AppIcon name="check" />{{ panel === 'branch-add' ? '创建分支' : '保存分支' }}</button>
@@ -1073,5 +1140,18 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
     </div>
       </div>
     </div>
+    <dialog ref="branchMoveDialog" class="branch-move-dialog" aria-labelledby="branch-move-heading" @cancel="saving ? $event.preventDefault() : (pendingBranchMove = null)" @close="pendingBranchMove = null">
+      <template v-if="pendingBranchMove">
+        <h3 id="branch-move-heading">确认移动分支指针</h3>
+        <p>分支：{{ pendingBranchMove.name }}</p>
+        <p>原版本：{{ nodeById.get(pendingBranchMove.headId)?.version ?? '已删除' }}</p>
+        <p>目标版本：{{ nodeById.get(pendingBranchMove.targetId)?.version ?? '已删除' }}</p>
+        <p class="form-help">仅改变分支头，不修改版本关系、放行状态或磁盘文件。</p>
+        <div class="actions">
+          <button :disabled="saving" @click="confirmBranchMove">确认移动</button>
+          <button class="secondary" :disabled="saving" autofocus @click="pendingBranchMove = null">取消</button>
+        </div>
+      </template>
+    </dialog>
   </section>
 </template>
