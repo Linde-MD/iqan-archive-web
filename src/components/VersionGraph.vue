@@ -19,8 +19,7 @@ const saving = ref(false);
 const errorHeading = ref<HTMLElement>();
 const graphScroller = ref<HTMLDivElement>();
 const menuElement = ref<HTMLDivElement>();
-const branchDeleteHeading = ref<HTMLElement>();
-const branchNameInput = ref<HTMLInputElement>();
+const editorSidebar = ref<HTMLElement>();
 const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
 const branchFilter = ref<string[] | null>(null);
@@ -57,6 +56,26 @@ const parentQuery = ref('');
 const parentCandidateId = ref('');
 const nodeForm = ref({ version: '', description: '', parentIds: [] as string[], targetBranchId: '' });
 const branchForm = ref({ id: '', name: '', description: '', color: '#2563eb', headId: '' });
+const editorOpen = computed(() => !!(panel.value || branchDeleteTarget.value || deletionPlan.value));
+
+function updateSidebarHeight() {
+  const sidebar = editorSidebar.value;
+  if (!sidebar) return;
+  const top = Math.max(16, sidebar.getBoundingClientRect().top);
+  sidebar.style.setProperty('--sidebar-available-height', `${Math.max(120, window.innerHeight - top - 16)}px`);
+}
+
+function closeEditor() {
+  if (saving.value) return;
+  panel.value = null;
+  branchDeleteTarget.value = null;
+  deletionPlan.value = null;
+}
+
+function onSidebarFocusOut(event: FocusEvent) {
+  if (editorOpen.value && window.matchMedia('(max-width: 1100px)').matches
+    && event.relatedTarget instanceof Node && !editorSidebar.value?.contains(event.relatedTarget)) closeEditor();
+}
 
 interface UndoEntry {
   before: ProjectGraph;
@@ -74,7 +93,10 @@ const undoLabel = computed(() => undoHistory.value.at(-1)?.label ?? '');
 function showError(cause: unknown) {
   error.value = cause instanceof Error ? cause.message : '图操作失败，请重试。';
   status.value = '';
-  void nextTick(() => errorHeading.value?.focus());
+  void nextTick(() => {
+    if (editorOpen.value && editorSidebar.value) editorSidebar.value.scrollTop = 0;
+    errorHeading.value?.focus({ preventScroll: editorOpen.value });
+  });
 }
 
 const subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
@@ -161,11 +183,24 @@ watch(branchFilter, clearSelectionsForFilter);
 watch(menu, value => {
   if (value) void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
 });
-watch(panel, async value => {
-  if (value !== 'branch-add' && value !== 'branch-edit') return;
+watch([panel, branchDeleteTarget, deletionPlan], async ([nextPanel, nextBranchDelete, nextDeletion], [previousPanel, previousBranchDelete, previousDeletion]) => {
   await nextTick();
-  branchNameInput.value?.focus({ preventScroll: true });
-  branchNameInput.value?.closest('[role="dialog"]')?.scrollIntoView({ block: 'start' });
+  if (nextPanel || nextBranchDelete || nextDeletion) {
+    const sidebar = editorSidebar.value;
+    if (!sidebar) return;
+    updateSidebarHeight();
+    sidebar.scrollTop = 0;
+    const target = sidebar.querySelector<HTMLElement>('.graph-form input:not(:disabled), .graph-form textarea:not(:disabled), .graph-form select:not(:disabled)')
+      ?? sidebar.querySelector<HTMLElement>('.graph-form h3');
+    target?.focus({ preventScroll: true });
+  } else if (previousPanel || previousBranchDelete || previousDeletion) {
+    graphScroller.value?.focus({ preventScroll: true });
+  }
+});
+watch(panel, value => {
+  if (!value) return;
+  branchDeleteTarget.value = null;
+  deletionPlan.value = null;
 });
 watch(() => props.projectId, () => {
   selectedNodeIds.value = [];
@@ -290,11 +325,15 @@ function onMenuKeyDown(event: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener('keydown', onGlobalKeyDown);
   window.addEventListener('pointerdown', closeBranchFilter);
+  window.addEventListener('resize', updateSidebarHeight);
+  window.addEventListener('scroll', updateSidebarHeight, { passive: true });
   void refresh();
 });
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeyDown);
   window.removeEventListener('pointerdown', closeBranchFilter);
+  window.removeEventListener('resize', updateSidebarHeight);
+  window.removeEventListener('scroll', updateSidebarHeight);
 });
 
 function zoomAt(factor: number, clientX?: number, clientY?: number) {
@@ -586,6 +625,7 @@ function openDeletion() {
       .map(id => [id, '']),
   );
   panel.value = null;
+  branchDeleteTarget.value = null;
   closeMenu(false);
 }
 
@@ -623,9 +663,10 @@ async function confirmBranchDelete() {
 
 function openBranchDelete() {
   if (!selectedBranch.value) return;
+  panel.value = null;
+  deletionPlan.value = null;
   branchDeleteTarget.value = selectedBranch.value.id;
   closeMenu(false);
-  void nextTick(() => branchDeleteHeading.value?.focus());
 }
 
 function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delete' | 'branch' | 'merge') {
@@ -652,8 +693,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
     </div>
 
-    <div v-if="error" role="alert" class="error"><h3 ref="errorHeading" tabindex="-1">图操作未完成</h3><p>{{ error }}</p></div>
-    <p role="status" class="status">{{ status }}</p>
+    <div v-if="error && !graph" role="alert" class="error"><h3 ref="errorHeading" tabindex="-1">图操作未完成</h3><p>{{ error }}</p></div>
 
     <div v-if="graph" class="graph-meta">
       <span><strong>{{ graph.project.name }}</strong> · 零件号 <code>{{ graph.project.partNumber }}</code></span>
@@ -716,7 +756,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击多选</span>
     </div>
 
-    <div v-if="graph" class="graph-layout">
+    <div v-if="graph" class="graph-layout" :class="{ 'is-editing': editorOpen }">
       <div
         ref="graphScroller"
         class="graph-canvas-scroll"
@@ -833,6 +873,14 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         </template>
       </div>
 
+      <div ref="editorSidebar" class="graph-sidebar" :class="{ 'is-editing': editorOpen }" @focusout="onSidebarFocusOut">
+        <div v-if="editorOpen" class="graph-editor-heading">
+          <span>图操作面板</span>
+          <button class="icon-button" :disabled="saving" aria-label="关闭操作面板" title="关闭操作面板（Escape）" @click="closeEditor"><AppIcon name="clear" /></button>
+        </div>
+        <div v-if="error" role="alert" class="error"><h3 ref="errorHeading" tabindex="-1">图操作未完成</h3><p>{{ error }}</p></div>
+        <p role="status" class="status">{{ status }}</p>
+      <template v-if="!editorOpen">
       <aside v-if="selectedNode" class="graph-detail" aria-label="版本详情">
         <p class="eyebrow">VERSION DETAIL</p>
         <h3>{{ selectedNode.version }}</h3>
@@ -870,10 +918,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         </ul>
         <p v-if="!graph.branches.length" class="form-help">尚无分支。选择版本后创建分支；未关联版本会显示在独立列中。</p>
       </aside>
-    </div>
+      </template>
 
     <div v-if="branchDeleteTarget" class="graph-form" role="dialog" aria-modal="false" aria-label="删除分支确认">
-      <h3 ref="branchDeleteHeading" tabindex="-1">删除分支记录</h3>
+      <h3 tabindex="-1">删除分支记录</h3>
       <p>将删除“{{ graph?.branches.find(branch => branch.id === branchDeleteTarget)?.name }}”分支记录，不会删除版本、关系或磁盘文件。</p>
       <div class="actions">
         <button class="danger" :disabled="saving" @click="confirmBranchDelete"><AppIcon name="trash" />确认删除分支</button>
@@ -882,7 +930,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
     </div>
 
     <div v-if="panel === 'node-add' || panel === 'node-edit' || panel === 'merge'" class="graph-form" role="dialog" aria-modal="false" :aria-label="panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : '新增版本'">
-      <h3>{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
+      <h3 tabindex="-1">{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
       <form @submit.prevent="submitNode">
         <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
         <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' && !!selectedNode?.releasedAt)" placeholder="例如：1479-1 20260115" />
@@ -932,7 +980,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
     </div>
 
     <div v-if="panel === 'parent-edit'" class="graph-form" role="dialog" aria-modal="false" aria-label="设置父版本">
-      <h3>设置父版本 · {{ selectedNode?.version }}</h3>
+      <h3 tabindex="-1">设置父版本 · {{ selectedNode?.version }}</h3>
       <form @submit.prevent="submitParentEdit">
         <label for="git-parent-search">搜索父版本</label>
         <input id="git-parent-search" v-model="parentQuery" :disabled="saving" placeholder="按版本号或说明搜索" />
@@ -964,10 +1012,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
     </div>
 
     <div v-if="panel === 'branch-add' || panel === 'branch-edit'" class="graph-form" role="dialog" aria-modal="false" :aria-label="panel === 'branch-add' ? '创建分支' : '编辑分支'">
-      <h3>{{ panel === 'branch-add' ? '创建分支' : '编辑分支' }}</h3>
+      <h3 tabindex="-1">{{ panel === 'branch-add' ? '创建分支' : '编辑分支' }}</h3>
       <form @submit.prevent="submitBranch">
         <label for="git-branch-name">分支名称</label>
-        <input id="git-branch-name" ref="branchNameInput" v-model="branchForm.name" required :disabled="saving" />
+        <input id="git-branch-name" v-model="branchForm.name" required :disabled="saving" />
         <label for="git-branch-description">分支说明</label>
         <textarea id="git-branch-description" v-model="branchForm.description" rows="2" :disabled="saving"></textarea>
         <label for="git-branch-color">分支颜色</label>
@@ -981,7 +1029,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
     </div>
 
     <div v-if="deletionPlan" class="graph-form" role="dialog" aria-modal="false" aria-label="删除版本预览">
-      <h3>删除 {{ deletionPlan.nodeIds.length }} 个版本</h3>
+      <h3 tabindex="-1">删除 {{ deletionPlan.nodeIds.length }} 个版本</h3>
       <p class="form-help">删除前预览父子关系重连；已放行子版本不能重连。本操作仅修改版本图，不会删除磁盘文件或其他未选版本。</p>
       <ul class="deletion-preview-list">
         <li v-for="id in deletionPlan.nodeIds" :key="id">{{ nodeById.get(id)?.version ?? id }}</li>
@@ -1021,6 +1069,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <div class="actions">
         <button class="danger" :disabled="!deletionReady" @click="confirmDeletion"><AppIcon name="trash" />确认删除</button>
         <button class="secondary" :disabled="saving" @click="deletionPlan = null">取消</button>
+      </div>
+    </div>
       </div>
     </div>
   </section>
