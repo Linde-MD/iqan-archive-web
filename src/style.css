@@ -37,7 +37,19 @@ button:disabled { cursor: not-allowed; background: #263248; color: #a7b3c5; bord
 .danger { background: #b42332; color: #fff; }
 .danger:hover { background: #92202d; }
 .icon-button { width: 44px; min-width: 44px; height: 44px; padding: 0; flex-shrink: 0; position: relative; }
-.icon-button[title]:hover::after, .icon-button[title]:focus-visible::after {
+.icon-button, .tool-button { background: transparent; border-color: transparent; color: var(--ink); }
+.icon-button:hover, .tool-button:hover { background: #253650; border-color: transparent; }
+.icon-button:disabled, .tool-button:disabled { background: transparent; border-color: transparent; color: #8290a6; }
+.tool-button {
+  position: relative; flex-direction: column; flex: 0 0 auto; gap: 5px;
+  min-width: 60px; min-height: 56px; padding: 7px 10px; border-radius: 6px;
+}
+.tool-caption { font-size: 11px; line-height: 16px; font-weight: 400; white-space: nowrap; }
+.tool-button-accent { color: #93c5fd; }
+.tool-button-danger { color: var(--danger); }
+.tool-button[title]::after { left: 0; right: auto; }
+.icon-button[title]:hover::after, .icon-button[title]:focus-visible::after,
+.tool-button[title]:hover::after, .tool-button[title]:focus-visible::after {
   content: attr(title); position: absolute; z-index: 5; top: calc(100% + 6px); right: 0;
   width: max-content; max-width: min(250px, 65vw); white-space: normal; overflow-wrap: anywhere;
   padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px;
@@ -113,7 +125,7 @@ form button { width: 100%; }
 .project-info p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; white-space: nowrap; }
 .project-state { font-size: 11px; color: var(--success); white-space: nowrap; }
 .project-actions { display: flex; gap: 6px; flex-shrink: 0; }
-.project-actions .icon-button { width: 40px; min-width: 40px; height: 40px; }
+.project-actions .icon-button { width: 44px; min-width: 44px; height: 44px; }
 .project-part-number { display: flex; justify-content: flex-start; max-width: 100%; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
 .project-part-number:hover { background: transparent; color: #9acaff; }
 code, .file-path { font-family: Consolas, "Microsoft YaHei", monospace; }
@@ -168,12 +180,14 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; font-size: 13px; }
 .graph-meta > span:not(.count) { color: var(--muted); font-size: 12px; }
 .graph-toolbar { display: grid; gap: 8px; padding: 12px; background: #111b2b; border: 1px solid #34445e; border-radius: 8px; margin: 12px 0; }
-.graph-toolbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.graph-toolbar-row > button { min-height: 40px; padding: 8px 12px; }
+.graph-toolbar-row { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.graph-toolbar-row .tool-button, .graph-branch-actions .tool-button, .graph-detail-actions .tool-button { position: static; }
+.graph-toolbar .tool-button[title]::after, .graph-detail-actions .tool-button[title]::after { left: 0; right: auto; max-width: min(250px, 100%); }
+.graph-toolbar-row + .graph-toolbar-row { border-top: 1px solid var(--border); padding-top: 8px; }
 .graph-filter { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin: 0 8px 0 0; }
 .graph-filter select { width: auto; min-width: 190px; min-height: 40px; margin: 0; }
 .shortcut { color: #b6c8df; font-size: 10px; }
-.graph-branch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 8px; border-top: 1px solid #34445e; }
+.graph-branch-actions { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 8px; border-top: 1px solid #34445e; }
 .branch-selected-indicator { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border-left: 3px solid var(--branch-color); padding-left: 10px; color: #f3f7ff; font-size: 12px; font-weight: 700; }
 .branch-selected-indicator small { color: var(--muted); font-size: 11px; font-weight: 400; }
 .graph-toolbar .selection-count { display: block; padding-top: 4px; }
@@ -251,8 +265,7 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-branch-name { flex: 1; justify-content: space-between; min-width: 0; overflow-wrap: anywhere; }
 .graph-branch-name small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .graph-branch-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; border: 1px solid #ffffff80; }
-.graph-detail-actions { display: grid; gap: 6px; margin-top: 12px; }
-.graph-detail-actions button { justify-content: flex-start; }
+.graph-detail-actions { position: relative; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .graph-form { margin-top: 16px; border: 1px solid #3c4e69; border-radius: 10px; padding: 16px; background: #152136; box-shadow: 0 12px 32px #02061735; }
 .graph-form form { max-width: 720px; }
 .graph-form label { justify-content: flex-start; gap: 8px; }
@@ -262,7 +275,7 @@ tbody tr.row-selected { background: #1a3557; }
 .parent-candidate-row button { min-height: 44px; margin-bottom: 14px; }
 .selected-parent-list, .deletion-preview-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 14px; list-style: none; }
 .selected-parent-list li, .deletion-preview-list li { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #52647e; border-radius: 6px; background: #101a2a; color: #eaf1fc; font-size: 12px; }
-.selected-parent-list .icon-button { width: 32px; min-width: 32px; height: 32px; min-height: 32px; }
+.selected-parent-list .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
 .graph-form .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .graph-form .actions button { width: auto; }
 .deletion-rewires { margin: 12px 0; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -282,7 +295,6 @@ tbody tr.row-selected { background: #1a3557; }
   .graph-layout { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
-  .graph-toolbar-row > button { flex: 1 1 auto; }
   .graph-filter { width: 100%; }
   .graph-filter select { flex: 1; }
   .parent-candidate-row { grid-template-columns: 1fr; }

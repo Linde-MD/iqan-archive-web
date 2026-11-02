@@ -635,33 +635,33 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
             <option v-for="branch in graph.branches" :key="branch.id" :value="branch.id">{{ branch.name }}</option>
           </select>
         </label>
-        <button class="secondary" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'">
-          <AppIcon name="sort" />{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}
+        <button class="tool-button" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'">
+          <AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span>
         </button>
-        <button class="secondary" :disabled="!undoAvailable" :title="undoLabel ? `撤销：${undoLabel}（Ctrl+Z）` : '撤销上一步（Ctrl+Z）'" @click="undo">
-          <AppIcon name="undo" />撤销<span class="shortcut">Ctrl+Z</span>
+        <button class="tool-button" :disabled="!undoAvailable" aria-label="撤销上一步" aria-keyshortcuts="Control+z Meta+z" :title="undoLabel ? `撤销：${undoLabel}（Ctrl/Cmd+Z）` : '撤销上一步（Ctrl/Cmd+Z）'" @click="undo">
+          <AppIcon name="undo" /><span class="tool-caption">撤销</span>
         </button>
-        <button :disabled="saving" @click="openNodeAdd()"><AppIcon name="plus" />新增未关联版本</button>
+        <button class="tool-button tool-button-accent" :disabled="saving" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
       </div>
 
       <div class="graph-toolbar-row">
-        <button class="secondary" :disabled="saving || selectedNodeIds.length !== 1" @click="startNodeAction('add')"><AppIcon name="plus" />新增子版本</button>
-        <button class="secondary" :disabled="saving || selectedNodeIds.length !== 1" @click="startNodeAction('edit')"><AppIcon name="edit" />编辑</button>
-        <button class="secondary" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" @click="startNodeAction('parents')"><AppIcon name="link" />设置父版本</button>
-        <button class="secondary" :disabled="saving || selectedNodeIds.length < 2" @click="startNodeAction('merge')"><AppIcon name="merge" />合并</button>
-        <button class="secondary" :disabled="saving || selectedNodeIds.length !== 1" @click="startNodeAction('release')">
-          <AppIcon :name="selectedNode?.releasedAt ? 'unrelease' : 'release'" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="新增子版本" title="为选中的一个版本新增子版本" @click="startNodeAction('add')"><AppIcon name="plus" /><span class="tool-caption">新增子版本</span></button>
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="编辑版本" title="编辑选中版本的版本号与说明；已放行版本仅可编辑说明" @click="startNodeAction('edit')"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" aria-label="设置父版本" title="搜索选择父版本；已放行版本不可修改父边" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length < 2" aria-label="合并版本" title="选择至少两个版本后创建合并版本" @click="startNodeAction('merge')"><AppIcon name="merge" /><span class="tool-caption">合并</span></button>
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" :aria-label="selectedNode?.releasedAt ? '撤销放行' : '放行版本'" :title="selectedNode?.releasedAt ? '撤销选中版本的放行；不可破坏已放行后代闭包' : '放行选中版本及其全部祖先'" @click="startNodeAction('release')">
+          <AppIcon :name="selectedNode?.releasedAt ? 'unrelease' : 'release'" /><span class="tool-caption">{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</span>
         </button>
-        <button class="secondary" :disabled="saving || selectedNodeIds.length === 0" @click="startNodeAction('delete')"><AppIcon name="trash" />删除所选版本</button>
-        <button class="secondary" :disabled="saving || (selectedNodeIds.length !== 1 && !selectedBranch)" @click="selectedBranch ? openBranchAdd(selectedBranch.headId) : startNodeAction('branch')"><AppIcon name="branch" />创建分支</button>
+        <button class="tool-button tool-button-danger" :disabled="saving || selectedNodeIds.length === 0" aria-label="删除所选版本" title="预览删除所选版本及关系重连，确认后才执行" @click="startNodeAction('delete')"><AppIcon name="trash" /><span class="tool-caption">删除版本</span></button>
+        <button class="tool-button" :disabled="saving || (selectedNodeIds.length !== 1 && !selectedBranch)" aria-label="创建分支" title="从选中版本或分支头创建分支" @click="selectedBranch ? openBranchAdd(selectedBranch.headId) : startNodeAction('branch')"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
       </div>
 
       <div v-if="selectedBranch" class="graph-branch-actions" :style="{ '--branch-color': selectedBranch.color }">
         <span class="branch-selected-indicator">{{ selectedBranch.name }}<small>· 头：{{ nodeById.get(selectedBranch.headId)?.version ?? '未知' }}</small></span>
-        <button class="secondary" :disabled="saving" @click="openBranchEdit"><AppIcon name="edit" />编辑分支</button>
-        <button class="secondary" :disabled="saving" @click="releaseBranch"><AppIcon name="release" />放行分支</button>
-        <button class="secondary" :disabled="saving" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" />从此分支创建分支</button>
-        <button class="secondary" :disabled="saving" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
+        <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑选中分支的名称、说明与颜色" @click="openBranchEdit"><AppIcon name="edit" /><span class="tool-caption">编辑分支</span></button>
+        <button class="tool-button" :disabled="saving" aria-label="放行分支" title="放行选中分支的头版本及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
+        <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从选中分支的头版本创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
+        <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，保留版本及父子关系；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
       </div>
       <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击多选</span>
     </div>
@@ -799,10 +799,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <p class="form-help">{{ selectedBranch.description || '（无分支说明）' }}</p>
         <p class="workspace-details">头版本：{{ nodeById.get(selectedBranch.headId)?.version ?? '未知' }}</p>
         <div class="graph-detail-actions">
-          <button class="secondary" :disabled="saving" @click="openBranchEdit"><AppIcon name="edit" />编辑</button>
-          <button class="secondary" :disabled="saving" @click="releaseBranch"><AppIcon name="release" />放行分支</button>
-          <button class="secondary" :disabled="saving" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" />创建分支</button>
-          <button class="secondary" :disabled="saving" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
+          <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑分支名称、说明与颜色" @click="openBranchEdit"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
+          <button class="tool-button" :disabled="saving" aria-label="放行分支" title="放行分支头及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
+          <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从当前分支头创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
+          <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，版本及父子关系保留；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
         </div>
       </aside>
 

@@ -124,8 +124,8 @@ onUnmounted(() => subscription?.unsubscribe());
         <p class="form-help">已有版本自动关联，无需登记。仅没有对应版本的合法文件可选；登记只创建版本，不保存文件路径，不推断父边或推进分支。</p>
         <div class="selection-toolbar">
           <div class="actions">
-            <button class="secondary" :disabled="busy || !eligibleRows.length || allSelected" @click="selectAll"><AppIcon name="check" />全选可登记项</button>
-            <button class="secondary" :disabled="busy || !selectedRows.length" @click="selected = []"><AppIcon name="clear" />全不选</button>
+            <button class="tool-button" :disabled="busy || !eligibleRows.length || allSelected" aria-label="全选可登记项" title="选择所有可登记创建版本的文件" @click="selectAll"><AppIcon name="check" /><span class="tool-caption">全选</span></button>
+            <button class="tool-button" :disabled="busy || !selectedRows.length" aria-label="全不选" title="取消选择所有文件" @click="selected = []"><AppIcon name="clear" /><span class="tool-caption">全不选</span></button>
           </div>
           <span role="status" class="selection-count">已选 {{ selectedRows.length }} / {{ eligibleRows.length }} 项 · 共 {{ rows.length }} 项</span>
         </div>
@@ -142,7 +142,7 @@ onUnmounted(() => subscription?.unsubscribe());
 
       <p v-if="scanned && graph.nodes.length" class="form-help" role="status">{{ association?.missing.length ? `本次扫描：${association.missing.length} 个版本缺少源文件（不影响版本图配置）。` : '本次扫描：所有版本均已找到匹配源文件。' }}</p>
       <h3 class="subheading">版本与自动关联文件</h3>
-      <button class="secondary" :disabled="busy" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" />{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</button>
+      <button class="tool-button" :disabled="busy" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span></button>
       <p v-if="!graph.nodes.length">尚无版本节点。可在版本图创建，或从扫描文件登记创建。</p>
       <div class="version-files-scroll" tabindex="0" role="region" aria-label="版本与自动关联文件，可滚动">
       <ul class="version-list">

@@ -109,9 +109,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); });
     <div class="actions">
       <button class="secondary icon-button" :disabled="disabled || busy" :aria-label="`选择${label}目录`" :title="`选择${label}目录`" @click="choose"><AppIcon name="folder" /></button>
       <button class="secondary icon-button" :disabled="disabled || busy || !handle" :aria-label="`重新授权${label}目录`" :title="`重新授权${label}目录`" @click="authorize"><AppIcon name="shield" /></button>
-      <button :disabled="disabled || busy || !handle" :aria-label="`扫描${label}目录`" @click="scan"><AppIcon name="scan" />扫描</button>
+      <button class="tool-button tool-button-accent" :disabled="disabled || busy || !handle" :aria-label="`扫描${label}目录`" :title="`只读扫描${label}目录`" @click="scan"><AppIcon name="scan" /><span class="tool-caption">扫描</span></button>
       <button class="secondary icon-button" :disabled="disabled || busy || !handle" :aria-label="`解除${label}绑定`" :title="`解除${label}绑定`" @click="unbind"><AppIcon name="unlink" /></button>
-      <button v-if="busy && controller" class="secondary" @click="controller?.abort()"><AppIcon name="stop" />取消扫描</button>
+      <button v-if="busy && controller" class="tool-button" aria-label="取消扫描" title="取消本次扫描，不提交部分结果" @click="controller?.abort()"><AppIcon name="stop" /><span class="tool-caption">取消扫描</span></button>
     </div>
     <p role="status">{{ busy ? `处理中，已枚举 ${count} 个条目…` : message }}</p>
   </section>
