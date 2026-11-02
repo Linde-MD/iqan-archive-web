@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' | 'undo' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -24,6 +24,7 @@ const paths = {
   link: 'M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1 M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1',
   release: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z M8 12l3 3 5-6',
   unrelease: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z',
+  undo: 'M9 14 4 9l5-5 M4 9h9a7 7 0 0 1 0 14h-2',
 };
 </script>
 

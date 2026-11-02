@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createProject, normalizeLoopId, type ProjectGraph, type Task } from '../src/domain/model';
-import { ancestors, appendVersion, applyDeletion, createBranch, deleteTask, mergeVersion, planDeletion, projectTaskView, release, revokeRelease, updateTask, validateGraph } from '../src/domain/graph';
+import { ancestors, appendVersion, applyDeletion, applyDeletionMany, createBranch, deleteBranch, deleteTask, mergeVersion, planDeletion, planDeletionMany, projectTaskView, release, revokeRelease, updateTask, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
 function fixture(): ProjectGraph {
@@ -143,6 +143,29 @@ describe('领域基础', () => {
     const rootPlan = planDeletion(graph, 'R');
     expect(() => applyDeletion(graph, rootPlan, 'R')).toThrow('已放行子节点');
   });
+
+  it('批量删除重连到删除集外的祖先，分支头须显式处理并确认放行节点', () => {
+    let graph = fixture();
+    graph.branches.push({ id: 'main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'M' });
+    const plan = planDeletionMany(graph, ['M', 'A']);
+    expect(plan.childParents.D).toEqual(['B', 'R']);
+    expect(plan.branchHeads).toEqual({ main: null });
+    plan.branchHeads.main = 'B';
+    const customizedPlan = { ...plan, childParents: { ...plan.childParents, D: ['B'] } };
+    const customized = applyDeletionMany(graph, customizedPlan, {});
+    expect(customized.edges.filter(edge => edge.childId === 'D').map(edge => edge.parentId)).toEqual(['B']);
+    const next = applyDeletionMany(graph, plan, {});
+    expect(next.nodes.map(node => node.id)).not.toContain('M');
+    expect(next.nodes.map(node => node.id)).not.toContain('A');
+    expect(next.edges.filter(edge => edge.childId === 'D').map(edge => edge.parentId).sort()).toEqual(['B', 'R']);
+    expect(next.branches[0]!.headId).toBe('B');
+
+    graph = release(fixture(), 'M', new Date().toISOString());
+    const releasedPlan = planDeletionMany(graph, ['M']);
+    expect(() => applyDeletionMany(graph, releasedPlan, {})).toThrow('输入版本号');
+    expect(() => applyDeletionMany(graph, releasedPlan, { M: 'M' })).not.toThrow();
+    expect(() => deleteBranch(graph, 'missing')).toThrow('分支不存在');
+  });
 });
 
 describe('Dexie 原子持久化', () => {
@@ -152,6 +175,32 @@ describe('Dexie 原子持久化', () => {
     await repo.save(graph);
     return repo.get(graph.project.id);
   }
+
+  it('批量删除、分支删除和修订保护的撤销恢复保持图快照一致', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    graph = await repo.addBranch(graph.project.id, graph.project.revision, {
+      id: 'undo-main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'M',
+    });
+    const previous = structuredClone(graph);
+    const plan = planDeletionMany(graph, ['M']);
+    plan.branchHeads['undo-main'] = 'B';
+    const deleted = await repo.deleteNodes(graph.project.id, graph.project.revision, plan, {});
+    expect(deleted.nodes.some(node => node.id === 'M')).toBe(false);
+    expect(deleted.branches[0]!.headId).toBe('B');
+
+    const restored = await repo.restoreUndo(graph.project.id, deleted.project.revision, previous);
+    expect(restored.nodes.map(node => node.id)).toEqual(previous.nodes.map(node => node.id));
+    expect(restored.edges.map(edge => [edge.parentId, edge.childId])).toEqual(previous.edges.map(edge => [edge.parentId, edge.childId]));
+    expect(restored.branches).toEqual(previous.branches);
+    expect(restored.project.revision).toBe(deleted.project.revision + 1);
+    await expect(repo.restoreUndo(graph.project.id, deleted.project.revision, previous)).rejects.toThrow('撤销已取消');
+
+    const branchDeleted = await repo.deleteBranch(restored.project.id, restored.project.revision, 'undo-main');
+    expect(branchDeleted.branches).toEqual([]);
+    expect(branchDeleted.nodes).toEqual(restored.nodes);
+    repo.db.close();
+  });
 
   it('父节点集合通过项目修订事务持久化并拒绝陈旧修订', async () => {
     const repo = repository();

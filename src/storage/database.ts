@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, appendVersion, createBranch, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type NodeUpdate } from '../domain/graph';
+import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 
@@ -133,6 +133,19 @@ export class ArchiveRepository {
     });
   }
 
+  async restoreUndo(projectId: string, revision: number, previous: ProjectGraph): Promise<ProjectGraph> {
+    return this.db.transaction('rw', this.tables, async () => {
+      const current = await this.read(projectId);
+      requireCondition(current.project.revision === revision, 'STALE_REVISION', '其他标签页已更新项目，撤销已取消，请重新读取版本图。');
+      requireCondition(previous.project.id === projectId, 'PROJECT_ID', '撤销记录不属于当前项目。');
+      const restored = configurationOnly(previous);
+      validateGraph(restored);
+      restored.project.revision = current.project.revision + 1;
+      await this.write(restored);
+      return restored;
+    });
+  }
+
   async saveTask(projectId: string, revision: number, task: Task): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => updateTask(graph, task));
   }
@@ -183,12 +196,20 @@ export class ArchiveRepository {
     return this.change(projectId, revision, graph => applyDeletion(graph, plan, confirmedVersion), true);
   }
 
+  async deleteNodes(projectId: string, revision: number, plan: MultiDeletionPlan, confirmedVersions: Readonly<Record<string, string>>): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => applyDeletionMany(graph, plan, confirmedVersions), true);
+  }
+
   async addNode(projectId: string, revision: number, node: VersionNode, parentIds: readonly string[], targetBranchId: string | null): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => appendVersion(graph, node, parentIds, targetBranchId));
   }
 
   async addBranch(projectId: string, revision: number, branch: Branch): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => createBranch(graph, branch));
+  }
+
+  async deleteBranch(projectId: string, revision: number, branchId: string): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => removeBranch(graph, branchId));
   }
 
   async merge(projectId: string, revision: number, node: VersionNode, parentIds: readonly string[], targetBranchId: string): Promise<ProjectGraph> {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
-import { layoutDag, LAYOUT, relationForDropPoint } from '../src/domain/layout';
+import { layoutDag, LAYOUT, nodeSizeForVersion, relationForDropPoint, versionLines } from '../src/domain/layout';
 
 function graph(edges: [string, string][]) {
   const g = createProject('工程', '123');
@@ -12,14 +12,39 @@ function graph(edges: [string, string][]) {
 }
 
 describe('DAG 分层布局', () => {
+  it('长版本号按可读行宽换行且不丢失文本', () => {
+    const version = 'V1.0-27 Engineering-Release-2026-11-02 中文版本验证超长标签';
+    const lines = versionLines(version);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.join('')).toBe(version);
+    expect(lines.some(line => line.includes('2026-11-02'))).toBe(true);
+    expect(nodeSizeForVersion(version).height).toBe(LAYOUT.nodeHeight + (lines.length - 1) * LAYOUT.versionLineHeight);
+  });
+
+  it('同一布局行按最高节点动态高度留白', () => {
+    const g = graph([['A', 'B'], ['A', 'C']]);
+    g.nodes.find(node => node.id === 'B')!.version = 'B'.repeat(65);
+    const layout = layoutDag(g);
+    const tallNodeHeight = nodeSizeForVersion('B'.repeat(65)).height;
+    expect(layout.positions.get('B')!.y).toBe(0);
+    expect(layout.positions.get('C')!.y).toBe(tallNodeHeight + LAYOUT.verticalGap);
+    expect(layout.height).toBe(tallNodeHeight + LAYOUT.verticalGap + LAYOUT.nodeHeight);
+    expect(relationForDropPoint(
+      { x: 0, y: 0 },
+      { x: 20, y: tallNodeHeight - 1 },
+      'newest',
+      layout.nodeSizes.get('B')!,
+    )).toBe('child');
+  });
+
   it('拖放方向按版本排序模式决定，节点本体仍作为子节点投放', () => {
     const position = { x: 100, y: 100 };
     const points = {
-      top: { x: 200, y: 90 },
-      right: { x: 310, y: 128 },
-      bottom: { x: 200, y: 170 },
-      left: { x: 90, y: 128 },
-      inside: { x: 200, y: 128 },
+      top: { x: position.x + LAYOUT.nodeWidth / 2, y: position.y - 10 },
+      right: { x: position.x + LAYOUT.nodeWidth + 10, y: position.y + LAYOUT.nodeHeight / 2 },
+      bottom: { x: position.x + LAYOUT.nodeWidth / 2, y: position.y + LAYOUT.nodeHeight + 10 },
+      left: { x: position.x - 10, y: position.y + LAYOUT.nodeHeight / 2 },
+      inside: { x: position.x + LAYOUT.nodeWidth / 2, y: position.y + LAYOUT.nodeHeight / 2 },
     };
     expect(Object.fromEntries(
       Object.entries(points).map(([direction, point]) => [

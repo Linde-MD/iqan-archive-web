@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { compareVersions, orderedVersionNodes } from '../src/domain/version-order';
-import { layoutDag } from '../src/domain/layout';
+import { layoutDag, LAYOUT } from '../src/domain/layout';
 
 function fixture(versions: string[]) {
   const graph = createProject('排序测试', '001');
@@ -28,7 +28,7 @@ describe('版本排序', () => {
       expect(orderedVersionNodes(graph, order).map(node => node.version)).toEqual(expected);
       const layout = layoutDag(graph, order);
       expect(expected.map(version => layout.positions.get(graph.nodes.find(node => node.version === version)!.id)!.y))
-        .toEqual(expected.map((_, index) => index * 100));
+        .toEqual(expected.map((_, index) => index * (LAYOUT.nodeHeight + LAYOUT.verticalGap)));
     }
     expect(compareVersions('V1.0-29-SP-1', 'V1.0-30')).toBeLessThan(0);
     expect(compareVersions('V1.0-29-SP-1 20260701', 'V1.0-29-SP-1 20260702')).toBeLessThan(0);
@@ -53,7 +53,7 @@ describe('版本排序', () => {
       const layout = layoutDag(graph, order);
       const expected = order === 'oldest' ? ascending : [...ascending].reverse();
       expect(expected.map(version => layout.positions.get(graph.nodes.find(node => node.version === version)!.id)!.y))
-        .toEqual(expected.map((_, index) => index * 100));
+        .toEqual(expected.map((_, index) => index * (LAYOUT.nodeHeight + LAYOUT.verticalGap)));
     }
   });
 
@@ -122,7 +122,8 @@ describe('版本排序', () => {
     for (const order of ['oldest', 'newest'] as const) {
       const sorted = orderedVersionNodes(graph, order);
       const layout = layoutDag(graph, order);
-      expect([...sorted].map(node => layout.positions.get(node.id)!.y)).toEqual([0, 100, 200, 300]);
+      expect([...sorted].map(node => layout.positions.get(node.id)!.y))
+        .toEqual([0, 1, 2, 3].map(index => index * (LAYOUT.nodeHeight + LAYOUT.verticalGap)));
     }
     graph.edges = [
       { id: 'a', projectId: graph.project.id, parentId: 'n2', childId: 'n0' },

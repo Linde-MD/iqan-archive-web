@@ -35,7 +35,8 @@ Map these roles to the semantic CSS variables in `src/style.css`. Keep normal te
 
 - Keep the project list as a persistent desktop rail beside the active file or graph workspace; stack regions on narrow screens.
 - Use layered dark surfaces, thin cool borders, restrained shadows, and consistent 8/12/16/24px spacing.
-- Keep graph nodes, branch labels, release states, and selection boundaries legible on the dark dotted canvas. Preserve local scrolling for large tables and graphs.
+- Render the version graph as a Git-style vertical history, not a fit-to-canvas DAG. Parent-child edges determine row order; branch-colored rails and branch-head labels sit beside readable version/description text, while released state uses a shield mark with an accessible status name. Put nodes with no parent or child edges in a distinct unassociated-version column. Keep row height stable so long histories scroll instead of shrinking.
+- Keep graph navigation predictable: native vertical scrolling, Shift+wheel horizontal scrolling, and cursor-anchored Ctrl+wheel/toolbar zoom. Zoom must not pan the first row out of reach. Remove node and canvas dragging; use explicit selection, menus, and the searchable parent-version picker for graph edits. Preserve local scrolling for large tables and graphs.
 - Prefer flat SVG icons with visible keyboard focus, accessible names, and a 44px minimum control target.
 - Preserve visible status text for loading, empty, success, disabled, and error states. Never rely on color alone.
 

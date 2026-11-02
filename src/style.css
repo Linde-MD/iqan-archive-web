@@ -167,54 +167,134 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-workspace { margin-top: 20px; border-top: 2px solid #3b82f6; }
 .graph-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; font-size: 13px; }
 .graph-meta > span:not(.count) { color: var(--muted); font-size: 12px; }
-.graph-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; background: #151f31; border: 1px solid #34445e; border-radius: 8px; margin: 12px 0; }
+.graph-toolbar { display: grid; gap: 8px; padding: 12px; background: #111b2b; border: 1px solid #34445e; border-radius: 8px; margin: 12px 0; }
+.graph-toolbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.graph-toolbar-row > button { min-height: 40px; padding: 8px 12px; }
+.graph-filter { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin: 0 8px 0 0; }
+.graph-filter select { width: auto; min-width: 190px; min-height: 40px; margin: 0; }
+.shortcut { color: #b6c8df; font-size: 10px; }
+.graph-branch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 8px; border-top: 1px solid #34445e; }
+.branch-selected-indicator { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border-left: 3px solid var(--branch-color); padding-left: 10px; color: #f3f7ff; font-size: 12px; font-weight: 700; }
+.branch-selected-indicator small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.graph-toolbar .selection-count { display: block; padding-top: 4px; }
 .graph-layout { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
-.graph-canvas-scroll { position: relative; min-width: 0; height: min(70vh, 640px); min-height: 420px; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior-y: contain; border-radius: 10px; }
-.graph-canvas-scroll:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.graph-svg {
-  width: 100%; min-height: 420px; background-color: #0c1524;
-  background-image: radial-gradient(#344660 1px, transparent 1px);
-  background-size: 22px 22px; border: 1px solid #34445e; border-radius: 10px;
-  cursor: grab; touch-action: pan-y; display: block; overflow: visible;
+.graph-canvas-scroll {
+  position: relative; min-width: 0; height: min(70vh, 640px); min-height: 420px; overflow: auto;
+  scrollbar-gutter: stable; overscroll-behavior: contain; border-radius: 10px; background: #0b1321;
 }
-.graph-svg.is-panning { cursor: grabbing; }
-.graph-edge { fill: none; stroke: #7187a5; stroke-width: 1.6; }
-.graph-arrowhead { fill: #91a5c1; }
-.graph-node { cursor: grab; }
-.graph-node.drag-preview { opacity: .78; }
-.graph-node-box { fill: #17263a; stroke: #60738e; stroke-width: 1.5; }
-.graph-node.released .graph-node-box { stroke: #34d399; }
-.graph-node.selected .graph-node-box { fill: #1c3b5f; stroke: #78b9ff; stroke-width: 2.4; }
-.graph-node.drop-parent .graph-node-box { stroke: #c084fc; stroke-width: 3; stroke-dasharray: 6 3; }
-.graph-node.drop-child .graph-node-box { stroke: #34d399; stroke-width: 3; }
-.graph-node:focus-visible { outline: none; }
-.graph-node:focus-visible .graph-node-box { stroke: var(--focus); stroke-width: 3; }
-.graph-node-version { font-size: 13px; font-weight: 650; fill: #f0f6ff; }
-.graph-node-state { font-size: 10px; fill: #c0cde0; }
-.graph-node.released .graph-node-state { fill: #82efc0; font-weight: 600; }
-.graph-branch-label { pointer-events: none; }
-.graph-branch-text { font-size: 11px; fill: #fff; font-weight: 600; }
-.graph-menu { position: absolute; z-index: 6; background: #172338; border: 1px solid #52647e; border-radius: 8px; box-shadow: 0 12px 32px #020617aa; padding: 6px; min-width: 160px; }
+.graph-canvas-scroll:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.git-graph-canvas {
+  position: relative; overflow: visible; border: 1px solid #40536e; border-radius: 10px;
+  background-color: #0b1321;
+  background-image: radial-gradient(#2a3a51 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.git-graph-zoom-content { position: relative; transform-origin: top left; }
+.git-graph-column-head, .git-graph-row {
+  display: grid; align-items: center;
+}
+.git-graph-column-head {
+  position: relative; z-index: 2; min-width: max-content; min-height: 40px;
+  border-bottom: 1px solid #40536e; background: #142137; color: #cbd9ed;
+  font-size: 10px; font-weight: 700; letter-spacing: .04em;
+}
+.git-graph-column-head > span { min-width: 0; padding: 0 12px; }
+.git-graph-column-head > span + span { border-left: 1px solid #334661; }
+.git-graph-column-head > span:last-child { color: #d9c8ff; }
+.git-graph-lines { position: absolute; z-index: 1; top: 40px; left: 0; overflow: visible; pointer-events: none; }
+.git-graph-edge { fill: none; stroke-width: 2.5; opacity: .88; }
+.git-graph-commit { fill: #0b1321; stroke-width: 3; }
+.git-graph-rows { position: relative; z-index: 2; }
+.git-graph-row {
+  min-width: max-content; min-height: 56px; border-bottom: 1px solid #24344a;
+  transition: background-color 100ms ease;
+}
+.git-graph-row:hover { background: #14243a; }
+.git-graph-row.selected { background: #18395b; box-shadow: inset 3px 0 #7dc0ff; }
+.git-graph-row.isolated { background: #171628; }
+.git-graph-row.isolated:hover { background: #25213c; }
+.git-graph-lanes { align-self: stretch; min-width: 0; }
+.git-graph-main-cell { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 8px; min-width: 0; }
+.git-row-commit {
+  display: grid; grid-template-columns: 24px max-content minmax(0, 1fr); align-items: center; justify-content: start;
+  gap: 8px; width: 100%; min-width: 0; min-height: 54px; padding: 6px 12px;
+  border: 0; border-radius: 0; background: transparent; color: var(--ink); text-align: left;
+  font-size: 12px; font-weight: 400;
+}
+.git-row-commit:hover { background: #1a2e47; }
+.git-row-commit[aria-pressed="true"], .git-row-commit.selected { background: #1b4269; }
+.git-row-commit.is-released .git-release-icon { color: #8cf0c4; }
+.git-release-icon { width: 19px; height: 19px; color: #9eb0ca; }
+.git-commit-version { color: #f5f8ff; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.git-commit-description { min-width: 0; overflow: hidden; color: #c0cde0; text-overflow: ellipsis; white-space: nowrap; }
+.git-branch-labels { display: flex; align-items: center; gap: 5px; padding-right: 10px; }
+.git-branch-label {
+  min-height: 30px; max-width: 220px; overflow: hidden; padding: 4px 9px;
+  border: 1px solid var(--branch-color); border-radius: 6px; background: #142136; color: #f4f7ff;
+  font-size: 11px; text-overflow: ellipsis; white-space: nowrap;
+}
+.git-branch-label:hover, .git-branch-label.selected { background: var(--branch-color); color: #fff; }
+.git-graph-orphan-cell { align-self: stretch; display: flex; align-items: center; border-left: 1px dashed #7e67a1; }
+.git-row-orphan { background: #151426; }
+.git-row-orphan:hover { background: #28233d; }
+.git-graph-empty { grid-column: 1 / -1; margin: 18px 24px; color: var(--muted); font-size: 13px; }
+.graph-menu { position: absolute; z-index: 6; background: #172338; border: 1px solid #52647e; border-radius: 8px; box-shadow: 0 12px 32px #020617aa; padding: 6px; min-width: 180px; }
 .graph-menu button { display: flex; width: 100%; justify-content: flex-start; min-height: 40px; background: transparent; color: var(--ink); border-radius: 6px; }
 .graph-menu button:hover { background: #253650; }
 .graph-detail { background: #172338; border: 1px solid #34445e; border-radius: 10px; padding: 16px; min-width: 0; font-size: 12px; }
-.graph-detail h3 { font-size: 16px; word-break: break-all; }
+.graph-detail h3 { display: flex; align-items: center; gap: 8px; font-size: 16px; overflow-wrap: anywhere; }
 .graph-branch-list { list-style: none; padding: 0; margin: 8px 0 0; }
 .graph-branch-list li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
 .graph-branch-list li:first-child { border-top: 0; }
-.graph-branch-list li > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.graph-branch-swatch { width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; border: 1px solid #ffffff50; }
+.graph-branch-swatch-button, .graph-branch-name { min-height: 40px; padding: 6px; background: transparent; color: var(--ink); }
+.graph-branch-swatch-button:hover, .graph-branch-name:hover { background: #253650; }
+.graph-branch-name { flex: 1; justify-content: space-between; min-width: 0; overflow-wrap: anywhere; }
+.graph-branch-name small { color: var(--muted); font-size: 10px; font-weight: 400; }
+.graph-branch-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; border: 1px solid #ffffff80; }
+.graph-detail-actions { display: grid; gap: 6px; margin-top: 12px; }
+.graph-detail-actions button { justify-content: flex-start; }
 .graph-form { margin-top: 16px; border: 1px solid #3c4e69; border-radius: 10px; padding: 16px; background: #152136; box-shadow: 0 12px 32px #02061735; }
 .graph-form form { max-width: 720px; }
 .graph-form label { justify-content: flex-start; gap: 8px; }
-.graph-form fieldset { min-width: 0; border: 0; padding: 0; }
-.graph-form legend { font-weight: 600; margin-bottom: 8px; color: #e4ecf8; }
-.graph-parent-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
-.graph-parent-option { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; font-weight: 400; background: #111c2c; }
-.graph-parent-option input { width: auto; min-height: 0; margin: 0; accent-color: #60a5fa; }
-.graph-parent-option:has(input:checked) { background: #1c3554; border-color: #75b7ff; }
-.graph-pointer-hint { position: sticky; left: 12px; bottom: 12px; z-index: 2; width: fit-content; max-width: calc(100% - 24px); margin: -44px 12px 12px; padding: 6px 10px; border: 1px solid #52647e; border-radius: 6px; background: #111c2c; color: var(--ink); font-size: 12px; pointer-events: none; }
-.graph-pointer-hint:empty { display: none; }
+.parent-candidate-row { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(180px, 1fr) auto; align-items: center; gap: 8px; }
+.parent-candidate-row label { margin: 0; }
+.parent-candidate-row select { min-width: 0; margin-bottom: 14px; }
+.parent-candidate-row button { min-height: 44px; margin-bottom: 14px; }
+.selected-parent-list, .deletion-preview-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 14px; list-style: none; }
+.selected-parent-list li, .deletion-preview-list li { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #52647e; border-radius: 6px; background: #101a2a; color: #eaf1fc; font-size: 12px; }
+.selected-parent-list .icon-button { width: 32px; min-width: 32px; height: 32px; min-height: 32px; }
+.graph-form .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.graph-form .actions button { width: auto; }
+.deletion-rewires { margin: 12px 0; padding-top: 10px; border-top: 1px solid var(--border); }
+.deletion-rewires h4 { margin: 0 0 8px; color: #e4ecf8; font-size: 12px; }
+.deletion-rewires p { color: #c0cde0; font-size: 12px; }
+.deletion-rewires label { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(220px, 1fr); align-items: center; gap: 10px; margin: 10px 0; }
+.deletion-rewires input, .deletion-rewires select { margin: 0; }
+.deletion-child { padding: 8px 0; border-top: 1px solid #29384f; }
+.deletion-child > strong { color: #eaf1fc; font-size: 12px; }
+.deletion-blocked { color: #fca5a5 !important; }
+.deletion-parent-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow: auto; margin-top: 6px; }
+.deletion-parent-option { display: inline-flex !important; align-items: center; justify-content: flex-start !important; gap: 6px !important; min-height: 36px; margin: 0 !important; padding: 4px 8px; border: 1px solid #52647e; border-radius: 6px; background: #101a2a; cursor: pointer; font-size: 11px !important; }
+.deletion-parent-option input { width: 16px; min-height: 16px; margin: 0; accent-color: #60a5fa; }
+.status { min-height: 0; margin: 0; color: #9af4ca; font-size: 12px; }
+.status:empty { display: none; }
+@media (max-width: 1100px) {
+  .graph-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  .graph-toolbar-row > button { flex: 1 1 auto; }
+  .graph-filter { width: 100%; }
+  .graph-filter select { flex: 1; }
+  .parent-candidate-row { grid-template-columns: 1fr; }
+  .parent-candidate-row button { margin: 0 0 14px; }
+  .graph-branch-actions { align-items: stretch; }
+  .branch-selected-indicator { width: 100%; }
+  .graph-form .actions button { flex: 1 1 100%; }
+  .deletion-rewires label { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .git-graph-row { transition: none; }
+}
 .notice { margin-top: 20px; display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; background: #14243a; border: 1px solid #344d6d; border-radius: 10px; }
 .notice-mark { width: 22px; height: 22px; border: 1px solid #91bfff; color: #a4ccff; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; font-family: Georgia, serif; }
 .notice h2 { font-size: 13px; margin-bottom: 6px; }

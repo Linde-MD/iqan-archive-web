@@ -161,6 +161,100 @@ export interface DeletionPlan {
   branchHeads: Record<string, string | null>;
 }
 
+export interface MultiDeletionPlan {
+  nodeIds: string[];
+  childParents: Record<string, string[]>;
+  branchHeads: Record<string, string | null>;
+}
+
+export function planDeletionMany(graph: ProjectGraph, nodeIds: readonly string[]): MultiDeletionPlan {
+  validateGraph(graph);
+  const removed = new Set(nodeIds);
+  requireCondition(removed.size > 0 && removed.size === nodeIds.length, 'DELETE_PLAN', '请选择一个或多个不同版本。');
+  for (const id of removed) getNode(graph, id);
+
+  const parents = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  const children = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  for (const edge of graph.edges) {
+    parents.get(edge.childId)!.push(edge.parentId);
+    children.get(edge.parentId)!.push(edge.childId);
+  }
+  const boundaryAncestors = (startId: string): Set<string> => {
+    const result = new Set<string>();
+    const pending = [...(parents.get(startId) ?? [])];
+    const visited = new Set<string>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (!removed.has(id)) result.add(id);
+      else pending.push(...(parents.get(id) ?? []));
+    }
+    return result;
+  };
+  const childParents: Record<string, string[]> = Object.create(null);
+  for (const childId of graph.nodes.filter(node => !removed.has(node.id) && (parents.get(node.id) ?? []).some(id => removed.has(id))).map(node => node.id)) {
+    const nextParents = new Set((parents.get(childId) ?? []).filter(id => !removed.has(id)));
+    for (const parentId of parents.get(childId) ?? []) {
+      if (removed.has(parentId)) {
+        for (const ancestorId of boundaryAncestors(parentId)) nextParents.add(ancestorId);
+      }
+    }
+    childParents[childId] = [...nextParents];
+  }
+  return {
+    nodeIds: [...removed],
+    childParents,
+    branchHeads: Object.fromEntries(graph.branches.filter(branch => removed.has(branch.headId)).map(branch => [branch.id, null])),
+  };
+}
+
+export function applyDeletionMany(
+  graph: ProjectGraph,
+  plan: MultiDeletionPlan,
+  confirmedVersions: Readonly<Record<string, string>>,
+): ProjectGraph {
+  validateGraph(graph);
+  const expected = planDeletionMany(graph, plan.nodeIds);
+  requireCondition(
+    JSON.stringify([...Object.keys(expected.childParents)].sort()) === JSON.stringify([...Object.keys(plan.childParents)].sort())
+    && JSON.stringify(Object.keys(expected.branchHeads).sort()) === JSON.stringify(Object.keys(plan.branchHeads).sort()),
+    'DELETE_PLAN', '删除预览已变化，请重新预览。',
+  );
+  const removed = new Set(plan.nodeIds);
+  for (const id of removed) {
+    const node = getNode(graph, id);
+    if (node.releasedAt !== null) {
+      requireCondition(confirmedVersions[id] === node.version, 'DELETE_CONFIRMATION', `删除已放行版本需输入版本号确认：${node.version}`);
+    }
+  }
+  for (const childId of Object.keys(plan.childParents)) {
+    const child = getNode(graph, childId);
+    requireCondition(child.releasedAt === null, 'RELEASE_LOCK', '重连不能修改已放行子节点的父边。');
+  }
+  for (const [branchId, headId] of Object.entries(plan.branchHeads)) {
+    const branch = graph.branches.find(item => item.id === branchId);
+    requireCondition(branch && removed.has(branch.headId), 'BRANCH_REPLACEMENT', '删除预览中的分支头已变化。');
+    requireCondition(headId === null || (!removed.has(headId) && graph.nodes.some(node => node.id === headId)), 'BRANCH_REPLACEMENT', '分支新头必须是未删除的现有版本，或明确删除分支。');
+  }
+  const next = structuredClone(graph);
+  next.nodes = next.nodes.filter(node => !removed.has(node.id));
+  const affectedChildren = new Set(Object.keys(plan.childParents));
+  next.edges = next.edges.filter(edge => !removed.has(edge.parentId) && !removed.has(edge.childId) && !affectedChildren.has(edge.childId));
+  for (const [childId, parentIds] of Object.entries(plan.childParents)) {
+    for (const parentId of parentIds) {
+      next.edges.push({ id: crypto.randomUUID(), projectId: graph.project.id, parentId, childId });
+    }
+  }
+  next.branches = next.branches.flatMap(branch => {
+    if (!removed.has(branch.headId)) return [branch];
+    const headId = plan.branchHeads[branch.id];
+    return headId ? [{ ...branch, headId }] : [];
+  });
+  validateGraph(next);
+  return next;
+}
+
 export function planDeletion(graph: ProjectGraph, nodeId: string): DeletionPlan {
   validateGraph(graph);
   getNode(graph, nodeId);
@@ -232,6 +326,15 @@ export function validateTransition(before: ProjectGraph, after: ProjectGraph): v
 export function createBranch(graph: ProjectGraph, branch: ProjectGraph['branches'][number]): ProjectGraph {
   const next = structuredClone(graph);
   next.branches.push(structuredClone(branch));
+  validateGraph(next);
+  return next;
+}
+
+export function deleteBranch(graph: ProjectGraph, branchId: string): ProjectGraph {
+  validateGraph(graph);
+  requireCondition(graph.branches.some(branch => branch.id === branchId), 'BRANCH_REFERENCE', '分支不存在。');
+  const next = structuredClone(graph);
+  next.branches = next.branches.filter(branch => branch.id !== branchId);
   validateGraph(next);
   return next;
 }
