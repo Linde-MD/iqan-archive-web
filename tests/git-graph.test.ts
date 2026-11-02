@@ -34,10 +34,29 @@ describe('Git Graph 投影', () => {
 
   it('新到旧让子版本先显示，分支过滤保留对应祖先及游离版本', () => {
     const graph = fixture();
-    const layout = layoutGitGraph(graph, 'newest', 'main');
+    const layout = layoutGitGraph(graph, 'newest', ['main']);
     expect(layout.rows.map(row => row.node.id)).toEqual(['n5', 'n3', 'n2', 'n1']);
     expect(layout.branchTracks.map(branch => branch.id)).toEqual(['main']);
     expect(layout.edges.map(edge => [edge.parentId, edge.childId])).toEqual([['n1', 'n2'], ['n2', 'n3']]);
+  });
+
+  it('多选显示祖先并集、共享祖先只出现一次，保留各分支轨道且不改数据', () => {
+    const graph = fixture();
+    const before = structuredClone(graph);
+    const layout = layoutGitGraph(graph, 'oldest', ['main', 'feature']);
+    expect(layout.rows.map(row => row.node.id)).toEqual(['n1', 'n2', 'n3', 'n4', 'n5']);
+    expect(layout.branchTracks.map(branch => branch.id)).toEqual(['main', 'feature']);
+    expect(layout.rows.find(row => row.node.id === 'n3')?.laneIndex).toBe(0);
+    expect(layout.rows.find(row => row.node.id === 'n4')?.laneIndex).toBe(1);
+    expect(graph).toEqual(before);
+  });
+
+  it('不选分支仅显示游离版本，重复或已删除分支不增加节点或轨道', () => {
+    const graph = fixture();
+    expect(layoutGitGraph(graph, 'oldest', []).rows.map(row => row.node.id)).toEqual(['n5']);
+    const layout = layoutGitGraph(graph, 'oldest', ['feature', 'feature', 'deleted']);
+    expect(layout.branchTracks.map(branch => branch.id)).toEqual(['feature']);
+    expect(layout.rows.map(row => row.node.id)).toEqual(['n1', 'n2', 'n4', 'n5']);
   });
 
   it('父版本候选优先推荐相邻版本并排除自身和后代', () => {

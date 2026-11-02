@@ -74,11 +74,12 @@ function orderedNodes(graph: ProjectGraph, order: VersionOrder): VersionNode[] {
 export function layoutGitGraph(
   graph: ProjectGraph,
   order: VersionOrder,
-  branchId: string | null = null,
+  branchIds: readonly string[] | null = null,
 ): GitGraphLayout {
-  const branchTracks = branchId === null
+  const selectedIds = branchIds === null ? null : new Set(branchIds);
+  const branchTracks = selectedIds === null
     ? graph.branches
-    : graph.branches.filter(branch => branch.id === branchId);
+    : graph.branches.filter(branch => selectedIds.has(branch.id));
   const parents = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
   const incident = new Set<string>();
   for (const edge of graph.edges) {
@@ -97,15 +98,15 @@ export function layoutGitGraph(
   const memberships = new Map(
     [...allMemberships].map(([id, branches]) => [
       id,
-      branchId === null ? branches : branches.filter(branch => branch.id === branchId),
+      selectedIds === null ? branches : branches.filter(branch => selectedIds.has(branch.id)),
     ]),
   );
   const visible = new Set<string>();
-  if (branchId === null) {
+  if (selectedIds === null) {
     for (const node of graph.nodes) visible.add(node.id);
   } else {
-    if (branchTracks[0]) {
-      for (const id of branchHistory(branchTracks[0], parents)) visible.add(id);
+    for (const branch of branchTracks) {
+      for (const id of branchHistory(branch, parents)) visible.add(id);
     }
     for (const node of graph.nodes) if (!incident.has(node.id)) visible.add(node.id);
   }
@@ -117,7 +118,7 @@ export function layoutGitGraph(
   const rows = allRows.map((node, rowIndex): GitGraphRow => {
     const isolated = !incident.has(node.id);
     const nodeBranches = memberships.get(node.id) ?? [];
-    const track = nodeBranches.findIndex(branch => branchTracks.some(item => item.id === branch.id));
+    const track = branchTracks.findIndex(branch => nodeBranches.some(item => item.id === branch.id));
     const branchHeads = branchTracks.filter(branch => branch.headId === node.id);
     return {
       node,

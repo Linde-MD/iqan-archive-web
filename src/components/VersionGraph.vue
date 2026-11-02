@@ -20,9 +20,30 @@ const errorHeading = ref<HTMLElement>();
 const graphScroller = ref<HTMLDivElement>();
 const menuElement = ref<HTMLDivElement>();
 const branchDeleteHeading = ref<HTMLElement>();
+const branchNameInput = ref<HTMLInputElement>();
 const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
-const branchFilter = ref('all');
+const branchFilter = ref<string[] | null>(null);
+const branchFilterDetails = ref<HTMLDetailsElement>();
+const branchQuery = ref('');
+const filteredBranches = computed(() => (graph.value?.branches ?? [])
+  .filter(branch => branch.name.toLocaleLowerCase().includes(branchQuery.value.trim().toLocaleLowerCase())));
+const branchFilterLabel = computed(() => {
+  if (branchFilter.value === null) return '显示全部分支';
+  const selected = graph.value?.branches.filter(branch => branchFilter.value?.includes(branch.id)) ?? [];
+  return selected.length ? selected.map(branch => branch.name).join('、') : '未选择分支';
+});
+
+function toggleBranchFilter(id: string) {
+  const selected = branchFilter.value ?? graph.value?.branches.map(branch => branch.id) ?? [];
+  branchFilter.value = selected.includes(id) ? selected.filter(value => value !== id) : [...selected, id];
+}
+
+function closeBranchFilter(event: Event) {
+  if (event.target instanceof Node && !branchFilterDetails.value?.contains(event.target) && branchFilterDetails.value) {
+    branchFilterDetails.value.open = false;
+  }
+}
 const activeBranchId = ref<string | null>(null);
 const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
 const menuReturnFocus = ref<HTMLElement | null>(null);
@@ -72,7 +93,7 @@ const subscription = liveQuery(() => props.repository.get(props.projectId)).subs
 onUnmounted(() => subscription.unsubscribe());
 
 const graphLayout = computed(() => graph.value
-  ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value === 'all' ? null : branchFilter.value)
+  ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value)
   : null);
 const displayHeight = computed(() => Math.max(420, (graphLayout.value?.height ?? 0) + 40));
 const selectedNodes = computed(() => {
@@ -133,16 +154,25 @@ const contentHeight = computed(() => Math.max(40, (graphLayout.value?.height ?? 
 function clearSelectionsForFilter() {
   const visible = new Set(graphLayout.value?.rows.map(row => row.node.id) ?? []);
   selectedNodeIds.value = selectedNodeIds.value.filter(id => visible.has(id));
+  if (!graphLayout.value?.branchTracks.some(branch => branch.id === activeBranchId.value)) activeBranchId.value = null;
   menu.value = null;
 }
 watch(branchFilter, clearSelectionsForFilter);
 watch(menu, value => {
   if (value) void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
 });
+watch(panel, async value => {
+  if (value !== 'branch-add' && value !== 'branch-edit') return;
+  await nextTick();
+  branchNameInput.value?.focus({ preventScroll: true });
+  branchNameInput.value?.closest('[role="dialog"]')?.scrollIntoView({ block: 'start' });
+});
 watch(() => props.projectId, () => {
   selectedNodeIds.value = [];
   activeBranchId.value = null;
-  branchFilter.value = 'all';
+  branchFilter.value = null;
+  branchQuery.value = '';
+  if (branchFilterDetails.value) branchFilterDetails.value.open = false;
   undoHistory.value = [];
   void refresh();
 });
@@ -259,9 +289,13 @@ function onMenuKeyDown(event: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener('keydown', onGlobalKeyDown);
+  window.addEventListener('pointerdown', closeBranchFilter);
   void refresh();
 });
-onUnmounted(() => window.removeEventListener('keydown', onGlobalKeyDown));
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeyDown);
+  window.removeEventListener('pointerdown', closeBranchFilter);
+});
 
 function zoomAt(factor: number, clientX?: number, clientY?: number) {
   const scroller = graphScroller.value;
@@ -581,7 +615,7 @@ async function confirmBranchDelete() {
     const current = graph.value!;
     graph.value = await props.repository.deleteBranch(props.projectId, current.project.revision, branch.id);
     activeBranchId.value = null;
-    if (branchFilter.value === branch.id) branchFilter.value = 'all';
+    if (branchFilter.value !== null) branchFilter.value = branchFilter.value.filter(id => id !== branch.id);
     branchDeleteTarget.value = null;
     status.value = `分支“${branch.name}”已删除；版本及父子关系保留。`;
   });
@@ -628,13 +662,29 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
 
     <div v-if="graph" class="graph-toolbar">
       <div class="graph-toolbar-row">
-        <label class="graph-filter">
-          <span>分支范围</span>
-          <select v-model="branchFilter" :disabled="saving" aria-label="筛选分支范围">
-            <option value="all">显示全部分支</option>
-            <option v-for="branch in graph.branches" :key="branch.id" :value="branch.id">{{ branch.name }}</option>
-          </select>
-        </label>
+        <div class="graph-filter">
+          <span id="branch-filter-label">分支范围</span>
+          <details ref="branchFilterDetails" class="branch-filter-picker" @keydown.esc.stop.prevent="branchFilterDetails!.open = false; branchFilterDetails!.querySelector('summary')?.focus()">
+            <summary aria-labelledby="branch-filter-label branch-filter-value" :title="branchFilterLabel"><span id="branch-filter-value">{{ branchFilterLabel }}</span><span aria-hidden="true">▾</span></summary>
+            <div class="branch-filter-popover">
+              <label for="branch-filter-search">搜索分支</label>
+              <input id="branch-filter-search" v-model="branchQuery" type="search" placeholder="按名称筛选…" />
+              <div class="branch-filter-commands">
+                <button class="secondary" :disabled="saving" @click="branchFilter = null">显示全部</button>
+                <button class="secondary" :disabled="saving" @click="branchFilter = []">全不选</button>
+              </div>
+              <div class="branch-filter-options" role="group" aria-label="选择显示的分支">
+                <label v-for="branch in filteredBranches" :key="branch.id" class="branch-filter-option">
+                  <input type="checkbox" :checked="branchFilter === null || branchFilter.includes(branch.id)" :disabled="saving" @change="toggleBranchFilter(branch.id)" />
+                  <span class="graph-branch-swatch" :style="{ background: branch.color }" aria-hidden="true"></span>
+                  <span>{{ branch.name }}</span>
+                </label>
+                <p v-if="!filteredBranches.length" class="form-help">{{ graph.branches.length ? '没有匹配的分支。' : '尚无分支。' }}</p>
+              </div>
+              <p class="form-help">多选显示历史并集；游离版本始终保留。</p>
+            </div>
+          </details>
+        </div>
         <button class="tool-button" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'">
           <AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span>
         </button>
@@ -917,7 +967,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <h3>{{ panel === 'branch-add' ? '创建分支' : '编辑分支' }}</h3>
       <form @submit.prevent="submitBranch">
         <label for="git-branch-name">分支名称</label>
-        <input id="git-branch-name" v-model="branchForm.name" required :disabled="saving" />
+        <input id="git-branch-name" ref="branchNameInput" v-model="branchForm.name" required :disabled="saving" />
         <label for="git-branch-description">分支说明</label>
         <textarea id="git-branch-description" v-model="branchForm.description" rows="2" :disabled="saving"></textarea>
         <label for="git-branch-color">分支颜色</label>
