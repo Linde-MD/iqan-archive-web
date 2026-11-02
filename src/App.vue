@@ -177,16 +177,20 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       <span class="stage">SPEC-02 · 项目与版本图</span>
     </section>
 
-    <div v-if="error" class="error" role="alert">
-      <h2 ref="errorHeading" tabindex="-1">操作未完成</h2>
-      <p>{{ error }}</p>
-      <ul v-if="nameError || partError">
-        <li v-if="nameError"><a href="#project-name">检查项目名称</a></li>
-        <li v-if="partError"><a href="#part-number">检查软件零件号</a></li>
-      </ul>
-      <button type="button" class="secondary" :disabled="saving" @click="watchProjects">重新连接存储</button>
-    </div>
-    <p role="status" class="status">{{ status }}</p>
+    <Transition name="surface">
+      <div v-if="error" class="error" role="alert">
+        <h2 ref="errorHeading" tabindex="-1">操作未完成</h2>
+        <p>{{ error }}</p>
+        <ul v-if="nameError || partError">
+          <li v-if="nameError"><a href="#project-name">检查项目名称</a></li>
+          <li v-if="partError"><a href="#part-number">检查软件零件号</a></li>
+        </ul>
+        <button type="button" class="secondary" :disabled="saving" @click="watchProjects">重新连接存储</button>
+      </div>
+    </Transition>
+    <Transition name="feedback" mode="out-in">
+      <p v-if="status" :key="status" role="status" class="status">{{ status }}</p>
+    </Transition>
 
     <div :class="['app-workspace', { 'has-project': activeProjectId }]">
     <div class="workspace-grid">
@@ -203,7 +207,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
           <h3>{{ readFailed ? '项目暂时无法读取' : '还没有项目档案' }}</h3>
           <p>{{ readFailed ? '请处理上方错误，再重新连接存储。' : '填写项目名称与软件零件号，建立第一份工程档案。' }}</p>
         </div>
-        <ul v-else class="project-list">
+        <TransitionGroup v-else name="list" tag="ul" class="project-list">
           <li v-for="project in projects" :key="project.id">
             <div class="project-symbol"><AppIcon name="folder" /></div>
             <div class="project-info">
@@ -218,7 +222,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
               <button class="secondary icon-button" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="activeProjectId = project.id; view = 'graph'"><AppIcon name="branch" /></button>
             </div>
           </li>
-        </ul>
+        </TransitionGroup>
         <p class="boundary">选择项目进入文件工作区或版本图，点击零件号可修改。文件按扫描结果自动关联，不写入版本图配置。</p>
       </section>
 

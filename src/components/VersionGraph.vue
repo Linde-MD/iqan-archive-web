@@ -582,7 +582,7 @@ watch(layout, () => { if (graph.value && !activePointer) centerViewport(); }, { 
         >
           <defs>
             <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M0 0L10 5L0 10Z" fill="#6b84a1" />
+              <path d="M0 0L10 5L0 10Z" class="graph-arrowhead" />
             </marker>
           </defs>
           <g :transform="`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`">
@@ -664,6 +664,8 @@ watch(layout, () => { if (graph.value && !activePointer) centerViewport(); }, { 
       </aside>
     </div>
 
+    <p v-if="!graph" class="empty">正在读取版本图…</p>
+
     <div v-if="relationConflict" class="graph-form" role="dialog" aria-modal="false" aria-labelledby="parent-conflict-title">
       <h3 id="parent-conflict-title">该版本已有父节点</h3>
       <p>
@@ -696,8 +698,6 @@ watch(layout, () => { if (graph.value && !activePointer) centerViewport(); }, { 
         </div>
       </form>
     </div>
-
-    <p v-else class="empty">正在读取版本图…</p>
 
     <!-- Node add/edit/merge form -->
     <div v-if="panel === 'node-add' || panel === 'node-edit' || panel === 'merge'" class="graph-form" role="dialog" aria-modal="false" :aria-label="panel === 'merge' ? '合并版本' : panel === 'node-add' ? (graph?.nodes.length ? '新增子版本' : '新增根版本') : '编辑节点'">

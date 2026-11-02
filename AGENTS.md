@@ -36,6 +36,9 @@
 
 - 使用 [webapp-spec](.agents/skills/webapp-spec/SKILL.md) 创建或补充规范；该技能不实现业务代码。
 - 需要 UI/UX 规划时，以 [UI/UX Pro Max](.agents/skills/ui-ux-pro-max/SKILL.md) 中适合桌面工程工具、图形画布及实际技术栈的建议为主，[DESIGN.md](DESIGN.md) 为辅助；明确用户要求、产品规则及无障碍约束优先，不照搬示例品牌或不适用风格。
+- 当前界面采用深色工程控制台：以深海军蓝画布、分层面板、冷蓝操作色及高对比正文建立信息层次；中文优先使用系统字体，版本号/路径使用等宽字体。设计 token 与组件映射以 [DESIGN.md](DESIGN.md) 为准，图与表格的状态不能只依赖颜色。
+- 动效优先使用 Vue 内置 `Transition`/`TransitionGroup` 与 CSS，不为轻量反馈添加动画依赖；只使用短促、非阻断的进入/状态/列表过渡，并完整尊重 `prefers-reduced-motion`。避免持续发光、视差、滚动劫持及影响图操作的动效。
+- UI 改动需覆盖桌面与窄屏、键盘焦点、错误/空/禁用状态；正文对比度至少 4.5:1，必要的非文本指示至少 3:1。变更视觉契约时同步更新 SPEC 与 DESIGN，不继承过期主题的验收结论。
 
 ## 分阶段实施
 
