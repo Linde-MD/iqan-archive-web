@@ -19,10 +19,101 @@ const status = ref('');
 const saving = ref(false);
 const errorHeading = ref<HTMLElement>();
 const graphScroller = ref<HTMLDivElement>();
+const graphWorkspace = ref<HTMLElement>();
+const fullscreenButton = ref<HTMLButtonElement>();
+const isFullscreen = ref(false);
+const fullscreenPending = ref(false);
+const fullscreenToolsVisible = ref(true);
+const fullscreenSidebarVisible = ref(true);
+
+async function toggleFullscreen() {
+  if (fullscreenPending.value) return;
+  fullscreenPending.value = true;
+  try {
+    if (document.fullscreenElement === graphWorkspace.value) await document.exitFullscreen();
+    else {
+      if (!graphWorkspace.value?.requestFullscreen) throw new Error('当前浏览器不支持全屏查看，请使用支持全屏的浏览器。');
+      fullscreenSidebarVisible.value = editorOpen.value || !window.matchMedia('(max-width: 720px)').matches;
+      await graphWorkspace.value.requestFullscreen();
+    }
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    fullscreenPending.value = false;
+  }
+}
+
+function onFullscreenChange() {
+  const scroller = graphScroller.value;
+  const left = scroller?.scrollLeft ?? 0;
+  const top = scroller?.scrollTop ?? 0;
+  isFullscreen.value = document.fullscreenElement === graphWorkspace.value;
+  void nextTick(() => {
+    updateSidebarHeight();
+    if (scroller) {
+      scroller.scrollLeft = left;
+      scroller.scrollTop = top;
+    }
+    if (!editorOpen.value) fullscreenButton.value?.focus({ preventScroll: true });
+  });
+}
+
+function toggleFullscreenSidebar() {
+  fullscreenSidebarVisible.value = !fullscreenSidebarVisible.value;
+  if (!fullscreenSidebarVisible.value) void nextTick(() => fullscreenButton.value?.focus({ preventScroll: true }));
+}
+const canvasViewport = ref<HTMLDivElement>();
+const viewportSize = ref<{ width: number; height: number } | null>(null);
+let resizeStart: { pointerId: number; x: number; y: number; width: number; height: number } | null = null;
+
+function resizeViewport(width: number, height: number) {
+  const available = canvasViewport.value?.parentElement?.getBoundingClientRect().width ?? width;
+  const sidebarWidth = window.matchMedia('(min-width: 1101px)').matches ? 376 : 0;
+  const maxWidth = Math.max(0, available - sidebarWidth);
+  viewportSize.value = {
+    width: Math.max(Math.min(280, maxWidth), Math.min(maxWidth, width)),
+    height: Math.max(240, Math.min(1600, height)),
+  };
+}
+
+function startViewportResize(event: PointerEvent) {
+  if (event.button !== 0 || !(event.currentTarget instanceof HTMLElement) || !canvasViewport.value) return;
+  const rect = canvasViewport.value.getBoundingClientRect();
+  resizeStart = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, width: rect.width, height: rect.height };
+  event.currentTarget.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function moveViewportResize(event: PointerEvent) {
+  if (!resizeStart || resizeStart.pointerId !== event.pointerId) return;
+  resizeViewport(resizeStart.width + event.clientX - resizeStart.x, resizeStart.height + event.clientY - resizeStart.y);
+}
+
+function endViewportResize() {
+  resizeStart = null;
+}
+
+function onResizeKeydown(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home'].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === 'Home') {
+    viewportSize.value = null;
+    return;
+  }
+  const rect = canvasViewport.value?.getBoundingClientRect();
+  if (!rect) return;
+  const step = event.shiftKey ? 80 : 20;
+  resizeViewport(rect.width + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0),
+    rect.height + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0));
+}
 const menuElement = ref<HTMLDivElement>();
 const editorSidebar = ref<HTMLElement>();
 const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
+const selectionAnchorId = ref<string | null>(null);
+watch(selectedNodeIds, ids => {
+  if (!ids.length) selectionAnchorId.value = null;
+}, { flush: 'sync' });
 const branchFilter = ref<string[] | null>(null);
 const branchFilterDetails = ref<HTMLDetailsElement>();
 const branchQuery = ref('');
@@ -128,7 +219,8 @@ function closeEditor() {
 }
 
 function onSidebarFocusOut(event: FocusEvent) {
-  if (editorOpen.value && window.matchMedia('(max-width: 1100px)').matches
+  if (event.relatedTarget === fullscreenButton.value) return;
+  if (!isFullscreen.value && editorOpen.value && window.matchMedia('(max-width: 1100px)').matches
     && event.relatedTarget instanceof Node && !editorSidebar.value?.contains(event.relatedTarget)) closeEditor();
 }
 
@@ -156,6 +248,7 @@ function clearHistory() {
 }
 
 function showError(cause: unknown) {
+  fullscreenSidebarVisible.value = true;
   error.value = cause instanceof Error ? cause.message : '图操作失败，请重试。';
   status.value = '';
   void nextTick(() => {
@@ -242,7 +335,8 @@ watch(branchFilter, clearSelectionsForFilter);
 watch(menu, value => {
   if (value) void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
 });
-watch([panel, branchDeleteTarget, deletionPlan], async ([nextPanel, nextBranchDelete, nextDeletion], [previousPanel, previousBranchDelete, previousDeletion]) => {
+watch([panel, branchDeleteTarget, deletionPlan, nodeForm, branchForm], async ([nextPanel, nextBranchDelete, nextDeletion], [previousPanel, previousBranchDelete, previousDeletion]) => {
+  if (nextPanel || nextBranchDelete || nextDeletion) fullscreenSidebarVisible.value = true;
   await nextTick();
   if (nextPanel || nextBranchDelete || nextDeletion) {
     const sidebar = editorSidebar.value;
@@ -367,6 +461,7 @@ function onGlobalKeyDown(event: KeyboardEvent) {
       closeMenu();
       return;
     }
+    if (isFullscreen.value) return;
     if (!saving.value) {
       panel.value = null;
       branchDeleteTarget.value = null;
@@ -398,6 +493,7 @@ function onMenuKeyDown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
+  document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onGlobalKeyDown);
   window.addEventListener('pointerdown', closeBranchFilter);
   window.addEventListener('resize', updateSidebarHeight);
@@ -405,6 +501,7 @@ onMounted(() => {
   void refresh();
 });
 onUnmounted(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onGlobalKeyDown);
   window.removeEventListener('pointerdown', closeBranchFilter);
   window.removeEventListener('resize', updateSidebarHeight);
@@ -468,14 +565,22 @@ function nodeColor(node: VersionNode): string {
   return branches[0]?.color ?? '#8799b2';
 }
 
-function selectNode(nodeId: string, additive: boolean) {
-  if (additive) {
+function selectNode(nodeId: string, additive: boolean, range = false) {
+  const rows = graphLayout.value?.rows ?? [];
+  const anchorIndex = rows.findIndex(row => row.node.id === selectionAnchorId.value);
+  const targetIndex = rows.findIndex(row => row.node.id === nodeId);
+  if (range && anchorIndex >= 0 && targetIndex >= 0) {
+    const ids = rows.slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1)
+      .map(row => row.node.id);
+    selectedNodeIds.value = additive ? [...new Set([...selectedNodeIds.value, ...ids])] : ids;
+  } else if (additive) {
     selectedNodeIds.value = selectedNodeIds.value.includes(nodeId)
       ? selectedNodeIds.value.filter(id => id !== nodeId)
       : [...selectedNodeIds.value, nodeId];
   } else {
     selectedNodeIds.value = [nodeId];
   }
+  if (!range || anchorIndex < 0) selectionAnchorId.value = selectedNodeIds.value.length ? nodeId : null;
   activeBranchId.value = null;
   menu.value = null;
 }
@@ -483,7 +588,10 @@ function selectNode(nodeId: string, additive: boolean) {
 function openNodeMenu(event: MouseEvent, nodeId: string) {
   event.preventDefault();
   menuReturnFocus.value = event.currentTarget as HTMLElement;
-  if (!selectedNodeIds.value.includes(nodeId)) selectedNodeIds.value = [nodeId];
+  if (!selectedNodeIds.value.includes(nodeId)) {
+    selectedNodeIds.value = [nodeId];
+    selectionAnchorId.value = nodeId;
+  }
   activeBranchId.value = null;
   const rect = graphScroller.value!.getBoundingClientRect();
   menu.value = {
@@ -562,7 +670,20 @@ function deletionParentCandidates(childId: string): VersionNode[] {
   const child = nodeById.value.get(childId);
   if (!graph.value || !child || !deletionPlan.value) return [];
   return recommendedParentNodes(graph.value, child.version, child.id)
-    .filter(node => !deletionPlan.value!.nodeIds.includes(node.id));
+    .filter(node => !deletionPlan.value!.nodeIds.includes(node.id)
+      && !deletionChildParentChoices.value[childId]?.includes(node.id));
+}
+
+function addDeletionParent(childId: string, parentId: string) {
+  if (saving.value || nodeById.value.get(childId)?.releasedAt
+    || !deletionParentCandidates(childId).some(node => node.id === parentId)) return;
+  deletionChildParentChoices.value[childId]?.push(parentId);
+}
+
+function removeDeletionParent(childId: string, parentId: string) {
+  if (saving.value || nodeById.value.get(childId)?.releasedAt) return;
+  deletionChildParentChoices.value[childId] = (deletionChildParentChoices.value[childId] ?? [])
+    .filter(id => id !== parentId);
 }
 
 async function submitNode() {
@@ -732,6 +853,7 @@ async function confirmBranchDelete() {
 
 function openBranchDelete() {
   if (!selectedBranch.value) return;
+  fullscreenSidebarVisible.value = true;
   panel.value = null;
   deletionPlan.value = null;
   branchDeleteTarget.value = selectedBranch.value.id;
@@ -751,10 +873,16 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
 </script>
 
 <template>
-  <section class="panel graph-workspace" aria-labelledby="graph-title" :aria-busy="saving">
+  <section ref="graphWorkspace" class="panel graph-workspace" :class="{ 'is-fullscreen': isFullscreen, 'fullscreen-sidebar-hidden': !fullscreenSidebarVisible }" aria-labelledby="graph-title" :aria-busy="saving">
+    <div class="graph-controls">
     <div class="section-heading">
       <div><p class="eyebrow">VERSION GRAPH</p><h2 id="graph-title">版本分支图</h2></div>
       <div class="actions">
+        <button ref="fullscreenButton" class="secondary icon-button" :disabled="fullscreenPending" :aria-label="isFullscreen ? '退出全屏' : '全屏查看分支图'" :title="isFullscreen ? '退出全屏（Esc）' : '全屏查看分支图'" :aria-pressed="isFullscreen" @click="toggleFullscreen"><AppIcon :name="isFullscreen ? 'collapse' : 'fit'" /></button>
+        <template v-if="isFullscreen">
+          <button class="secondary icon-button" aria-label="切换悬浮工具栏" title="显示/隐藏悬浮工具栏" :aria-expanded="fullscreenToolsVisible" aria-controls="graph-command-toolbar" @click="fullscreenToolsVisible = !fullscreenToolsVisible"><AppIcon name="tools" /></button>
+          <button class="secondary icon-button" aria-label="切换悬浮编辑窗口" title="显示/隐藏悬浮编辑窗口，保留未保存输入" :aria-expanded="fullscreenSidebarVisible" aria-controls="graph-inspector" @click="toggleFullscreenSidebar"><AppIcon name="edit" /></button>
+        </template>
         <button class="secondary icon-button" :disabled="saving" aria-label="缩小图形" title="缩小图形" @click="zoomAt(0.85)"><AppIcon name="zoom-out" /></button>
         <button class="secondary icon-button" :disabled="saving" aria-label="放大图形" title="放大图形" @click="zoomAt(1.15)"><AppIcon name="zoom-in" /></button>
         <button class="secondary icon-button" :disabled="saving" aria-label="回到画布顶部并重置缩放" title="回到画布顶部并重置缩放" @click="resetZoom"><AppIcon name="fit" /></button>
@@ -769,7 +897,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <span class="count">{{ graph.nodes.length }} 个版本 · {{ graph.branches.length }} 个分支</span>
     </div>
 
-    <div v-if="graph" class="graph-toolbar">
+    <div v-if="graph" v-show="!isFullscreen || fullscreenToolsVisible" id="graph-command-toolbar" class="graph-toolbar">
       <div class="graph-toolbar-row">
         <div class="graph-filter">
           <span id="branch-filter-label">分支范围</span>
@@ -822,10 +950,12 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从选中分支的头版本创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
         <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，保留版本及父子关系；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
       </div>
-      <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击多选</span>
+      <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击离散多选 · Shift 点击连续多选</span>
     </div>
 
+    </div>
     <div v-if="graph" class="graph-layout" :class="{ 'is-editing': editorOpen }">
+      <div ref="canvasViewport" class="graph-viewport" :style="viewportSize ? { width: `${viewportSize.width}px`, height: `${viewportSize.height}px` } : undefined">
       <div
         ref="graphScroller"
         class="graph-canvas-scroll"
@@ -883,7 +1013,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :class="{ 'is-released': row.node.releasedAt }"
                     :aria-label="`版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
-                    @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey)"
+                    @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
+                    @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
                     <AppIcon class="git-release-icon" :name="row.node.releasedAt ? 'release' : 'unrelease'" />
@@ -914,7 +1045,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :class="{ selected: selectedNodeIds.includes(row.node.id), 'is-released': row.node.releasedAt }"
                     :aria-label="`未关联版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
-                    @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey)"
+                    @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
+                    @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
                     <AppIcon class="git-release-icon" :name="row.node.releasedAt ? 'release' : 'unrelease'" />
@@ -960,8 +1092,20 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <button role="menuitem" :disabled="saving" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
         </template>
       </div>
+      <button
+        v-show="!isFullscreen" class="graph-resize-handle" aria-label="调整历史画布尺寸"
+        title="拖拽调整宽高；方向键调整，Shift 加速，Home 恢复默认"
+        @pointerdown="startViewportResize" @pointermove="moveViewportResize"
+        @pointerup="endViewportResize" @pointercancel="endViewportResize" @lostpointercapture="endViewportResize"
+        @keydown="onResizeKeydown" @dblclick="viewportSize = null"
+      ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M7 19 19 7 M13 19l6-6 M19 19h0" /></svg></button>
+      </div>
 
-      <div ref="editorSidebar" class="graph-sidebar" :class="{ 'is-editing': editorOpen }" @focusout="onSidebarFocusOut">
+      <div v-show="!isFullscreen || fullscreenSidebarVisible" id="graph-inspector" ref="editorSidebar" class="graph-sidebar" :class="{ 'is-editing': editorOpen }" @focusout="onSidebarFocusOut">
+        <div v-if="isFullscreen" class="fullscreen-window-heading">
+          <span>{{ editorOpen ? '悬浮编辑窗口' : '分支与版本详情' }}</span>
+          <button class="icon-button" aria-label="收起悬浮编辑窗口" title="收起窗口，保留未保存输入" @click="toggleFullscreenSidebar"><AppIcon name="clear" /></button>
+        </div>
         <div v-if="editorOpen" class="graph-editor-heading">
           <span>图操作面板</span>
           <button class="icon-button" :disabled="saving" aria-label="关闭操作面板" title="关闭操作面板（Escape）" @click="closeEditor"><AppIcon name="clear" /></button>
@@ -1103,15 +1247,25 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </ul>
       <div v-if="Object.keys(deletionPlan.childParents).length" class="deletion-rewires">
         <h4>重连子版本</h4>
-        <p class="form-help">可调整每个子版本的父集合；取消所有勾选会将其设为根版本。</p>
+        <p class="form-help">通过下拉框搜索并添加父版本；移除全部父版本会将其设为根版本。</p>
         <div v-for="childId in Object.keys(deletionPlan.childParents)" :key="childId" class="deletion-child">
           <strong>{{ nodeById.get(childId)?.version }} 的新父版本</strong>
           <p v-if="nodeById.get(childId)?.releasedAt" class="deletion-blocked">该子版本已放行，不能重连；请先撤销其放行。</p>
-          <div class="deletion-parent-options" role="group" :aria-label="`为 ${nodeById.get(childId)?.version} 选择新父版本`">
-            <label v-for="node in deletionParentCandidates(childId)" :key="node.id" class="deletion-parent-option">
-              <input v-model="deletionChildParentChoices[childId]" type="checkbox" :value="node.id" :disabled="saving || !!nodeById.get(childId)?.releasedAt" />
-              <span>{{ node.version }}</span>
-            </label>
+          <div role="group" :aria-label="`为 ${nodeById.get(childId)?.version} 选择新父版本`">
+            <ParentVersionPicker
+              :options="deletionParentCandidates(childId)" :disabled="saving || !!nodeById.get(childId)?.releasedAt"
+              @add="addDeletionParent(childId, $event)"
+            />
+            <ul v-if="deletionChildParentChoices[childId]?.length" class="selected-parent-list" aria-label="已选父版本">
+              <li v-for="id in deletionChildParentChoices[childId]" :key="id">
+                {{ nodeById.get(id)?.version ?? id }}
+                <button
+                  type="button" class="secondary icon-button" :disabled="saving || !!nodeById.get(childId)?.releasedAt"
+                  :aria-label="`移除父版本 ${nodeById.get(id)?.version ?? id}`" @click="removeDeletionParent(childId, id)"
+                ><AppIcon name="clear" /></button>
+              </li>
+            </ul>
+            <p v-else class="form-help">未选择父版本：该子版本将成为根版本。</p>
           </div>
         </div>
       </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' | 'undo' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' | 'undo' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -17,6 +17,8 @@ const paths = {
   'zoom-in': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z M21 21l-4.3-4.3 M11 8v6 M8 11h6',
   'zoom-out': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z M21 21l-4.3-4.3 M8 11h6',
   fit: 'M4 8V4h4 M16 4h4v4 M20 16v4h-4 M8 20H4v-4',
+  collapse: 'M4 9h5V4 M15 4v5h5 M20 15h-5v5 M9 20v-5H4',
+  tools: 'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
   edit: 'M12 20h9 M16.5 3.5l4 4L8 20l-4 1 1-4L16.5 3.5Z',
   trash: 'M4 7h16 M10 7V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2 M6 7l1 13h10l1-13 M10 11v6 M14 11v6',
   branch: 'M7 5v5 M7 10a3 3 0 1 0 0 6 M7 16v3 M19 5v2a3 3 0 0 1-3 3H8',

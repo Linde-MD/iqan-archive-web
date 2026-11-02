@@ -91,7 +91,9 @@ h3 { font-size: 14px; margin: 0 0 8px; color: #eaf1fc; }
 .workspace-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
 .app-workspace.has-project { display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; gap: 20px; }
 .has-project > .workspace-grid { grid-template-columns: minmax(0, 1fr); }
-.has-project > .file-workspace { margin-top: 0; }
+.has-project > .file-workspace, .has-project > .graph-workspace { margin-top: 0; }
+.app-workspace.has-project.projects-collapsed { grid-template-columns: minmax(0, 1fr); }
+.project-rail-toggle { margin-bottom: 12px; }
 .has-project .project-state { display: none; }
 .panel {
   background: linear-gradient(160deg, #141f32, #111a2a 68%); border: 1px solid #2c3b53;
@@ -177,6 +179,7 @@ tbody tr.row-selected { background: #1a3557; }
 .subheading { margin-top: 24px; }
 .comparison-document-list { padding-left: 20px; font-size: 13px; line-height: 1.8; }
 .graph-workspace { margin-top: 20px; border-top: 2px solid #3b82f6; }
+.graph-workspace, .graph-controls, .graph-layout, .graph-sidebar { transition-property: color, background-color, border-color, box-shadow; }
 .panel.graph-workspace { animation-name: graph-surface-enter; }
 @keyframes graph-surface-enter { from { opacity: 0; } to { opacity: 1; } }
 .graph-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; font-size: 13px; }
@@ -208,6 +211,43 @@ tbody tr.row-selected { background: #1a3557; }
 .branch-selected-indicator small { color: var(--muted); font-size: 11px; font-weight: 400; }
 .graph-toolbar .selection-count { display: block; padding-top: 4px; }
 .graph-layout { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+.graph-viewport { position: relative; width: 100%; max-width: 100%; min-width: 0; height: min(70vh, 640px); min-height: 240px; padding-bottom: 44px; border: 1px solid var(--border-strong); border-radius: 10px; background: #0b1321; transition: none; }
+.graph-viewport .graph-canvas-scroll { height: 100%; min-height: 0; border-radius: 9px 9px 0 0; }
+.graph-resize-handle { position: absolute; bottom: 0; right: 0; width: 44px; height: 44px; min-height: 44px; padding: 10px; background: transparent; color: var(--muted); cursor: nwse-resize; touch-action: none; user-select: none; }
+.graph-resize-handle svg { width: 24px; height: 24px; }
+.graph-workspace.is-fullscreen {
+  display: flex; flex-direction: column; gap: 12px; width: 100%; height: 100dvh;
+  margin: 0; padding: 12px; border: 0; border-radius: 0; overflow: hidden;
+  background: #0b1321; animation: none; transition: none;
+}
+.is-fullscreen .graph-controls {
+  position: relative; z-index: 20; flex: 0 1 auto; min-height: 64px; max-height: 50%;
+  width: calc(100% - 384px); padding: 12px; overflow: auto;
+  border: 1px solid var(--border-strong); border-radius: 12px; background: #142137;
+  box-shadow: 0 8px 28px #02061780;
+}
+.is-fullscreen .graph-controls > .section-heading { flex-wrap: wrap; gap: 8px; }
+.is-fullscreen .graph-controls .eyebrow { display: none; }
+.is-fullscreen .graph-meta { margin-top: 8px; }
+.is-fullscreen .graph-toolbar { margin-bottom: 0; }
+.is-fullscreen .graph-layout { flex: 1 1 0; min-height: 0; width: calc(100% - 384px); grid-template-columns: minmax(0, 1fr); }
+.is-fullscreen .graph-viewport { width: 100% !important; height: 100% !important; min-height: 0; padding-bottom: 0; }
+.is-fullscreen .graph-canvas-scroll { border-radius: 9px; }
+.graph-workspace.is-fullscreen .graph-sidebar {
+  position: fixed; z-index: 30; top: 12px; right: 12px; bottom: 12px;
+  width: 360px; height: auto; max-height: none; padding: 0 12px 12px;
+  border: 1px solid var(--border-strong); border-radius: 12px; background: #152136;
+  box-shadow: 0 8px 28px #02061799;
+}
+.fullscreen-window-heading { position: sticky; z-index: 4; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; background: #152136; color: var(--ink); font-size: 12px; border-bottom: 1px solid var(--border); }
+.is-fullscreen .graph-editor-heading { top: 48px; }
+.is-fullscreen.fullscreen-sidebar-hidden .graph-controls, .is-fullscreen.fullscreen-sidebar-hidden .graph-layout { width: 100%; }
+@media (max-width: 720px) {
+  .graph-workspace.is-fullscreen { padding: 8px; gap: 8px; }
+  .is-fullscreen .graph-controls, .is-fullscreen .graph-layout { width: 100%; }
+  .is-fullscreen .graph-controls { padding: 8px; max-height: 50%; }
+  .graph-workspace.is-fullscreen .graph-sidebar { top: 8px; right: 8px; bottom: 8px; width: min(360px, calc(100% - 16px)); }
+}
 .graph-sidebar { position: sticky; top: 16px; min-width: 0; max-height: min(calc(100dvh - 32px), var(--sidebar-available-height, calc(100dvh - 32px))); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding: 68px 12px 12px; }
 .graph-sidebar.is-editing { height: min(70vh, 640px); border: 1px solid var(--border-strong); border-radius: 10px; background: #152136; padding: 0 16px 16px; }
 .graph-editor-heading { position: sticky; z-index: 3; top: 0; display: flex; justify-content: space-between; align-items: center; min-height: 56px; padding: 4px 0; border-bottom: 1px solid var(--border); background: #152136; color: var(--muted); font-size: 12px; }
@@ -312,9 +352,6 @@ tbody tr.row-selected { background: #1a3557; }
 .deletion-child { padding: 8px 0; border-top: 1px solid #29384f; }
 .deletion-child > strong { color: #eaf1fc; font-size: 12px; }
 .deletion-blocked { color: #fca5a5 !important; }
-.deletion-parent-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow: auto; margin-top: 6px; }
-.deletion-parent-option { display: inline-flex !important; align-items: center; justify-content: flex-start !important; gap: 6px !important; min-height: 36px; margin: 0 !important; padding: 4px 8px; border: 1px solid #52647e; border-radius: 6px; background: #101a2a; cursor: pointer; font-size: 11px !important; }
-.deletion-parent-option input { width: 16px; min-height: 16px; margin: 0; accent-color: #60a5fa; }
 .status { min-height: 0; margin: 0; color: #9af4ca; font-size: 12px; }
 .status:empty { display: none; }
 @media (max-width: 1100px) {

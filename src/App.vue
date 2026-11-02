@@ -26,6 +26,7 @@ const error = ref('');
 const status = ref('');
 const submitted = ref(false);
 const activeProjectId = ref('');
+const projectsCollapsed = ref(false);
 const filesBusy = ref(false);
 const graphBusy = ref(false);
 const view = ref<'files' | 'graph'>('files');
@@ -192,8 +193,11 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       <p v-if="status" :key="status" role="status" class="status">{{ status }}</p>
     </Transition>
 
-    <div :class="['app-workspace', { 'has-project': activeProjectId }]">
-    <div class="workspace-grid">
+    <button v-if="activeProjectId" class="secondary project-rail-toggle" :aria-expanded="!projectsCollapsed" aria-controls="project-rail" @click="projectsCollapsed = !projectsCollapsed">
+      <AppIcon name="folder" />{{ projectsCollapsed ? '展开项目区域' : '折叠项目区域' }}
+    </button>
+    <div :class="['app-workspace', { 'has-project': activeProjectId, 'projects-collapsed': activeProjectId && projectsCollapsed }]">
+    <div id="project-rail" v-show="!activeProjectId || !projectsCollapsed" class="workspace-grid">
       <section class="panel projects" aria-labelledby="projects-title" :aria-busy="loading">
         <div class="section-heading">
           <div><p class="eyebrow">PROJECTS</p><h2 id="projects-title">项目档案</h2></div>
