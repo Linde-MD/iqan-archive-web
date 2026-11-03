@@ -284,6 +284,23 @@ tbody tr.row-selected { background: #1a3557; }
 .git-graph-column-head > span:nth-child(3) { color: #d9c8ff; }
 .graph-isolated-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; cursor: pointer; }
 .graph-isolated-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--focus); }
+.graph-mode-toggle { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--canvas); }
+.graph-mode-toggle button { min-height: 44px; padding: 8px 12px; }
+.graph-mode-toggle button[aria-pressed="true"] { border-color: #7db8ff; background: #1b4269; color: #fff; }
+.task-aggregate-panel { display: grid; gap: 8px; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: #111b2b; }
+.task-aggregate-help, .task-aggregate-empty { margin: 0; color: #c0cde0; font-size: 12px; line-height: 1.6; }
+.task-aggregate-list { display: flex; flex-wrap: wrap; gap: 8px; max-height: 192px; overflow: auto; padding: 2px; }
+.task-aggregate-card { flex: 1 1 240px; min-width: min(240px, 100%); max-width: 420px; border: 1px solid #40536e; border-radius: 8px; background: #152136; }
+.task-aggregate-toggle { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 4px 12px; width: 100%; min-height: 64px; padding: 10px 12px; border: 0; background: transparent; color: var(--ink); text-align: left; }
+.task-aggregate-toggle:hover, .task-aggregate-toggle[aria-expanded="true"] { background: #1a2e47; }
+.task-aggregate-heading { display: grid; gap: 3px; min-width: 0; }
+.task-aggregate-heading strong, .task-aggregate-heading > span { overflow-wrap: anywhere; }
+.task-aggregate-heading strong { color: #f5f8ff; font-size: 13px; }
+.task-aggregate-heading > span { color: #c0cde0; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11px; }
+.task-aggregate-count { grid-column: 1; color: #afbdd2; font-size: 11px; }
+.task-aggregate-action { grid-column: 2; grid-row: 1 / span 2; color: #b8d7ff; font-size: 12px; font-weight: 700; }
+.task-aggregate-state { margin: 0; padding: 0 12px 10px; color: #c0cde0; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-aggregate-state span { display: block; color: #f2c97d; }
 .task-manager-list { list-style: none; padding: 0; margin: 12px 0; max-height: 280px; overflow: auto; }
 .task-manager-list > li { padding: 12px 0; border-bottom: 1px solid var(--border-strong); overflow-wrap: anywhere; }
 .task-manager-list p { margin: 4px 0; white-space: pre-wrap; }

@@ -94,6 +94,7 @@ export function layoutGitGraph(
   order: VersionOrder,
   branchIds: readonly string[] | null = null,
   hideIsolated = false,
+  visibleNodeIds: ReadonlySet<string> | null = null,
 ): GitGraphLayout {
   const selectedIds = branchIds === null ? null : new Set(branchIds);
   const branchTracks = selectedIds === null
@@ -128,6 +129,10 @@ export function layoutGitGraph(
       for (const id of branchHistory(branch, parents)) visible.add(id);
     }
     for (const node of graph.nodes) if (!incident.has(node.id)) visible.add(node.id);
+  }
+
+  if (visibleNodeIds) {
+    for (const id of visible) if (!visibleNodeIds.has(id)) visible.delete(id);
   }
 
   const fallbackLane = branchTracks.length;

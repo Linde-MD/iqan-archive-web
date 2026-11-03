@@ -7,6 +7,7 @@ import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } f
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
 import { compareVersions, type VersionOrder } from '../domain/version-order';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
+import { taskViewGroups, visibleTaskViewNodeIds } from '../domain/task-view';
 import AppIcon from './AppIcon.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
 
@@ -172,6 +173,8 @@ const editorSidebar = ref<HTMLElement>();
 const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
 const selectionAnchorId = ref<string | null>(null);
+const graphMode = ref<'all' | 'tasks'>('all');
+const expandedTaskIds = ref<string[]>([]);
 watch(selectedNodeIds, ids => {
   if (!ids.length) selectionAnchorId.value = null;
 }, { flush: 'sync' });
@@ -390,8 +393,21 @@ const subscription = liveQuery(() => props.repository.get(props.projectId)).subs
 });
 onUnmounted(() => subscription.unsubscribe());
 
-const graphLayout = computed(() => graph.value
+const taskBaseLayout = computed(() => graph.value
   ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value, hideIsolated.value)
+  : null);
+const taskGroups = computed(() => graph.value
+  ? taskViewGroups(graph.value).map(group => ({
+    ...group,
+    visibleVersionCount: taskBaseLayout.value?.rows.filter(row => row.node.taskId === group.task.id).length ?? 0,
+  }))
+  : []);
+const hasAssignedVersions = computed(() => graph.value?.nodes.some(node => node.taskId !== null) ?? false);
+const taskVisibleNodeIds = computed(() => graph.value && graphMode.value === 'tasks'
+  ? visibleTaskViewNodeIds(graph.value, expandedTaskIds.value)
+  : null);
+const graphLayout = computed(() => graph.value
+  ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value, hideIsolated.value, taskVisibleNodeIds.value)
   : null);
 const displayHeight = computed(() => Math.max(420, (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight));
 const selectedNodes = computed(() => {
@@ -456,6 +472,31 @@ function clearSelectionsForFilter() {
   if (!graphLayout.value?.branchTracks.some(branch => branch.id === activeBranchId.value)) activeBranchId.value = null;
   menu.value = null;
 }
+function setGraphMode(mode: 'all' | 'tasks') {
+  if (graphMode.value === mode) return;
+  graphMode.value = mode;
+  selectedNodeIds.value = [];
+  selectionAnchorId.value = null;
+  activeBranchId.value = null;
+  menu.value = null;
+  hideVersionHint();
+}
+
+function toggleTaskGroup(taskId: string, expand?: boolean) {
+  const isExpanded = expandedTaskIds.value.includes(taskId);
+  const shouldExpand = expand ?? !isExpanded;
+  if (shouldExpand === isExpanded) return;
+  expandedTaskIds.value = shouldExpand
+    ? [...expandedTaskIds.value, taskId]
+    : expandedTaskIds.value.filter(id => id !== taskId);
+  if (!shouldExpand && graph.value) {
+    const hiddenNodeIds = new Set(graph.value.nodes.filter(node => node.taskId === taskId).map(node => node.id));
+    selectedNodeIds.value = selectedNodeIds.value.filter(id => !hiddenNodeIds.has(id));
+    if (selectionAnchorId.value && hiddenNodeIds.has(selectionAnchorId.value)) selectionAnchorId.value = null;
+    menu.value = null;
+    hideVersionHint();
+  }
+}
 watch(branchFilter, clearSelectionsForFilter);
 watch(hideIsolated, () => {
   hideVersionHint();
@@ -489,6 +530,9 @@ watch(() => props.projectId, () => {
   pendingBranchMove.value = null;
   endBranchDrag();
   selectedNodeIds.value = [];
+  selectionAnchorId.value = null;
+  graphMode.value = 'all';
+  expandedTaskIds.value = [];
   activeBranchId.value = null;
   branchFilter.value = null;
   hideIsolated.value = false;
@@ -771,6 +815,20 @@ function openNodeEdit() {
     targetBranchId: '',
   };
   panel.value = 'node-edit';
+}
+
+function editNodeFromDoubleClick(nodeId: string) {
+  if (saving.value) return;
+  if (editorOpen.value) {
+    if (panel.value === 'node-edit' && selectedNodeIds.value.length === 1 && selectedNodeIds.value[0] === nodeId) return;
+    status.value = '请先保存或取消当前操作，再编辑其他版本。';
+    return;
+  }
+  selectedNodeIds.value = [nodeId];
+  selectionAnchorId.value = nodeId;
+  activeBranchId.value = null;
+  closeMenu(false);
+  openNodeEdit();
 }
 
 function openParentEdit() {
@@ -1093,6 +1151,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <input v-model="hideIsolated" type="checkbox" role="switch" :disabled="saving || editorOpen" />
           <span>隐藏未关联版本</span>
         </label>
+        <div class="graph-mode-toggle" role="group" aria-label="版本图浏览模式">
+          <button type="button" class="secondary" :aria-pressed="graphMode === 'all'" :disabled="saving" @click="setGraphMode('all')">全部版本</button>
+          <button type="button" class="secondary" :aria-pressed="graphMode === 'tasks'" :disabled="saving" @click="setGraphMode('tasks')">按任务聚合</button>
+        </div>
         <button class="tool-button" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'">
           <AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span>
         </button>
@@ -1126,6 +1188,34 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
       <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击离散多选 · Shift 点击连续多选</span>
     </div>
+    <section v-if="graphMode === 'tasks'" class="task-aggregate-panel" aria-label="按任务聚合版本">
+      <p class="task-aggregate-help">展开任务可在下方版本图中查看其版本；未关联任务的版本始终保留在图中。折叠只隐藏节点，不修改版本关系。</p>
+      <div v-if="taskGroups.length" class="task-aggregate-list">
+        <article v-for="group in taskGroups" :key="group.task.id" class="task-aggregate-card">
+          <button
+            type="button"
+            class="task-aggregate-toggle"
+            :aria-expanded="expandedTaskIds.includes(group.task.id)"
+            :aria-controls="`task-group-state-${group.task.id}`"
+            :disabled="saving"
+            @click="toggleTaskGroup(group.task.id)"
+            @dblclick.prevent="toggleTaskGroup(group.task.id, true)"
+          >
+            <span class="task-aggregate-heading">
+              <strong>{{ group.task.name }}</strong>
+              <span>{{ group.task.externalTaskId ? `Task ID ${group.task.externalTaskId}` : '未关联 Task ID' }}</span>
+            </span>
+            <span class="task-aggregate-count">{{ group.versionCount }} 个版本</span>
+            <span class="task-aggregate-action">{{ expandedTaskIds.includes(group.task.id) ? '收起' : '展开' }}</span>
+          </button>
+          <p v-if="expandedTaskIds.includes(group.task.id)" :id="`task-group-state-${group.task.id}`" class="task-aggregate-state">
+            已展开 {{ group.versionCount }} 个版本；当前分支和游离版本筛选下可见 {{ group.visibleVersionCount }} 个。
+            <span v-if="!group.visibleVersionCount && group.versionCount">调整分支范围或游离版本开关以查看节点。</span>
+          </p>
+        </article>
+      </div>
+      <p v-else class="task-aggregate-empty">当前项目尚无任务；未关联任务的版本仍可在下方图中查看。</p>
+    </section>
 
     </div>
     <div v-if="graph" class="graph-layout" :class="{ 'is-editing': editorOpen }">
@@ -1192,6 +1282,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
                     @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
+                    @dblclick.prevent="editNodeFromDoubleClick(row.node.id)"
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
@@ -1228,6 +1319,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
                     @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
+                    @dblclick.prevent="editNodeFromDoubleClick(row.node.id)"
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
@@ -1249,6 +1341,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 </div>
               </div>
               <p v-if="!graph.nodes.length" class="git-graph-empty">暂无版本。可新增未关联版本，或从已有版本创建子版本。</p>
+              <p v-else-if="!graphLayout?.rows.length && graphMode === 'tasks' && hasAssignedVersions" class="git-graph-empty">尚未展开有版本的任务，或任务版本被当前筛选隐藏。展开任务即可查看其版本节点。</p>
               <p v-else-if="!graphLayout?.rows.length" class="git-graph-empty">当前筛选下没有可见版本。请关闭“隐藏未关联版本”或调整分支范围。</p>
             </div>
           </div>
