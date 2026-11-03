@@ -3,6 +3,7 @@ import { createProject, normalizeVersion, requireCondition, type Project, type P
 import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
+import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
   return {
@@ -222,6 +223,10 @@ export class ArchiveRepository {
 
   async saveNodeParents(projectId: string, revision: number, childId: string, parentIds: readonly string[]): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => setNodeParents(graph, childId, parentIds));
+  }
+
+  async changeRelations(projectId: string, revision: number, nodeIds: readonly string[], action: BatchRelationAction): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => changeVersionRelations(graph, nodeIds, action));
   }
 
   async saveBranch(projectId: string, revision: number, branchId: string, update: BranchUpdate): Promise<ProjectGraph> {

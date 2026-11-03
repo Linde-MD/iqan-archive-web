@@ -93,6 +93,7 @@ export function layoutGitGraph(
   graph: ProjectGraph,
   order: VersionOrder,
   branchIds: readonly string[] | null = null,
+  hideIsolated = false,
 ): GitGraphLayout {
   const selectedIds = branchIds === null ? null : new Set(branchIds);
   const branchTracks = selectedIds === null
@@ -130,6 +131,9 @@ export function layoutGitGraph(
   }
 
   const fallbackLane = branchTracks.length;
+  if (hideIsolated) {
+    for (const id of visible) if (!incident.has(id)) visible.delete(id);
+  }
   const isolatedLane = fallbackLane + 1;
   const trackCount = isolatedLane + 1;
   const allRows = orderedNodes(graph, order).filter(node => visible.has(node.id));

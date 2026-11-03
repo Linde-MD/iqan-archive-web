@@ -281,7 +281,9 @@ tbody tr.row-selected { background: #1a3557; }
 }
 .git-graph-column-head > span { min-width: 0; padding: 0 12px; }
 .git-graph-column-head > span + span { border-left: 1px solid #334661; }
-.git-graph-column-head > span:last-child { color: #d9c8ff; }
+.git-graph-column-head > span:nth-child(3) { color: #d9c8ff; }
+.graph-isolated-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; cursor: pointer; }
+.graph-isolated-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--focus); }
 .git-graph-lines { position: absolute; z-index: 3; top: 0; left: 0; overflow: visible; pointer-events: none; }
 .git-graph-edge { fill: none; stroke-width: 2.5; opacity: .88; }
 .git-graph-commit { fill: #0b1321; stroke-width: 3; }

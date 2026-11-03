@@ -6,6 +6,7 @@ import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
 import { compareVersions, type VersionOrder } from '../domain/version-order';
+import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
 import AppIcon from './AppIcon.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
 
@@ -38,6 +39,19 @@ function scheduleHintClose() {
   hintCloseTimer = setTimeout(hideVersionHint, 150);
 }
 
+function moveVersionHint(event: MouseEvent) {
+  const hint = versionHint.value;
+  if (!hint?.matches(':popover-open')) return;
+  const bounds = hint.getBoundingClientRect();
+  const gap = 16;
+  const left = event.clientX + gap + bounds.width <= window.innerWidth - 8
+    ? event.clientX + gap : event.clientX - gap - bounds.width;
+  const top = event.clientY + gap + bounds.height <= window.innerHeight - 8
+    ? event.clientY + gap : event.clientY - gap - bounds.height;
+  hint.style.left = `${Math.max(8, Math.min(left, window.innerWidth - bounds.width - 8))}px`;
+  hint.style.top = `${Math.max(8, Math.min(top, window.innerHeight - bounds.height - 8))}px`;
+}
+
 async function showVersionHint(event: MouseEvent | FocusEvent, node: VersionNode) {
   const anchor = event.currentTarget;
   if (!(anchor instanceof HTMLElement)) return;
@@ -47,6 +61,10 @@ async function showVersionHint(event: MouseEvent | FocusEvent, node: VersionNode
   const hint = versionHint.value;
   if (!hint || hintedNode.value !== node || !anchor.isConnected) return;
   hint.showPopover();
+  if (event instanceof MouseEvent) {
+    moveVersionHint(event);
+    return;
+  }
   const rect = anchor.getBoundingClientRect();
   const bounds = hint.getBoundingClientRect();
   const left = Math.max(8, Math.min(rect.left, window.innerWidth - bounds.width - 8));
@@ -158,6 +176,7 @@ watch(selectedNodeIds, ids => {
   if (!ids.length) selectionAnchorId.value = null;
 }, { flush: 'sync' });
 const branchFilter = ref<string[] | null>(null);
+const hideIsolated = ref(false);
 const branchFilterDetails = ref<HTMLDetailsElement>();
 const branchQuery = ref('');
 const filteredBranches = computed(() => (graph.value?.branches ?? [])
@@ -181,7 +200,10 @@ function closeBranchFilter(event: Event) {
 const activeBranchId = ref<string | null>(null);
 const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
 const menuReturnFocus = ref<HTMLElement | null>(null);
-const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | null>(null);
+const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'relations' | null>(null);
+const relationPreview = shallowRef<{
+  action: BatchRelationAction; nodeIds: string[]; revision: number; edges: ProjectGraph['edges'];
+}>();
 const branchDeleteTarget = ref<string | null>(null);
 const deletionPlan = ref<MultiDeletionPlan | null>(null);
 const deletionChildParentChoices = ref<Record<string, string[]>>({});
@@ -316,7 +338,7 @@ const subscription = liveQuery(() => props.repository.get(props.projectId)).subs
 onUnmounted(() => subscription.unsubscribe());
 
 const graphLayout = computed(() => graph.value
-  ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value)
+  ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value, hideIsolated.value)
   : null);
 const displayHeight = computed(() => Math.max(420, (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight));
 const selectedNodes = computed(() => {
@@ -324,6 +346,11 @@ const selectedNodes = computed(() => {
   return selectedNodeIds.value.flatMap(id => nodes.has(id) ? [nodes.get(id)!] : []);
 });
 const selectedNode = computed(() => selectedNodes.value.length === 1 ? selectedNodes.value[0] : undefined);
+const selectedRelations = computed(() => {
+  const ids = new Set(selectedNodeIds.value);
+  return graph.value?.edges.filter(edge => ids.has(edge.parentId) || ids.has(edge.childId)) ?? [];
+});
+const canBuildLinearRelations = computed(() => selectedNodes.value.length >= 2 && selectedRelations.value.length === 0);
 const selectedBranch = computed(() => graph.value?.branches.find(branch => branch.id === activeBranchId.value));
 const nodeById = computed(() => new Map((graph.value?.nodes ?? []).map(node => [node.id, node])));
 const parentIdsOf = computed(() => {
@@ -365,7 +392,8 @@ const deletionReady = computed(() => {
   return branchChoicesReady && confirmationsReady && childrenAreEditable && !saving.value;
 });
 const laneWidth = computed(() => graphLayout.value?.trackWidth ?? 0);
-const canvasWidth = computed(() => (graphLayout.value?.width ?? 0) + 300);
+const canvasWidth = computed(() => (graphLayout.value?.width ?? 0) + (hideIsolated.value ? 20 : 300));
+const graphColumns = computed(() => `${laneWidth.value}px minmax(720px, 1fr)${hideIsolated.value ? '' : ' 280px'}`);
 const contentHeight = computed(() => (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight);
 
 function clearSelectionsForFilter() {
@@ -375,6 +403,11 @@ function clearSelectionsForFilter() {
   menu.value = null;
 }
 watch(branchFilter, clearSelectionsForFilter);
+watch(hideIsolated, () => {
+  hideVersionHint();
+  closeEditor();
+  clearSelectionsForFilter();
+});
 watch(menu, value => {
   if (value) void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
 });
@@ -404,6 +437,7 @@ watch(() => props.projectId, () => {
   selectedNodeIds.value = [];
   activeBranchId.value = null;
   branchFilter.value = null;
+  hideIsolated.value = false;
   branchQuery.value = '';
   if (branchFilterDetails.value) branchFilterDetails.value.open = false;
   clearHistory();
@@ -844,6 +878,37 @@ async function releaseSelectedNode() {
   });
 }
 
+function openRelationPreview(action: BatchRelationAction) {
+  if (saving.value || !graph.value) return;
+  closeMenu(false);
+  try {
+    const current = graph.value;
+    const nodeIds = [...selectedNodeIds.value];
+    const next = changeVersionRelations(current, nodeIds, action);
+    const oldEdges = new Set(current.edges.map(edge => edge.id));
+    relationPreview.value = {
+      action, nodeIds, revision: current.project.revision,
+      edges: action === 'clear' ? [...selectedRelations.value] : next.edges.filter(edge => !oldEdges.has(edge.id)),
+    };
+    error.value = '';
+    status.value = '';
+    panel.value = 'relations';
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+async function confirmRelations() {
+  const preview = relationPreview.value;
+  if (!preview || saving.value) return;
+  await operation(preview.action === 'clear' ? '清除父子关联' : '构建线性关联', async () => {
+    graph.value = await props.repository.changeRelations(props.projectId, preview.revision, preview.nodeIds, preview.action);
+    status.value = `已${preview.action === 'clear' ? '清除' : '构建'} ${preview.edges.length} 条父子关联，版本及分支指针保持不变。`;
+    panel.value = null;
+    relationPreview.value = undefined;
+  });
+}
+
 function openDeletion() {
   const current = graph.value;
   if (!current || selectedNodeIds.value.length === 0) return;
@@ -961,10 +1026,14 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 </label>
                 <p v-if="!filteredBranches.length" class="form-help">{{ graph.branches.length ? '没有匹配的分支。' : '尚无分支。' }}</p>
               </div>
-              <p class="form-help">多选显示历史并集；游离版本始终保留。</p>
+              <p class="form-help">多选显示历史并集；游离版本可通过旁边开关隐藏。</p>
             </div>
           </details>
         </div>
+        <label class="graph-isolated-toggle">
+          <input v-model="hideIsolated" type="checkbox" role="switch" :disabled="saving || editorOpen" />
+          <span>隐藏未关联版本</span>
+        </label>
         <button class="tool-button" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'">
           <AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span>
         </button>
@@ -979,6 +1048,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="编辑版本" title="编辑选中版本的版本号与说明；已放行版本仅可编辑说明" @click="startNodeAction('edit')"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" aria-label="设置父版本" title="搜索选择父版本；已放行版本不可修改父边" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length < 2" aria-label="合并版本" title="选择至少两个版本后创建合并版本" @click="startNodeAction('merge')"><AppIcon name="merge" /><span class="tool-caption">合并</span></button>
+        <button class="tool-button tool-button-danger" :disabled="saving || selectedNodeIds.length < 2 || !selectedRelations.length" aria-label="清除父子关联" title="预览清除所选版本的全部直接父子边，包括与未选版本的关系；已放行父边不可修改" @click="openRelationPreview('clear')"><AppIcon name="clear" /><span class="tool-caption">清除关联</span></button>
+        <button class="tool-button" :disabled="saving || !canBuildLinearRelations" aria-label="构建线性关联" title="将所选游离版本按版本号从旧到新线性关联；不受当前显示排序影响" @click="openRelationPreview('linear')"><AppIcon name="link" /><span class="tool-caption">线性关联</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" :aria-label="selectedNode?.releasedAt ? '撤销放行' : '放行版本'" :title="selectedNode?.releasedAt ? '撤销选中版本的放行；不可破坏已放行后代闭包' : '放行选中版本及其全部祖先'" @click="startNodeAction('release')">
           <AppIcon :name="selectedNode?.releasedAt ? 'unrelease' : 'release'" /><span class="tool-caption">{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</span>
         </button>
@@ -1009,8 +1080,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       >
         <div class="git-graph-canvas" :style="{ width: `${canvasWidth * scale}px`, height: `${displayHeight * scale}px` }">
           <div class="git-graph-zoom-content" :style="{ width: `${canvasWidth}px`, height: `${displayHeight}px`, transform: `scale(${scale})`, '--graph-header-height': `${GIT_GRAPH.headerHeight}px`, '--graph-row-height': `${GIT_GRAPH.rowHeight}px` }">
-            <div class="git-graph-column-head" :style="{ gridTemplateColumns: `${laneWidth}px minmax(720px, 1fr) 280px` }">
-              <span>分支轨道</span><span>版本与改动信息 · 分支标签位于版本右侧</span><span>未关联版本</span>
+            <div class="git-graph-column-head" :style="{ gridTemplateColumns: graphColumns }">
+              <span>分支轨道</span><span>版本与改动信息 · 分支标签位于版本右侧</span><span v-if="!hideIsolated">未关联版本</span>
             </div>
             <svg
               v-if="graphLayout"
@@ -1046,7 +1117,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 @dragover="onBranchDragOver($event, row.node.id)"
                 @dragleave="dropTargetId === row.node.id && (dropTargetId = null)"
                 @drop="dropBranch($event, row.node.id)"
-                :style="{ gridTemplateColumns: `${laneWidth}px minmax(720px, 1fr) 280px` }"
+                :style="{ gridTemplateColumns: graphColumns }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
                 <div class="git-graph-main-cell">
@@ -1057,7 +1128,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :aria-label="`版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
                     :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
-                    @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
+                    @mouseenter="showVersionHint($event, row.node)" @mousemove="moveVersionHint" @mouseleave="scheduleHintClose"
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
                     @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
@@ -1085,7 +1156,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     >{{ branch.name }}</button>
                   </span>
                 </div>
-                <div class="git-graph-orphan-cell">
+                <div v-if="!hideIsolated" class="git-graph-orphan-cell">
                   <button
                     v-if="row.isolated"
                     class="git-row-commit git-row-orphan"
@@ -1093,7 +1164,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :aria-label="`未关联版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
                     :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
-                    @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
+                    @mouseenter="showVersionHint($event, row.node)" @mousemove="moveVersionHint" @mouseleave="scheduleHintClose"
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
                     @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
@@ -1118,6 +1189,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 </div>
               </div>
               <p v-if="!graph.nodes.length" class="git-graph-empty">暂无版本。可新增未关联版本，或从已有版本创建子版本。</p>
+              <p v-else-if="!graphLayout?.rows.length" class="git-graph-empty">当前筛选下没有可见版本。请关闭“隐藏未关联版本”或调整分支范围。</p>
             </div>
           </div>
         </div>
@@ -1126,6 +1198,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : '分支操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
           <button role="menuitem" :disabled="saving" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
+          <button role="menuitem" :disabled="saving || !selectedRelations.length" @click="openRelationPreview('clear')"><AppIcon name="clear" />清除父子关联</button>
+          <button role="menuitem" :disabled="saving || !canBuildLinearRelations" @click="openRelationPreview('linear')"><AppIcon name="link" />构建线性关联</button>
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除所选版本</button>
         </template>
         <template v-else-if="menu.kind === 'node'">
@@ -1202,6 +1276,20 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <p v-if="!graph.branches.length" class="form-help">尚无分支。选择版本后创建分支；未关联版本会显示在独立列中。</p>
       </aside>
       </template>
+
+    <div v-if="panel === 'relations' && relationPreview" class="graph-form" role="dialog" aria-modal="false" aria-label="批量父子关联确认">
+      <h3 tabindex="-1">{{ relationPreview.action === 'clear' ? '清除父子关联' : '构建线性关联' }}</h3>
+      <p>已选 {{ relationPreview.nodeIds.length }} 个版本，将{{ relationPreview.action === 'clear' ? '清除' : '新增' }} {{ relationPreview.edges.length }} 条关系。</p>
+      <p class="form-help">{{ relationPreview.action === 'clear' ? '包括所选版本与未选版本之间的直接父子边，不自动重连。' : '按版本号从旧到新关联，左侧为父版本，右侧为子版本；与点击顺序、当前显示排序无关。' }}版本、任务、放行状态及分支指针保持不变；可撤销。</p>
+      <ul class="selected-parent-list" aria-label="父子关联预览">
+        <li v-for="edge in relationPreview.edges" :key="edge.id"><span>{{ nodeById.get(edge.parentId)?.version }} → {{ nodeById.get(edge.childId)?.version }}</span></li>
+      </ul>
+      <div class="actions">
+        <button :class="relationPreview.action === 'clear' ? 'danger' : ''" :disabled="saving || graph.project.revision !== relationPreview.revision" @click="confirmRelations">确认{{ relationPreview.action === 'clear' ? '清除' : '构建' }}</button>
+        <button class="secondary" :disabled="saving" @click="closeEditor">取消</button>
+      </div>
+      <p v-if="graph.project.revision !== relationPreview.revision" role="alert" class="error">版本图已更新，请取消并重新预览。</p>
+    </div>
 
     <div v-if="branchDeleteTarget" class="graph-form" role="dialog" aria-modal="false" aria-label="删除分支确认">
       <h3 tabindex="-1">删除分支记录</h3>

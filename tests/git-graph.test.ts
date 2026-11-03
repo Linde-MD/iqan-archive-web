@@ -79,4 +79,21 @@ describe('Git Graph 投影', () => {
     const candidates = recommendedParentNodes(graph, 'V1.0-3', 'n2');
     expect(candidates.map(node => node.id)).toEqual(['n5', 'n1']);
   });
+
+  it.each(['oldest', 'newest'] as const)('隐藏游离版本重新压紧行序及边端点，不改变数据：%s', order => {
+    const graph = fixture();
+    const before = structuredClone(graph);
+    const layout = layoutGitGraph(graph, order, null, true);
+    expect(layout.rows).toHaveLength(4);
+    expect(layout.rows.every(row => !row.isolated)).toBe(true);
+    expect(layout.rows.map(row => row.rowIndex)).toEqual([0, 1, 2, 3]);
+    for (const edge of layout.edges) {
+      expect(layout.rows[edge.fromRow]?.node.id).toBe(edge.parentId);
+      expect(layout.rows[edge.toRow]?.node.id).toBe(edge.childId);
+    }
+    expect(layoutGitGraph(graph, order, [], true).rows).toEqual([]);
+    expect(layoutGitGraph(graph, order, ['feature'], true).rows.map(row => row.node.id).sort()).toEqual(['n1', 'n2', 'n4']);
+    expect(layoutGitGraph(graph, order).rows).toHaveLength(5);
+    expect(graph).toEqual(before);
+  });
 });
