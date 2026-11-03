@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
+import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
@@ -149,6 +149,10 @@ export class ArchiveRepository {
 
   async saveTask(projectId: string, revision: number, task: Task): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => updateTask(graph, task));
+  }
+
+  async deleteTask(projectId: string, revision: number, taskId: string): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => deleteTask(graph, taskId));
   }
 
   async register(projectId: string, revision: number, candidates: readonly FileCandidate[]) {

@@ -176,6 +176,27 @@ describe('Dexie 原子持久化', () => {
     return repo.get(graph.project.id);
   }
 
+  it('任务删除原子解除所有版本关联，放行/父边/分支保留，修订保护及撤销可恢复', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'delete-task', '1479-1'));
+    for (const id of ['A', 'B']) graph = await repo.saveNode(graph.project.id, graph.project.revision, id, { taskId: 'delete-task' });
+    graph = await repo.release(graph.project.id, graph.project.revision, 'A');
+    const before = structuredClone(graph);
+    await expect(repo.deleteTask(graph.project.id, graph.project.revision, 'missing')).rejects.toThrow('任务不存在');
+    expect(await repo.get(graph.project.id)).toEqual(before);
+    const deleted = await repo.deleteTask(graph.project.id, graph.project.revision, 'delete-task');
+    expect(deleted.tasks).toEqual([]);
+    expect(deleted.nodes.every(node => node.taskId === null)).toBe(true);
+    expect(deleted.nodes.map(node => node.releasedAt)).toEqual(before.nodes.map(node => node.releasedAt));
+    expect(deleted.edges).toEqual(before.edges);
+    expect(deleted.branches).toEqual(before.branches);
+    await expect(repo.deleteTask(graph.project.id, graph.project.revision, 'delete-task')).rejects.toThrow('其他标签页');
+    const restored = await repo.restoreUndo(graph.project.id, deleted.project.revision, before);
+    expect(restored.tasks).toEqual(before.tasks);
+    expect(restored.nodes).toEqual(before.nodes);
+  });
+
   it('批量删除、分支删除和修订保护的撤销恢复保持图快照一致', async () => {
     const repo = repository();
     let graph = await seed(repo);

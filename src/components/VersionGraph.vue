@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
-import type { Branch, ProjectGraph, VersionNode } from '../domain/model';
+import type { Branch, ProjectGraph, Task, VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -200,7 +200,60 @@ function closeBranchFilter(event: Event) {
 const activeBranchId = ref<string | null>(null);
 const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
 const menuReturnFocus = ref<HTMLElement | null>(null);
-const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'relations' | null>(null);
+const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'relations' | 'tasks' | null>(null);
+const nodeTaskId = ref('');
+const taskForm = ref({ id: '', name: '', description: '', loopId: '' });
+const taskRevision = ref(0);
+const taskDeleteId = ref<string | null>(null);
+const taskQuery = ref('');
+const filteredTasks = computed(() => (graph.value?.tasks ?? []).filter(task =>
+  `${task.name} ${task.loopId ?? ''}`.toLocaleLowerCase().includes(taskQuery.value.trim().toLocaleLowerCase())));
+const taskDeleteTarget = computed(() => graph.value?.tasks.find(task => task.id === taskDeleteId.value));
+
+function taskLabel(task: Task): string {
+  return `${task.name} · ${task.loopId ? `Loop ${task.loopId}` : '未关联 Loop'}`;
+}
+
+function editTask(task?: Task) {
+  taskForm.value = task ? { ...task, loopId: task.loopId ?? '' } : { id: '', name: '', description: '', loopId: '' };
+  taskRevision.value = graph.value!.project.revision;
+  taskDeleteId.value = null;
+  error.value = '';
+  void nextTick(() => editorSidebar.value?.querySelector<HTMLInputElement>('#git-task-name')?.focus({ preventScroll: true }));
+}
+
+function openTasks() {
+  panel.value = 'tasks';
+  editTask();
+  closeMenu(false);
+}
+
+async function submitTask() {
+  await operation(taskForm.value.id ? '编辑任务' : '创建任务', async () => {
+    const current = graph.value!;
+    graph.value = await props.repository.saveTask(props.projectId, taskRevision.value, {
+      ...taskForm.value, id: taskForm.value.id || crypto.randomUUID(), projectId: current.project.id,
+    });
+    status.value = '任务已保存。Loop ID 仅为手工编号映射，未进行远端验证。';
+    editTask();
+  });
+}
+
+function openTaskDelete(task: Task) {
+  editTask(task);
+  taskDeleteId.value = task.id;
+  void nextTick(() => editorSidebar.value?.querySelector<HTMLElement>('.task-delete-confirm h3')?.focus({ preventScroll: true }));
+}
+
+async function confirmTaskDelete() {
+  const task = taskDeleteTarget.value;
+  if (!task || saving.value) return;
+  await operation('删除任务', async () => {
+    graph.value = await props.repository.deleteTask(props.projectId, taskRevision.value, task.id);
+    status.value = '任务已删除，所属版本已解除任务关联；版本与父子关系保持不变。';
+    editTask();
+  });
+}
 const relationPreview = shallowRef<{
   action: BatchRelationAction; nodeIds: string[]; revision: number; edges: ProjectGraph['edges'];
 }>();
@@ -346,6 +399,7 @@ const selectedNodes = computed(() => {
   return selectedNodeIds.value.flatMap(id => nodes.has(id) ? [nodes.get(id)!] : []);
 });
 const selectedNode = computed(() => selectedNodes.value.length === 1 ? selectedNodes.value[0] : undefined);
+const selectedTask = computed(() => graph.value?.tasks.find(task => task.id === selectedNode.value?.taskId));
 const selectedRelations = computed(() => {
   const ids = new Set(selectedNodeIds.value);
   return graph.value?.edges.filter(edge => ids.has(edge.parentId) || ids.has(edge.childId)) ?? [];
@@ -439,6 +493,7 @@ watch(() => props.projectId, () => {
   branchFilter.value = null;
   hideIsolated.value = false;
   branchQuery.value = '';
+  taskQuery.value = '';
   if (branchFilterDetails.value) branchFilterDetails.value.open = false;
   clearHistory();
   void refresh();
@@ -700,6 +755,7 @@ function openBranchMenu(event: MouseEvent, branchId: string) {
 }
 
 function openNodeAdd(parentIds: readonly string[] = []) {
+  nodeTaskId.value = '';
   nodeForm.value = { version: '', description: '', parentIds: [...parentIds], targetBranchId: '' };
   panel.value = 'node-add';
   closeMenu(false);
@@ -707,6 +763,7 @@ function openNodeAdd(parentIds: readonly string[] = []) {
 
 function openNodeEdit() {
   if (!selectedNode.value) return;
+  nodeTaskId.value = selectedNode.value.taskId ?? '';
   nodeForm.value = {
     version: selectedNode.value.version,
     description: selectedNode.value.description,
@@ -728,6 +785,7 @@ function openParentEdit() {
 }
 
 function openMerge() {
+  nodeTaskId.value = '';
   nodeForm.value = { version: '', description: '', parentIds: [...selectedNodeIds.value], targetBranchId: '' };
   panel.value = 'merge';
 }
@@ -776,6 +834,7 @@ async function submitNode() {
       graph.value = await props.repository.saveNode(props.projectId, current.project.revision, selectedNode.value!.id, {
         version: nodeForm.value.version,
         description: nodeForm.value.description,
+        taskId: nodeTaskId.value || null,
       });
       status.value = '版本已更新。';
     } else if (panel.value === 'merge') {
@@ -798,7 +857,7 @@ function createNode(current: ProjectGraph, form: typeof nodeForm.value): Version
     projectId: current.project.id,
     version: form.version.trim(),
     description: form.description.trim(),
-    taskId: null,
+    taskId: nodeTaskId.value || null,
     releasedAt: null,
   };
 }
@@ -1041,6 +1100,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <AppIcon name="undo" /><span class="tool-caption">撤销</span>
         </button>
         <button class="tool-button tool-button-accent" :disabled="saving" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
+        <button class="tool-button" :disabled="saving" aria-label="管理任务" title="创建、编辑任务与手工 Loop 编号；删除任务仅解除版本关联" @click="openTasks"><AppIcon name="file" /><span class="tool-caption">任务管理</span></button>
       </div>
 
       <div class="graph-toolbar-row">
@@ -1243,6 +1303,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <h3>{{ selectedNode.version }}</h3>
         <p class="form-help">{{ selectedNode.description || '（无改动说明）' }}</p>
         <p class="workspace-details">状态：{{ selectedNode.releasedAt ? '已放行' : '未放行' }}</p>
+        <p class="workspace-details">所属任务：{{ selectedTask ? taskLabel(selectedTask) : '未关联任务' }}</p>
         <p class="workspace-details">父版本：{{ (parentIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无（未关联）' }}</p>
         <p class="workspace-details">子版本：{{ (childIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无' }}</p>
         <p class="workspace-details">分支：{{ (graphLayout?.memberships.get(selectedNode.id) ?? []).map(branch => branch.name).join('、') || '未关联' }}</p>
@@ -1300,6 +1361,46 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
     </div>
 
+    <div v-if="panel === 'tasks'" class="graph-form" role="dialog" aria-modal="false" aria-label="任务管理">
+      <h3 tabindex="-1">任务管理</h3>
+      <p class="form-help">任务可关联多个版本。Loop ID 为手工编号，同项目唯一、区分大小写、最多 16 个 Unicode 码点；不提供链接、登录或同步。</p>
+      <label for="git-task-search">搜索任务</label>
+      <input id="git-task-search" v-model="taskQuery" type="search" placeholder="名称或 Loop ID" :disabled="saving" />
+      <ul class="task-manager-list" aria-label="项目任务">
+        <li v-for="task in filteredTasks" :key="task.id">
+          <div><strong>{{ task.name }}</strong><p>{{ task.loopId ? `Loop ${task.loopId}` : '未关联 Loop' }} · {{ graph.nodes.filter(node => node.taskId === task.id).length }} 个版本</p><p v-if="task.description">{{ task.description }}</p></div>
+          <div class="actions">
+            <button type="button" class="secondary" :disabled="saving" :aria-label="`编辑任务 ${task.name}`" @click="editTask(task)">编辑</button>
+            <button type="button" class="secondary" :disabled="saving" :aria-label="`删除任务 ${task.name}`" @click="openTaskDelete(task)">删除</button>
+          </div>
+        </li>
+      </ul>
+      <p v-if="!filteredTasks.length" class="form-help">{{ graph.tasks.length ? '没有匹配的任务。' : '尚无任务，请在下方创建。' }}</p>
+      <div v-if="taskDeleteTarget" class="task-delete-confirm">
+        <h3 tabindex="-1">删除任务确认</h3>
+        <p>删除“{{ taskDeleteTarget.name }}”并解除 {{ graph.nodes.filter(node => node.taskId === taskDeleteTarget!.id).length }} 个版本的任务关联；不删除版本、不修改父边及分支指针。</p>
+        <div class="actions">
+          <button class="danger" :disabled="saving || graph.project.revision !== taskRevision" @click="confirmTaskDelete">确认删除任务</button>
+          <button class="secondary" :disabled="saving" @click="taskDeleteId = null">取消删除</button>
+        </div>
+      </div>
+      <form v-else @submit.prevent="submitTask">
+        <h3>{{ taskForm.id ? '编辑任务' : '新建任务' }}</h3>
+        <label for="git-task-name">任务名称 <span>必填</span></label>
+        <input id="git-task-name" v-model="taskForm.name" required :disabled="saving" />
+        <label for="git-task-loop">Loop ID <span>可选，例如 1479-1</span></label>
+        <input id="git-task-loop" v-model="taskForm.loopId" :disabled="saving" placeholder="1479-1" />
+        <label for="git-task-description">任务说明</label>
+        <textarea id="git-task-description" v-model="taskForm.description" rows="3" :disabled="saving"></textarea>
+        <div class="actions">
+          <button type="submit" :disabled="saving || !taskForm.name.trim() || graph.project.revision !== taskRevision">保存任务</button>
+          <button v-if="taskForm.id" type="button" class="secondary" :disabled="saving" @click="editTask()">新建其他任务</button>
+          <button type="button" class="secondary" :disabled="saving" @click="closeEditor">关闭</button>
+        </div>
+      </form>
+      <p v-if="graph.project.revision !== taskRevision" role="alert" class="error">版本图已更新，请重新选择任务编辑或重新打开任务管理，确认最新数据后再保存。</p>
+    </div>
+
     <div v-if="panel === 'node-add' || panel === 'node-edit' || panel === 'merge'" class="graph-form" role="dialog" aria-modal="false" :aria-label="panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : '新增版本'">
       <h3 tabindex="-1">{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
       <form @submit.prevent="submitNode">
@@ -1307,6 +1408,12 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' && !!selectedNode?.releasedAt)" placeholder="例如：1479-1 20260115" />
         <label for="git-description">改动说明</label>
         <textarea id="git-description" v-model="nodeForm.description" :disabled="saving" rows="3" placeholder="记录本次版本改动"></textarea>
+        <label for="git-node-task">所属任务</label>
+        <select id="git-node-task" v-model="nodeTaskId" :disabled="saving">
+          <option value="">未关联任务</option>
+          <option v-for="task in graph.tasks" :key="task.id" :value="task.id">{{ taskLabel(task) }}</option>
+        </select>
+        <p class="form-help">每个版本可不关联任务，或关联一个任务；任务通过工具栏“任务管理”维护。</p>
         <template v-if="panel !== 'node-edit'">
           <ParentVersionPicker :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />
           <ul v-if="nodeForm.parentIds.length" class="selected-parent-list" aria-label="已选父版本">
