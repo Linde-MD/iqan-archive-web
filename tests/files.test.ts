@@ -150,7 +150,7 @@ describe('项目事务及v3迁移', () => {
     await expect(repository.setPartNumber(graph.project.id, graph.project.revision, ' ')).rejects.toThrow('不能为空');
     expect(await repository.get(graph.project.id)).toEqual(graph);
     const snapshot = await repository.snapshot(graph.project.id);
-    expect(snapshot.schemaVersion).toBe(2);
+    expect(snapshot.schemaVersion).toBe(3);
     expect(snapshot.graph).not.toHaveProperty('files');
     expect(snapshot.graph.project).not.toHaveProperty('wordDirectoryHint');
     expect(snapshot.graph.project).not.toHaveProperty('engineeringDirectoryHint');
@@ -162,7 +162,7 @@ describe('项目事务及v3迁移', () => {
   async function oldDatabase(conflict: boolean) {
     const name = `migration-${crypto.randomUUID()}`;
     const db = new Dexie(name); databases.push(db);
-    db.version(1).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+loopId]', files: 'id, projectId, nodeId' });
+    db.version(1).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]', files: 'id, projectId, nodeId' });
     const graph = createProject('旧项目', '001');
     await db.table('projects').add(graph.project);
     const nodes: VersionNode[] = (conflict ? ['V1  2026', 'V1 2026'] : ['V1  2026']).map((version, index) => ({
@@ -172,12 +172,12 @@ describe('项目事务及v3迁移', () => {
     const next = new ArchiveDatabase(name); databases.push(next);
     return { db, next, nodes, project: graph.project };
   }
-  it('v1升级到v3保留原图和旧文本，不自动重写身份', async () => {
+  it('v1升级到v4保留原图和版本身份', async () => {
     const { next, nodes, project } = await oldDatabase(false);
     const graph = await new ArchiveRepository(next).get(project.id);
     expect(graph.nodes).toEqual(nodes);
     expect(await next.directoryBindings.count()).toBe(0);
-    expect(next.backendDB().version).toBe(30);
+    expect(next.backendDB().version).toBe(40);
   });
   it('v1规范化碰撞拒绝升级且回滚，旧数据库可恢复', async () => {
     const { db, next, nodes } = await oldDatabase(true);
@@ -197,28 +197,30 @@ describe('项目事务及v3迁移', () => {
     await repository.db.open();
     expect(await repository.get(graph.project.id)).toEqual(graph);
   });
-  it('v2升级到v3移除文件表，保留放行图、任务、分支及目录绑定', async () => {
+  it('v2升级到v4移除文件表并保留图与目录绑定', async () => {
     const name = `v2-${crypto.randomUUID()}`;
     const old = new Dexie(name); databases.push(old);
-    old.version(2).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+loopId]', files: 'id, projectId, nodeId', directoryBindings: '[projectId+role], projectId' });
+    old.version(2).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]', files: 'id, projectId, nodeId', directoryBindings: '[projectId+role], projectId' });
     let graph = registerCandidates(createProject('旧项目', '001'), [candidate(), candidate('001 V2.idax')]);
     graph.edges.push({ id: 'edge', projectId: graph.project.id, parentId: graph.nodes[0]!.id, childId: graph.nodes[1]!.id });
-    graph.tasks.push({ id: 'task', projectId: graph.project.id, name: '任务', description: '', loopId: '1479-1' });
-    graph.nodes[1]!.taskId = 'task';
     graph.branches.push({ id: 'main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: graph.nodes[1]!.id });
     graph = release(graph, graph.nodes[1]!.id, new Date().toISOString());
     graph.nodes.sort((a, b) => a.id.localeCompare(b.id));
     await old.table('projects').add(graph.project);
     await old.table('nodes').bulkAdd(graph.nodes);
     await old.table('edges').bulkAdd(graph.edges);
-    await old.table('tasks').bulkAdd(graph.tasks);
     await old.table('branches').bulkAdd(graph.branches);
     await old.table('files').add({ id: 'legacy', projectId: graph.project.id, nodeId: graph.nodes[0]!.id, relativePath: 'old.idax' });
     await old.table('directoryBindings').add({ projectId: graph.project.id, role: 'engineering', handle: { name: 'root', kind: 'directory' } });
     old.close();
     const next = new ArchiveDatabase(name); databases.push(next);
     const repository = new ArchiveRepository(next);
-    expect(await repository.get(graph.project.id)).toEqual(graph);
+    const migrated = await repository.get(graph.project.id);
+    expect(migrated.tasks).toEqual([]);
+    expect(migrated.nodes).toEqual(graph.nodes);
+    expect(migrated.edges).toEqual(graph.edges);
+    expect(migrated.branches).toEqual(graph.branches);
+    expect(next.backendDB().version).toBe(40);
     expect(next.tables.map(table => table.name)).not.toContain('files');
     expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
     const changed = await repository.setPartNumber(graph.project.id, 0, '002');

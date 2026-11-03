@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createProject, normalizeLoopId, type ProjectGraph, type Task } from '../src/domain/model';
+import { createProject, normalizeExternalTaskId, type ProjectGraph, type Task } from '../src/domain/model';
 import { ancestors, appendVersion, applyDeletion, applyDeletionMany, createBranch, deleteBranch, deleteTask, mergeVersion, planDeletion, planDeletionMany, projectTaskView, release, revokeRelease, updateTask, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
@@ -16,8 +16,8 @@ function fixture(): ProjectGraph {
   return graph;
 }
 
-function task(graph: ProjectGraph, id: string, loopId: string | null): Task {
-  return { id, projectId: graph.project.id, name: id, description: '', loopId };
+function task(graph: ProjectGraph, id: string, externalTaskId: string | null): Task {
+  return { id, projectId: graph.project.id, name: id, description: '', externalTaskId };
 }
 
 const databases: ArchiveDatabase[] = [];
@@ -91,22 +91,28 @@ describe('领域基础', () => {
     expect(revoked.nodes.find(node => node.id === 'A')!.releasedAt).not.toBeNull();
   });
 
-  it('Loop 文本 16 个码点上限、保留前导零/大小写，空白转 null', () => {
-    expect(normalizeLoopId(' 001-A ')).toBe('001-A');
-    expect(normalizeLoopId('   ')).toBeNull();
-    expect(normalizeLoopId('😀'.repeat(16))).toBe('😀'.repeat(16));
-    expect(() => normalizeLoopId('😀'.repeat(17))).toThrow('16');
+  it('外部 Task ID 仅接受 1–16 位数字，保留前导零，空白转 null', () => {
+    expect(normalizeExternalTaskId(' 001 ')).toBe('001');
+    expect(normalizeExternalTaskId('   ')).toBeNull();
+    expect(normalizeExternalTaskId('1234567890123456')).toBe('1234567890123456');
+    expect(() => normalizeExternalTaskId('12345678901234567')).toThrow('16');
+    expect(() => normalizeExternalTaskId('1479-1')).toThrow('数字');
+    expect(() => normalizeExternalTaskId('12A')).toThrow('数字');
+    expect(() => normalizeExternalTaskId('１２３')).toThrow('数字');
+    const invalidTaskIdGraph = fixture();
+    invalidTaskIdGraph.tasks.push(task(invalidTaskIdGraph, 'invalid-task', '1479-1'));
+    expect(() => validateGraph(invalidTaskIdGraph)).toThrow('数字');
     let graph = fixture();
-    graph = updateTask(graph, task(graph, 't1', '1479-1'));
+    graph = updateTask(graph, task(graph, 't1', '1479'));
     graph = updateTask(graph, task(graph, 't2', null));
     graph = updateTask(graph, task(graph, 't3', null));
-    expect(() => updateTask(graph, task(graph, 't4', ' 1479-1 '))).toThrow('已被其他任务使用');
-    expect(() => updateTask(graph, task(graph, 't4', '1479-A'))).not.toThrow();
+    expect(() => updateTask(graph, task(graph, 't4', ' 1479 '))).toThrow('已被其他任务使用');
+    expect(() => updateTask(graph, task(graph, 't4', '1479A'))).toThrow('数字');
   });
 
   it('任务投影和删除不改变历史图/放行，详情引用同一任务', () => {
     let graph = fixture();
-    graph = updateTask(graph, task(graph, 't1', '1479-1'));
+    graph = updateTask(graph, task(graph, 't1', '1479'));
     graph.nodes[1]!.taskId = 't1';
     graph.nodes[2]!.taskId = 't1';
     const before = structuredClone(graph);
@@ -114,7 +120,7 @@ describe('领域基础', () => {
     expect(projectTaskView(graph, 'tasks', new Set(['t1'])).nodes).toHaveLength(6);
     expect(projectTaskView(graph, 'all', new Set()).nodes).toHaveLength(6);
     expect(graph).toEqual(before);
-    const updated = updateTask(graph, task(graph, 't1', 'new ID'));
+    const updated = updateTask(graph, task(graph, 't1', '88'));
     expect(updated.nodes).toEqual(graph.nodes);
     const removed = deleteTask(updated, 't1');
     expect(removed.nodes.every(node => node.taskId === null)).toBe(true);
@@ -179,7 +185,7 @@ describe('Dexie 原子持久化', () => {
   it('任务删除原子解除所有版本关联，放行/父边/分支保留，修订保护及撤销可恢复', async () => {
     const repo = repository();
     let graph = await seed(repo);
-    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'delete-task', '1479-1'));
+    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'delete-task', '1479'));
     for (const id of ['A', 'B']) graph = await repo.saveNode(graph.project.id, graph.project.revision, id, { taskId: 'delete-task' });
     graph = await repo.release(graph.project.id, graph.project.revision, 'A');
     const before = structuredClone(graph);
@@ -296,9 +302,9 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v3 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v4 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(4).stores({ projects: 'id' });
+    future.db.version(5).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -309,7 +315,8 @@ describe('Dexie 原子持久化', () => {
 
   it('当前 schema 保存/重开往返，配置快照显式排除额外属性和权限', async () => {
     const repo = repository();
-    const graph = await seed(repo);
+    let graph = await seed(repo);
+    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'snapshot-task', '001'));
     Object.assign(graph.nodes[0]!, { binary: new Blob(['not configuration']), command: 'not configuration' });
     await repo.save(graph);
     const stored = await repo.get(graph.project.id);
@@ -317,30 +324,31 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes[0]).not.toHaveProperty('command');
     repo.db.close();
     await repo.db.open();
-    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(2);
+    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(3);
     const snapshot = (await repo.snapshot(graph.project.id)).graph;
     expect(snapshot.nodes).toEqual(stored.nodes);
+    expect(snapshot.tasks).toEqual([{ id: 'snapshot-task', projectId: graph.project.id, name: 'snapshot-task', description: '', externalTaskId: '001' }]);
     expect(snapshot.project).toEqual({ id: stored.project.id, name: stored.project.name, partNumber: stored.project.partNumber, revision: stored.project.revision });
   });
 
-  it('Loop 修改不改节点身份，同项目唯一、跨项目可重复、多个 null 可共存', async () => {
+  it('外部 Task ID 修改不改节点身份，同项目唯一、跨项目可重复、多个 null 可共存', async () => {
     const repo = repository();
     let graph = await seed(repo);
-    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 't1', '1479-1'));
+    graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 't1', '1479'));
     graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 't2', null));
     graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 't3', null));
-    await expect(repo.saveTask(graph.project.id, graph.project.revision, task(graph, 't4', '1479-1'))).rejects.toThrow('已被其他任务');
+    await expect(repo.saveTask(graph.project.id, graph.project.revision, task(graph, 't4', '1479'))).rejects.toThrow('已被其他任务');
     expect(await repo.get(graph.project.id)).toEqual(graph);
     const other = await repo.create('另一个项目', graph.project.partNumber);
-    await expect(repo.saveTask(other.project.id, 0, task(other, 'other-task', '1479-1'))).resolves.toBeDefined();
+    await expect(repo.saveTask(other.project.id, 0, task(other, 'other-task', '1479'))).resolves.toBeDefined();
   });
 
   it('多标签页修订冲突不覆盖，放行读取最新快照并原子提交', async () => {
     const repo = repository();
     const graph = await seed(repo);
     const results = await Promise.allSettled([
-      repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'one', 'same')),
-      repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'two', 'same')),
+      repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'one', '7')),
+      repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'two', '7')),
     ]);
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     const latest = await repo.get(graph.project.id);
@@ -353,12 +361,12 @@ describe('Dexie 原子持久化', () => {
     const repo = repository();
     const graph = await seed(repo);
     const foreign = await repo.create('其他项目', '123');
-    await repo.saveTask(foreign.project.id, 0, task(foreign, 'foreign-task', 'X'));
+    await repo.saveTask(foreign.project.id, 0, task(foreign, 'foreign-task', '6'));
     const collision = structuredClone(graph);
-    collision.tasks.push(task(graph, 'foreign-task', 'Y'));
+    collision.tasks.push(task(graph, 'foreign-task', '8'));
     await expect(repo.save(collision)).rejects.toThrow();
     expect(await repo.get(graph.project.id)).toEqual(graph);
-    expect((await repo.get(foreign.project.id)).tasks[0]!.loopId).toBe('X');
+    expect((await repo.get(foreign.project.id)).tasks[0]!.externalTaskId).toBe('6');
   });
 
   it('放行锁定不可被普通保存绕过，撤销需先保存后再编辑', async () => {

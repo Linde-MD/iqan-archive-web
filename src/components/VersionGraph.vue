@@ -202,20 +202,20 @@ const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } |
 const menuReturnFocus = ref<HTMLElement | null>(null);
 const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'relations' | 'tasks' | null>(null);
 const nodeTaskId = ref('');
-const taskForm = ref({ id: '', name: '', description: '', loopId: '' });
+const taskForm = ref({ id: '', name: '', description: '', externalTaskId: '' });
 const taskRevision = ref(0);
 const taskDeleteId = ref<string | null>(null);
 const taskQuery = ref('');
 const filteredTasks = computed(() => (graph.value?.tasks ?? []).filter(task =>
-  `${task.name} ${task.loopId ?? ''}`.toLocaleLowerCase().includes(taskQuery.value.trim().toLocaleLowerCase())));
+  `${task.name} ${task.externalTaskId ?? ''}`.toLocaleLowerCase().includes(taskQuery.value.trim().toLocaleLowerCase())));
 const taskDeleteTarget = computed(() => graph.value?.tasks.find(task => task.id === taskDeleteId.value));
 
 function taskLabel(task: Task): string {
-  return `${task.name} · ${task.loopId ? `Loop ${task.loopId}` : '未关联 Loop'}`;
+  return `${task.name} · ${task.externalTaskId ? `Task ID ${task.externalTaskId}` : '未关联 Task ID'}`;
 }
 
 function editTask(task?: Task) {
-  taskForm.value = task ? { ...task, loopId: task.loopId ?? '' } : { id: '', name: '', description: '', loopId: '' };
+  taskForm.value = task ? { ...task, externalTaskId: task.externalTaskId ?? '' } : { id: '', name: '', description: '', externalTaskId: '' };
   taskRevision.value = graph.value!.project.revision;
   taskDeleteId.value = null;
   error.value = '';
@@ -234,7 +234,7 @@ async function submitTask() {
     graph.value = await props.repository.saveTask(props.projectId, taskRevision.value, {
       ...taskForm.value, id: taskForm.value.id || crypto.randomUUID(), projectId: current.project.id,
     });
-    status.value = '任务已保存。Loop ID 仅为手工编号映射，未进行远端验证。';
+    status.value = '任务已保存。Task ID 是手工维护的外部编号，未进行远端验证。';
     editTask();
   });
 }
@@ -1100,7 +1100,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <AppIcon name="undo" /><span class="tool-caption">撤销</span>
         </button>
         <button class="tool-button tool-button-accent" :disabled="saving" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
-        <button class="tool-button" :disabled="saving" aria-label="管理任务" title="创建、编辑任务与手工 Loop 编号；删除任务仅解除版本关联" @click="openTasks"><AppIcon name="file" /><span class="tool-caption">任务管理</span></button>
+        <button class="tool-button" :disabled="saving" aria-label="管理任务" title="创建、编辑任务与外部 Task ID；删除任务仅解除版本关联" @click="openTasks"><AppIcon name="file" /><span class="tool-caption">任务管理</span></button>
       </div>
 
       <div class="graph-toolbar-row">
@@ -1363,12 +1363,12 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
 
     <div v-if="panel === 'tasks'" class="graph-form" role="dialog" aria-modal="false" aria-label="任务管理">
       <h3 tabindex="-1">任务管理</h3>
-      <p class="form-help">任务可关联多个版本。Loop ID 为手工编号，同项目唯一、区分大小写、最多 16 个 Unicode 码点；不提供链接、登录或同步。</p>
+      <p class="form-help">任务可关联多个版本。外部 Task ID 为手工维护的 1–16 位数字编号，同项目唯一；与内部任务 ID 分开，不提供链接、登录或同步。</p>
       <label for="git-task-search">搜索任务</label>
-      <input id="git-task-search" v-model="taskQuery" type="search" placeholder="名称或 Loop ID" :disabled="saving" />
+      <input id="git-task-search" v-model="taskQuery" type="search" placeholder="名称或 Task ID" :disabled="saving" />
       <ul class="task-manager-list" aria-label="项目任务">
         <li v-for="task in filteredTasks" :key="task.id">
-          <div><strong>{{ task.name }}</strong><p>{{ task.loopId ? `Loop ${task.loopId}` : '未关联 Loop' }} · {{ graph.nodes.filter(node => node.taskId === task.id).length }} 个版本</p><p v-if="task.description">{{ task.description }}</p></div>
+          <div><strong>{{ task.name }}</strong><p>{{ task.externalTaskId ? `Task ID ${task.externalTaskId}` : '未关联 Task ID' }} · {{ graph.nodes.filter(node => node.taskId === task.id).length }} 个版本</p><p v-if="task.description">{{ task.description }}</p></div>
           <div class="actions">
             <button type="button" class="secondary" :disabled="saving" :aria-label="`编辑任务 ${task.name}`" @click="editTask(task)">编辑</button>
             <button type="button" class="secondary" :disabled="saving" :aria-label="`删除任务 ${task.name}`" @click="openTaskDelete(task)">删除</button>
@@ -1388,8 +1388,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <h3>{{ taskForm.id ? '编辑任务' : '新建任务' }}</h3>
         <label for="git-task-name">任务名称 <span>必填</span></label>
         <input id="git-task-name" v-model="taskForm.name" required :disabled="saving" />
-        <label for="git-task-loop">Loop ID <span>可选，例如 1479-1</span></label>
-        <input id="git-task-loop" v-model="taskForm.loopId" :disabled="saving" placeholder="1479-1" />
+        <label for="git-task-external-id">外部 Task ID <span>可选，填写 1–16 位数字</span></label>
+        <input id="git-task-external-id" v-model="taskForm.externalTaskId" :disabled="saving" inputmode="numeric" placeholder="1" />
         <label for="git-task-description">任务说明</label>
         <textarea id="git-task-description" v-model="taskForm.description" rows="3" :disabled="saving"></textarea>
         <div class="actions">

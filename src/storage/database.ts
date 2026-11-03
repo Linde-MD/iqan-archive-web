@@ -15,7 +15,7 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
     },
     nodes: graph.nodes.map(({ id, projectId, version, description, taskId, releasedAt }) => ({ id, projectId, version, description, taskId, releasedAt })),
     edges: graph.edges.map(({ id, projectId, parentId, childId }) => ({ id, projectId, parentId, childId })),
-    tasks: graph.tasks.map(({ id, projectId, name, description, loopId }) => ({ id, projectId, name, description, loopId })),
+    tasks: graph.tasks.map(({ id, projectId, name, description, externalTaskId }) => ({ id, projectId, name, description, externalTaskId })),
     branches: graph.branches.map(({ id, projectId, name, description, color, headId }) => ({ id, projectId, name, description, color, headId })),
   };
 }
@@ -35,7 +35,7 @@ export class ArchiveDatabase extends Dexie {
       nodes: 'id, projectId, &[projectId+version]',
       edges: 'id, projectId',
       branches: 'id, projectId',
-      tasks: 'id, projectId, &[projectId+loopId]',
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
       files: 'id, projectId, nodeId',
     });
     this.version(2).stores({
@@ -50,6 +50,9 @@ export class ArchiveDatabase extends Dexie {
       }
     });
     this.version(3).stores({ files: null });
+    this.version(4).stores({
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -241,6 +244,6 @@ export class ArchiveRepository {
     const graph = await this.get(projectId);
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision } = clean.project;
-    return { schemaVersion: 2, graph: { ...clean, project: { id, name, partNumber, revision } } };
+    return { schemaVersion: 3, graph: { ...clean, project: { id, name, partNumber, revision } } };
   }
 }

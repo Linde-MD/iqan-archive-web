@@ -1,5 +1,5 @@
 import {
-  DomainError, normalizeLoopId, normalizeVersion, requireCondition,
+  DomainError, normalizeExternalTaskId, normalizeVersion, requireCondition,
   type ProjectGraph, type Task, type VersionNode,
 } from './model';
 
@@ -24,14 +24,14 @@ export function validateGraph(graph: ProjectGraph): void {
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
   const taskIds = new Set(tasks.map(task => task.id));
   const versions = new Set<string>();
-  const loopIds = new Set<string>();
+  const externalTaskIds = new Set<string>();
   for (const task of tasks) {
     requireCondition(task.name.trim(), 'TASK_NAME', '任务名称不能为空。');
-    const value = normalizeLoopId(task.loopId);
-    requireCondition(value === task.loopId, 'LOOP_NORMALIZATION', 'Loop ID 必须先去除首尾空白，空值存为 null。');
+    const value = normalizeExternalTaskId(task.externalTaskId);
+    requireCondition(value === task.externalTaskId, 'TASK_ID_NORMALIZATION', 'Task ID 必须先去除首尾空白，空值存为 null。');
     if (value !== null) {
-      requireCondition(!loopIds.has(value), 'DUPLICATE_LOOP', `Loop ID 已被其他任务使用：${value}`);
-      loopIds.add(value);
+      requireCondition(!externalTaskIds.has(value), 'DUPLICATE_TASK_ID', `Task ID 已被其他任务使用：${value}`);
+      externalTaskIds.add(value);
     }
   }
   for (const node of nodes) {
@@ -124,7 +124,7 @@ export function revokeRelease(graph: ProjectGraph, targetId: string): ProjectGra
 
 export function updateTask(graph: ProjectGraph, task: Task): ProjectGraph {
   const next = structuredClone(graph);
-  const normalized = { ...task, name: task.name.trim(), loopId: normalizeLoopId(task.loopId) };
+  const normalized = { ...task, name: task.name.trim(), externalTaskId: normalizeExternalTaskId(task.externalTaskId) };
   const index = next.tasks.findIndex(item => item.id === task.id);
   if (index < 0) next.tasks.push(normalized);
   else next.tasks[index] = normalized;

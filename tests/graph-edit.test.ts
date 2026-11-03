@@ -7,7 +7,7 @@ function fixture(): ProjectGraph {
   const p = graph.project.id;
   graph.nodes = ['A', 'B'].map(id => ({ id, projectId: p, version: id, description: '', taskId: null, releasedAt: null }));
   graph.edges = [{ id: 'e', projectId: p, parentId: 'A', childId: 'B' }];
-  graph.tasks = [{ id: 't', projectId: p, name: '任务', description: '', loopId: '1479-1' }];
+  graph.tasks = [{ id: 't', projectId: p, name: '任务', description: '', externalTaskId: '1479' }];
   return graph;
 }
 

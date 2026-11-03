@@ -37,7 +37,7 @@ export interface Task {
   projectId: string;
   name: string;
   description: string;
-  loopId: string | null;
+  externalTaskId: string | null;
 }
 
 export interface ProjectGraph {
@@ -49,7 +49,7 @@ export interface ProjectGraph {
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   graph: Omit<ProjectGraph, 'project'> & {
     project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision'>;
   };
@@ -70,13 +70,18 @@ export function requireCondition(
   if (!condition) throw new DomainError(code, message);
 }
 
-export function normalizeLoopId(value: string | null): string | null {
+export function normalizeExternalTaskId(value: string | null): string | null {
   if (value === null) return null;
   const normalized = value.trim();
   requireCondition(
-    Array.from(normalized).length <= 16,
-    'LOOP_LENGTH',
-    'Loop ID 最多 16 个 Unicode 码点。',
+    normalized === '' || /^[0-9]+$/.test(normalized),
+    'TASK_ID_FORMAT',
+    'Task ID 只能填写数字。',
+  );
+  requireCondition(
+    normalized.length <= 16,
+    'TASK_ID_LENGTH',
+    'Task ID 最多 16 位数字。',
   );
   return normalized || null;
 }
