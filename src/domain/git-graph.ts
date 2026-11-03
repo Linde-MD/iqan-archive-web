@@ -2,6 +2,7 @@ import type { Branch, Edge, ProjectGraph, VersionNode } from './model';
 import { compareVersionNodes, compareVersions, type VersionOrder } from './version-order';
 
 export const GIT_GRAPH = {
+  headerHeight: 40,
   rowHeight: 56,
   laneGap: 26,
   laneStart: 14,
@@ -22,6 +23,23 @@ export interface GitGraphEdge extends Edge {
   toRow: number;
   fromLane: number;
   toLane: number;
+}
+
+export function gitGraphEdgePath(edge: GitGraphEdge): string {
+  const startX = GIT_GRAPH.laneStart + edge.fromLane * GIT_GRAPH.laneGap;
+  const endX = GIT_GRAPH.laneStart + edge.toLane * GIT_GRAPH.laneGap;
+  const startY = GIT_GRAPH.headerHeight + edge.fromRow * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2;
+  const endY = GIT_GRAPH.headerHeight + edge.toRow * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2;
+  if (startX === endX) return `M ${startX} ${startY} L ${endX} ${endY}`;
+  const step = Math.sign(endY - startY) * Math.min(GIT_GRAPH.rowHeight, Math.abs(endY - startY));
+  if (endX > startX) {
+    const turnY = startY + step;
+    const midY = startY + step / 2;
+    return `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${turnY} L ${endX} ${endY}`;
+  }
+  const turnY = endY - step;
+  const midY = endY - step / 2;
+  return `M ${startX} ${startY} L ${startX} ${turnY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
 }
 
 export interface GitGraphLayout {

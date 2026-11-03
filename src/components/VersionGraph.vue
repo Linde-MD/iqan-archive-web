@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import { liveQuery } from 'dexie';
 import type { Branch, ProjectGraph, VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
-import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, type GitGraphEdge } from '../domain/git-graph';
+import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
 import { compareVersions, type VersionOrder } from '../domain/version-order';
 import AppIcon from './AppIcon.vue';
@@ -19,6 +19,48 @@ const status = ref('');
 const saving = ref(false);
 const errorHeading = ref<HTMLElement>();
 const graphScroller = ref<HTMLDivElement>();
+const versionHint = ref<HTMLDivElement>();
+const hintedNode = shallowRef<VersionNode>();
+let hintCloseTimer: ReturnType<typeof setTimeout> | undefined;
+
+function keepVersionHint() {
+  clearTimeout(hintCloseTimer);
+}
+
+function hideVersionHint() {
+  keepVersionHint();
+  versionHint.value?.hidePopover();
+  hintedNode.value = undefined;
+}
+
+function scheduleHintClose() {
+  keepVersionHint();
+  hintCloseTimer = setTimeout(hideVersionHint, 150);
+}
+
+async function showVersionHint(event: MouseEvent | FocusEvent, node: VersionNode) {
+  const anchor = event.currentTarget;
+  if (!(anchor instanceof HTMLElement)) return;
+  keepVersionHint();
+  hintedNode.value = node;
+  await nextTick();
+  const hint = versionHint.value;
+  if (!hint || hintedNode.value !== node || !anchor.isConnected) return;
+  hint.showPopover();
+  const rect = anchor.getBoundingClientRect();
+  const bounds = hint.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - bounds.width - 8));
+  const below = rect.bottom + 8;
+  const top = below + bounds.height <= window.innerHeight - 8
+    ? below : Math.max(8, rect.top - bounds.height - 8);
+  hint.style.left = `${left}px`;
+  hint.style.top = `${top}px`;
+}
+
+function onHintScroll(event: Event) {
+  if (event.target instanceof Node && versionHint.value?.contains(event.target)) return;
+  hideVersionHint();
+}
 const graphWorkspace = ref<HTMLElement>();
 const fullscreenButton = ref<HTMLButtonElement>();
 const isFullscreen = ref(false);
@@ -44,6 +86,7 @@ async function toggleFullscreen() {
 }
 
 function onFullscreenChange() {
+  hideVersionHint();
   const scroller = graphScroller.value;
   const left = scroller?.scrollLeft ?? 0;
   const top = scroller?.scrollTop ?? 0;
@@ -275,7 +318,7 @@ onUnmounted(() => subscription.unsubscribe());
 const graphLayout = computed(() => graph.value
   ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value)
   : null);
-const displayHeight = computed(() => Math.max(420, (graphLayout.value?.height ?? 0) + 40));
+const displayHeight = computed(() => Math.max(420, (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight));
 const selectedNodes = computed(() => {
   const nodes = new Map((graph.value?.nodes ?? []).map(node => [node.id, node]));
   return selectedNodeIds.value.flatMap(id => nodes.has(id) ? [nodes.get(id)!] : []);
@@ -323,7 +366,7 @@ const deletionReady = computed(() => {
 });
 const laneWidth = computed(() => graphLayout.value?.trackWidth ?? 0);
 const canvasWidth = computed(() => (graphLayout.value?.width ?? 0) + 300);
-const contentHeight = computed(() => Math.max(40, (graphLayout.value?.height ?? 0) + 40));
+const contentHeight = computed(() => (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight);
 
 function clearSelectionsForFilter() {
   const visible = new Set(graphLayout.value?.rows.map(row => row.node.id) ?? []);
@@ -457,6 +500,10 @@ function onGlobalKeyDown(event: KeyboardEvent) {
     void restoreHistory(key === 'y');
   }
   if (event.key === 'Escape') {
+    if (hintedNode.value) {
+      hideVersionHint();
+      return;
+    }
     if (menu.value) {
       closeMenu();
       return;
@@ -493,6 +540,8 @@ function onMenuKeyDown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
+  window.addEventListener('scroll', onHintScroll, true);
+  window.addEventListener('resize', hideVersionHint);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onGlobalKeyDown);
   window.addEventListener('pointerdown', closeBranchFilter);
@@ -501,6 +550,9 @@ onMounted(() => {
   void refresh();
 });
 onUnmounted(() => {
+  hideVersionHint();
+  window.removeEventListener('scroll', onHintScroll, true);
+  window.removeEventListener('resize', hideVersionHint);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onGlobalKeyDown);
   window.removeEventListener('pointerdown', closeBranchFilter);
@@ -509,6 +561,7 @@ onUnmounted(() => {
 });
 
 function zoomAt(factor: number, clientX?: number, clientY?: number) {
+  hideVersionHint();
   const scroller = graphScroller.value;
   if (!scroller) return;
   const rect = scroller.getBoundingClientRect();
@@ -548,16 +601,6 @@ function onWheel(event: WheelEvent) {
     event.preventDefault();
     zoomAt(event.deltaY < 0 ? 1.1 : 0.9, event.clientX, event.clientY);
   }
-}
-
-function edgePath(edge: GitGraphEdge): string {
-  const startX = GIT_GRAPH.laneStart + edge.fromLane * GIT_GRAPH.laneGap;
-  const endX = GIT_GRAPH.laneStart + edge.toLane * GIT_GRAPH.laneGap;
-  const startY = 40 + edge.fromRow * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2;
-  const endY = 40 + edge.toRow * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2;
-  if (startX === endX) return `M ${startX} ${startY} L ${endX} ${endY}`;
-  const midY = (startY + endY) / 2;
-  return `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`;
 }
 
 function nodeColor(node: VersionNode): string {
@@ -965,7 +1008,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         @wheel="onWheel"
       >
         <div class="git-graph-canvas" :style="{ width: `${canvasWidth * scale}px`, height: `${displayHeight * scale}px` }">
-          <div class="git-graph-zoom-content" :style="{ width: `${canvasWidth}px`, height: `${displayHeight}px`, transform: `scale(${scale})` }">
+          <div class="git-graph-zoom-content" :style="{ width: `${canvasWidth}px`, height: `${displayHeight}px`, transform: `scale(${scale})`, '--graph-header-height': `${GIT_GRAPH.headerHeight}px`, '--graph-row-height': `${GIT_GRAPH.rowHeight}px` }">
             <div class="git-graph-column-head" :style="{ gridTemplateColumns: `${laneWidth}px minmax(720px, 1fr) 280px` }">
               <span>分支轨道</span><span>版本与改动信息 · 分支标签位于版本右侧</span><span>未关联版本</span>
             </div>
@@ -980,7 +1023,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
               <path
                 v-for="edge in graphLayout.edges"
                 :key="edge.id"
-                :d="edgePath(edge)"
+                :d="gitGraphEdgePath(edge)"
                 class="git-graph-edge"
                 :style="{ stroke: edge.color }"
               />
@@ -988,10 +1031,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 v-for="row in graphLayout.rows.filter(row => !row.isolated)"
                 :key="row.node.id"
                 :cx="GIT_GRAPH.laneStart + row.laneIndex * GIT_GRAPH.laneGap"
-                :cy="40 + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2"
+                :cy="GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2"
                 r="6"
                 class="git-graph-commit"
-                :style="{ stroke: nodeColor(row.node) }"
+                :style="{ stroke: selectedNodeIds.includes(row.node.id) ? '#0b1321' : nodeColor(row.node), fill: selectedNodeIds.includes(row.node.id) ? nodeColor(row.node) : undefined }"
               />
             </svg>
             <div class="git-graph-rows">
@@ -1013,6 +1056,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :class="{ 'is-released': row.node.releasedAt }"
                     :aria-label="`版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
+                    :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
+                    @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
+                    @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
+                    @pointerdown="hideVersionHint"
                     @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
@@ -1045,6 +1092,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :class="{ selected: selectedNodeIds.includes(row.node.id), 'is-released': row.node.releasedAt }"
                     :aria-label="`未关联版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
+                    :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
+                    @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
+                    @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
+                    @pointerdown="hideVersionHint"
                     @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
@@ -1293,6 +1344,17 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
     </div>
       </div>
+    </div>
+    <div ref="versionHint" id="version-info-hint" class="version-info-hint" popover="manual" role="tooltip"
+      @mouseenter="keepVersionHint" @mouseleave="scheduleHintClose">
+      <template v-if="hintedNode">
+        <div class="version-info-hint-heading">
+          <AppIcon :name="hintedNode.releasedAt ? 'release' : 'unrelease'" />
+          <strong>{{ hintedNode.version }}</strong>
+          <span>{{ hintedNode.releasedAt ? '已放行' : '未放行' }}</span>
+        </div>
+        <p>{{ hintedNode.description || '（无改动说明）' }}</p>
+      </template>
     </div>
     <dialog ref="branchMoveDialog" class="branch-move-dialog" aria-labelledby="branch-move-heading" @cancel="saving ? $event.preventDefault() : (pendingBranchMove = null)" @close="pendingBranchMove = null">
       <template v-if="pendingBranchMove">

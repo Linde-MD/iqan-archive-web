@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
-import { layoutGitGraph, recommendedParentNodes } from '../src/domain/git-graph';
+import { gitGraphEdgePath, layoutGitGraph, recommendedParentNodes, type GitGraphEdge } from '../src/domain/git-graph';
 
 function fixture() {
   const graph = createProject('图测试', '1479');
@@ -21,6 +21,21 @@ function fixture() {
 }
 
 describe('Git Graph 投影', () => {
+  it.each([
+    [0, 5, 0, 1, 'M 14 68 C 14 96, 40 96, 40 124 L 40 348'],
+    [5, 0, 0, 1, 'M 14 348 C 14 320, 40 320, 40 292 L 40 68'],
+    [0, 5, 1, 0, 'M 40 68 L 40 292 C 40 320, 14 320, 14 348'],
+    [5, 0, 1, 0, 'M 40 348 L 40 124 C 40 96, 14 96, 14 68'],
+    [0, 1, 0, 2, 'M 14 68 C 14 96, 66 96, 66 124 L 66 124'],
+    [0, 5, 1, 1, 'M 40 68 L 40 348'],
+  ])('连线在一行内换轨，其他部分竖直：%i→%i，轨道%i→%i', (fromRow, toRow, fromLane, toLane, expected) => {
+    const edge: GitGraphEdge = {
+      id: 'edge', projectId: 'project', parentId: 'parent', childId: 'child', color: '#2563eb',
+      fromRow, toRow, fromLane, toLane,
+    };
+    expect(gitGraphEdgePath(edge)).toBe(expected);
+  });
+
   it('按父边拓扑排列纵向历史，将无边版本放入独立轨道', () => {
     const graph = fixture();
     const layout = layoutGitGraph(graph, 'oldest');
