@@ -7,7 +7,7 @@ import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } f
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
 import { compareVersions, type VersionOrder } from '../domain/version-order';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
-import { taskViewGroups, visibleTaskViewNodeIds } from '../domain/task-view';
+import { projectTaskViewLayout, taskViewRuns, type TaskRun, type TaskViewLayout } from '../domain/task-view';
 import AppIcon from './AppIcon.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
 
@@ -174,7 +174,7 @@ const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
 const selectionAnchorId = ref<string | null>(null);
 const graphMode = ref<'all' | 'tasks'>('all');
-const expandedTaskIds = ref<string[]>([]);
+const expandedTaskRunIds = ref<string[]>([]);
 watch(selectedNodeIds, ids => {
   if (!ids.length) selectionAnchorId.value = null;
 }, { flush: 'sync' });
@@ -396,19 +396,20 @@ onUnmounted(() => subscription.unsubscribe());
 const taskBaseLayout = computed(() => graph.value
   ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value, hideIsolated.value)
   : null);
-const taskGroups = computed(() => graph.value
-  ? taskViewGroups(graph.value).map(group => ({
-    ...group,
-    visibleVersionCount: taskBaseLayout.value?.rows.filter(row => row.node.taskId === group.task.id).length ?? 0,
-  }))
+const taskRuns = computed(() => graph.value && taskBaseLayout.value
+  ? taskViewRuns(graph.value, taskBaseLayout.value)
   : []);
-const hasAssignedVersions = computed(() => graph.value?.nodes.some(node => node.taskId !== null) ?? false);
-const taskVisibleNodeIds = computed(() => graph.value && graphMode.value === 'tasks'
-  ? visibleTaskViewNodeIds(graph.value, expandedTaskIds.value)
-  : null);
-const graphLayout = computed(() => graph.value
-  ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value, hideIsolated.value, taskVisibleNodeIds.value)
-  : null);
+const graphLayout = computed<TaskViewLayout | null>(() => {
+  const layout = taskBaseLayout.value;
+  if (!layout) return null;
+  if (graphMode.value === 'tasks') {
+    return projectTaskViewLayout(layout, taskRuns.value, new Set(expandedTaskRunIds.value));
+  }
+  return {
+    ...layout,
+    rows: layout.rows.map(row => ({ ...row, key: `version:${row.node.id}`, kind: 'version' as const })),
+  };
+});
 const displayHeight = computed(() => Math.max(420, (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight));
 const selectedNodes = computed(() => {
   const nodes = new Map((graph.value?.nodes ?? []).map(node => [node.id, node]));
@@ -423,6 +424,15 @@ const selectedRelations = computed(() => {
 const canBuildLinearRelations = computed(() => selectedNodes.value.length >= 2 && selectedRelations.value.length === 0);
 const selectedBranch = computed(() => graph.value?.branches.find(branch => branch.id === activeBranchId.value));
 const nodeById = computed(() => new Map((graph.value?.nodes ?? []).map(node => [node.id, node])));
+function taskRunVersions(run: TaskRun): string[] {
+  return run.nodeIds.flatMap(id => {
+    const version = nodeById.value.get(id)?.version;
+    return version ? [version] : [];
+  });
+}
+function taskRunReleasedCount(run: TaskRun): number {
+  return run.nodeIds.filter(id => nodeById.value.get(id)?.releasedAt).length;
+}
 const parentIdsOf = computed(() => {
   const parents = new Map((graph.value?.nodes ?? []).map(node => [node.id, [] as string[]]));
   for (const edge of graph.value?.edges ?? []) parents.get(edge.childId)?.push(edge.parentId);
@@ -482,15 +492,13 @@ function setGraphMode(mode: 'all' | 'tasks') {
   hideVersionHint();
 }
 
-function toggleTaskGroup(taskId: string, expand?: boolean) {
-  const isExpanded = expandedTaskIds.value.includes(taskId);
-  const shouldExpand = expand ?? !isExpanded;
-  if (shouldExpand === isExpanded) return;
-  expandedTaskIds.value = shouldExpand
-    ? [...expandedTaskIds.value, taskId]
-    : expandedTaskIds.value.filter(id => id !== taskId);
-  if (!shouldExpand && graph.value) {
-    const hiddenNodeIds = new Set(graph.value.nodes.filter(node => node.taskId === taskId).map(node => node.id));
+function toggleTaskRun(run: TaskRun) {
+  const isExpanded = expandedTaskRunIds.value.includes(run.id);
+  expandedTaskRunIds.value = isExpanded
+    ? expandedTaskRunIds.value.filter(id => id !== run.id)
+    : [...expandedTaskRunIds.value, run.id];
+  if (isExpanded) {
+    const hiddenNodeIds = new Set(run.nodeIds);
     selectedNodeIds.value = selectedNodeIds.value.filter(id => !hiddenNodeIds.has(id));
     if (selectionAnchorId.value && hiddenNodeIds.has(selectionAnchorId.value)) selectionAnchorId.value = null;
     menu.value = null;
@@ -532,7 +540,7 @@ watch(() => props.projectId, () => {
   selectedNodeIds.value = [];
   selectionAnchorId.value = null;
   graphMode.value = 'all';
-  expandedTaskIds.value = [];
+  expandedTaskRunIds.value = [];
   activeBranchId.value = null;
   branchFilter.value = null;
   hideIsolated.value = false;
@@ -1188,35 +1196,6 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
       <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击离散多选 · Shift 点击连续多选</span>
     </div>
-    <section v-if="graphMode === 'tasks'" class="task-aggregate-panel" aria-label="按任务聚合版本">
-      <p class="task-aggregate-help">展开任务可在下方版本图中查看其版本；未关联任务的版本始终保留在图中。折叠只隐藏节点，不修改版本关系。</p>
-      <div v-if="taskGroups.length" class="task-aggregate-list">
-        <article v-for="group in taskGroups" :key="group.task.id" class="task-aggregate-card">
-          <button
-            type="button"
-            class="task-aggregate-toggle"
-            :aria-expanded="expandedTaskIds.includes(group.task.id)"
-            :aria-controls="`task-group-state-${group.task.id}`"
-            :disabled="saving"
-            @click="toggleTaskGroup(group.task.id)"
-            @dblclick.prevent="toggleTaskGroup(group.task.id, true)"
-          >
-            <span class="task-aggregate-heading">
-              <strong>{{ group.task.name }}</strong>
-              <span>{{ group.task.externalTaskId ? `Task ID ${group.task.externalTaskId}` : '未关联 Task ID' }}</span>
-            </span>
-            <span class="task-aggregate-count">{{ group.versionCount }} 个版本</span>
-            <span class="task-aggregate-action">{{ expandedTaskIds.includes(group.task.id) ? '收起' : '展开' }}</span>
-          </button>
-          <p v-if="expandedTaskIds.includes(group.task.id)" :id="`task-group-state-${group.task.id}`" class="task-aggregate-state">
-            已展开 {{ group.versionCount }} 个版本；当前分支和游离版本筛选下可见 {{ group.visibleVersionCount }} 个。
-            <span v-if="!group.visibleVersionCount && group.versionCount">调整分支范围或游离版本开关以查看节点。</span>
-          </p>
-        </article>
-      </div>
-      <p v-else class="task-aggregate-empty">当前项目尚无任务；未关联任务的版本仍可在下方图中查看。</p>
-    </section>
-
     </div>
     <div v-if="graph" class="graph-layout" :class="{ 'is-editing': editorOpen }">
       <div ref="canvasViewport" class="graph-viewport" :style="viewportSize ? { width: `${viewportSize.width}px`, height: `${viewportSize.height}px` } : undefined">
@@ -1231,7 +1210,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <div class="git-graph-canvas" :style="{ width: `${canvasWidth * scale}px`, height: `${displayHeight * scale}px` }">
           <div class="git-graph-zoom-content" :style="{ width: `${canvasWidth}px`, height: `${displayHeight}px`, transform: `scale(${scale})`, '--graph-header-height': `${GIT_GRAPH.headerHeight}px`, '--graph-row-height': `${GIT_GRAPH.rowHeight}px` }">
             <div class="git-graph-column-head" :style="{ gridTemplateColumns: graphColumns }">
-              <span>分支轨道</span><span>版本与改动信息 · 分支标签位于版本右侧</span><span v-if="!hideIsolated">未关联版本</span>
+              <span>分支轨道</span><span>版本 / 任务与改动信息 · 分支标签位于版本右侧</span><span v-if="!hideIsolated">未关联版本</span>
             </div>
             <svg
               v-if="graphLayout"
@@ -1249,8 +1228,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 :style="{ stroke: edge.color }"
               />
               <circle
-                v-for="row in graphLayout.rows.filter(row => !row.isolated)"
-                :key="row.node.id"
+                v-for="row in graphLayout.rows.filter(row => !row.isolated && row.kind !== 'task-header')"
+                :key="row.key"
                 :cx="GIT_GRAPH.laneStart + row.laneIndex * GIT_GRAPH.laneGap"
                 :cy="GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2"
                 r="6"
@@ -1261,18 +1240,57 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
             <div class="git-graph-rows">
               <div
                 v-for="row in graphLayout?.rows ?? []"
-                :key="row.node.id"
+                :key="row.key"
                 class="git-graph-row"
-                :class="{ selected: selectedNodeIds.includes(row.node.id), isolated: row.isolated, 'branch-drop-target': dropTargetId === row.node.id }"
-                @dragover="onBranchDragOver($event, row.node.id)"
-                @dragleave="dropTargetId === row.node.id && (dropTargetId = null)"
-                @drop="dropBranch($event, row.node.id)"
+                :class="[
+                  { selected: row.kind === 'version' && selectedNodeIds.includes(row.node.id), isolated: row.isolated, 'branch-drop-target': row.kind === 'version' && dropTargetId === row.node.id },
+                  row.taskRun && row.groupPosition ? `task-run-${row.groupPosition}` : '',
+                  `git-graph-row-${row.kind}`,
+                ]"
+                @dragover="row.kind === 'version' && onBranchDragOver($event, row.node.id)"
+                @dragleave="row.kind === 'version' && dropTargetId === row.node.id && (dropTargetId = null)"
+                @drop="row.kind === 'version' && dropBranch($event, row.node.id)"
                 :style="{ gridTemplateColumns: graphColumns }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
                 <div class="git-graph-main-cell">
                   <button
-                    v-if="!row.isolated"
+                    v-if="row.kind === 'task-summary' && row.taskRun"
+                    type="button"
+                    class="git-row-commit git-task-summary"
+                    :aria-expanded="false"
+                    :aria-label="`${row.taskRun.task.name}，${row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID'}，${row.taskRun.nodeIds.length} 个连续版本：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
+                    :disabled="saving"
+                    @click="toggleTaskRun(row.taskRun)"
+                  >
+                    <AppIcon class="git-release-icon" name="file" />
+                    <span class="task-summary-heading">{{ row.taskRun.task.name }}</span>
+                    <span class="task-summary-details">
+                      {{ row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID' }}
+                      · {{ row.taskRun.nodeIds.length }} 个连续版本
+                      · 已放行 {{ taskRunReleasedCount(row.taskRun) }} 个
+                      · {{ taskRunVersions(row.taskRun).join('、') }}
+                      · 点击展开
+                    </span>
+                  </button>
+                  <button
+                    v-else-if="row.kind === 'task-header' && row.taskRun"
+                    type="button"
+                    class="git-row-commit git-task-expanded-toggle"
+                    :aria-expanded="true"
+                    :aria-label="`${row.taskRun.task.name}，已展开 ${row.taskRun.nodeIds.length} 个连续版本，点击收起`"
+                    :disabled="saving"
+                    @click="toggleTaskRun(row.taskRun)"
+                  >
+                    <AppIcon class="git-release-icon" name="file" />
+                    <span class="task-summary-heading">{{ row.taskRun.task.name }}</span>
+                    <span class="task-summary-details">
+                      {{ row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID' }}
+                      · 已展开 {{ row.taskRun.nodeIds.length }} 个连续版本 · 点击收起
+                    </span>
+                  </button>
+                  <button
+                    v-else-if="!row.isolated"
                     class="git-row-commit"
                     :class="{ 'is-released': row.node.releasedAt }"
                     :aria-label="`版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
@@ -1290,7 +1308,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     <span class="git-commit-version">{{ row.node.version }}</span>
                     <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                   </button>
-                  <span v-if="!row.isolated && row.branchHeads.length" class="git-branch-labels">
+                  <span v-if="row.kind !== 'task-header' && !row.isolated && row.branchHeads.length" class="git-branch-labels">
                     <button
                       v-for="branch in row.branchHeads"
                       :key="branch.id"
@@ -1309,7 +1327,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 </div>
                 <div v-if="!hideIsolated" class="git-graph-orphan-cell">
                   <button
-                    v-if="row.isolated"
+                    v-if="row.kind === 'version' && row.isolated"
                     class="git-row-commit git-row-orphan"
                     :class="{ selected: selectedNodeIds.includes(row.node.id), 'is-released': row.node.releasedAt }"
                     :aria-label="`未关联版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
@@ -1341,7 +1359,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                 </div>
               </div>
               <p v-if="!graph.nodes.length" class="git-graph-empty">暂无版本。可新增未关联版本，或从已有版本创建子版本。</p>
-              <p v-else-if="!graphLayout?.rows.length && graphMode === 'tasks' && hasAssignedVersions" class="git-graph-empty">尚未展开有版本的任务，或任务版本被当前筛选隐藏。展开任务即可查看其版本节点。</p>
+              <p v-else-if="!graphLayout?.rows.length && graphMode === 'tasks'" class="git-graph-empty">当前筛选下没有分支版本；请调整分支范围或游离版本设置。</p>
               <p v-else-if="!graphLayout?.rows.length" class="git-graph-empty">当前筛选下没有可见版本。请关闭“隐藏未关联版本”或调整分支范围。</p>
             </div>
           </div>

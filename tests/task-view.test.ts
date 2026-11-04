@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { layoutGitGraph } from '../src/domain/git-graph';
-import { taskViewGroups, visibleTaskViewNodeIds } from '../src/domain/task-view';
+import { projectTaskViewLayout, taskViewRuns } from '../src/domain/task-view';
 
 function fixture() {
   const graph = createProject('任务视图', '123');
@@ -13,52 +13,106 @@ function fixture() {
   ];
   graph.nodes = [
     { id: 'a1', projectId, version: 'V1', description: '', taskId: 'task-a', releasedAt: '2026-01-01T00:00:00.000Z' },
-    { id: 'b1', projectId, version: 'V2', description: '', taskId: 'task-b', releasedAt: null },
-    { id: 'a2', projectId, version: 'V3', description: '', taskId: 'task-a', releasedAt: null },
-    { id: 'free', projectId, version: 'V4', description: '', taskId: null, releasedAt: null },
+    { id: 'a2', projectId, version: 'V2', description: '', taskId: 'task-a', releasedAt: null },
+    { id: 'b1', projectId, version: 'V3', description: '', taskId: 'task-b', releasedAt: null },
+    { id: 'a3', projectId, version: 'V4', description: '', taskId: 'task-a', releasedAt: null },
+    { id: 'free', projectId, version: 'V5', description: '', taskId: null, releasedAt: null },
+    { id: 'isolated-task', projectId, version: 'V6', description: '', taskId: 'task-a', releasedAt: null },
   ];
   graph.edges = [
-    { id: 'e1', projectId, parentId: 'a1', childId: 'b1' },
-    { id: 'e2', projectId, parentId: 'b1', childId: 'a2' },
+    { id: 'e1', projectId, parentId: 'a1', childId: 'a2' },
+    { id: 'e2', projectId, parentId: 'a2', childId: 'b1' },
+    { id: 'e3', projectId, parentId: 'b1', childId: 'a3' },
   ];
   graph.branches = [
-    { id: 'main', projectId, name: '主线', description: '', color: '#2563eb', headId: 'a2' },
+    { id: 'main', projectId, name: '主线', description: '', color: '#2563eb', headId: 'a3' },
   ];
   return graph;
 }
 
-describe('任务聚合视图投影', () => {
-  it('聚合标题数据按任务提供版本数，包含无版本任务和完整外部编号', () => {
+describe('分支内连续任务节点投影', () => {
+  it('只把同一轨道内连续且任务相同的版本组成任务段', () => {
     const graph = fixture();
-    const before = structuredClone(graph);
-    expect(taskViewGroups(graph).map(({ task, versionCount }) => [
-      task.id, task.name, task.externalTaskId, versionCount,
-    ])).toEqual([
-      ['task-a', '任务 A', '001', 2],
-      ['task-b', '任务 B', null, 1],
-      ['task-empty', '空任务', '2', 0],
+    const layout = layoutGitGraph(graph, 'oldest');
+    const runs = taskViewRuns(graph, layout);
+
+    expect(runs.map(run => [run.task.id, run.branch.id, run.nodeIds])).toEqual([
+      ['task-a', 'main', ['a1', 'a2']],
+      ['task-b', 'main', ['b1']],
+      ['task-a', 'main', ['a3']],
     ]);
-    expect(graph).toEqual(before);
+    expect(runs.flatMap(run => run.nodeIds)).not.toContain('isolated-task');
   });
 
-  it('折叠隐藏任务版本但始终保留未关联版本，展开任务只展示对应节点', () => {
-    const graph = fixture();
-    expect([...visibleTaskViewNodeIds(graph, [])]).toEqual(['free']);
-    expect([...visibleTaskViewNodeIds(graph, ['task-a'])]).toEqual(['a1', 'a2', 'free']);
-    expect([...visibleTaskViewNodeIds(graph, ['task-a', 'task-b'])]).toEqual(['a1', 'b1', 'a2', 'free']);
-    expect([...visibleTaskViewNodeIds(graph, graph.tasks.map(task => task.id))]).toEqual(graph.nodes.map(node => node.id));
-  });
-
-  it('收起任务只改变可见投影，保留真实节点关系且边仍映射实际端点', () => {
+  it('折叠时在图内以任务节点替代连续版本，展开时保留版本节点和分组边界', () => {
     const graph = fixture();
     const before = structuredClone(graph);
-    const visibleIds = visibleTaskViewNodeIds(graph, ['task-a']);
-    const layout = layoutGitGraph(graph, 'oldest', null, false, visibleIds);
-    expect(layout.rows.map(row => row.node.id)).toEqual(['a1', 'a2', 'free']);
-    expect(layout.edges).toEqual([]);
+    const layout = layoutGitGraph(graph, 'oldest');
+    const runs = taskViewRuns(graph, layout);
+    const firstRun = runs[0]!;
+
+    const collapsed = projectTaskViewLayout(layout, runs, new Set());
+    expect(collapsed.rows.map(row => [row.kind, row.node.id])).toEqual([
+      ['task-summary', 'a1'],
+      ['task-summary', 'b1'],
+      ['task-summary', 'a3'],
+      ['version', 'free'],
+      ['version', 'isolated-task'],
+    ]);
+    expect(collapsed.edges.map(edge => [
+      collapsed.rows[edge.fromRow]?.node.id,
+      collapsed.rows[edge.toRow]?.node.id,
+    ])).toEqual([['a1', 'b1'], ['b1', 'a3']]);
+
+    const expanded = projectTaskViewLayout(layout, runs, new Set([firstRun.id]));
+    expect(expanded.rows.map(row => [row.kind, row.node.id, row.groupPosition])).toEqual([
+      ['task-header', 'a1', undefined],
+      ['version', 'a1', 'first'],
+      ['version', 'a2', 'last'],
+      ['task-summary', 'b1', undefined],
+      ['task-summary', 'a3', undefined],
+      ['version', 'free', undefined],
+      ['version', 'isolated-task', undefined],
+    ]);
+    expect(expanded.edges.map(edge => [
+      expanded.rows[edge.fromRow]?.node.id,
+      expanded.rows[edge.toRow]?.node.id,
+    ])).toEqual([['a1', 'a2'], ['a2', 'b1'], ['b1', 'a3']]);
     expect(graph).toEqual(before);
-    const expanded = layoutGitGraph(graph, 'oldest', null, false, visibleTaskViewNodeIds(graph, ['task-a', 'task-b']));
-    expect(expanded.edges.map(edge => [expanded.rows[edge.fromRow]?.node.id, expanded.rows[edge.toRow]?.node.id]))
-      .toEqual([['a1', 'b1'], ['b1', 'a2']]);
+  });
+
+  it('共享祖先只按所选轨道连续区间聚合，不跨过不同任务或孤立版本', () => {
+    const graph = fixture();
+    graph.edges.push({ id: 'e-direct', projectId: graph.project.id, parentId: 'a1', childId: 'b1' });
+    graph.branches.push({
+      id: 'feature',
+      projectId: graph.project.id,
+      name: '功能分支',
+      description: '',
+      color: '#db2777',
+      headId: 'b1',
+    });
+    const layout = layoutGitGraph(graph, 'oldest');
+    const runs = taskViewRuns(graph, layout);
+
+    expect(runs.map(run => [run.branch.id, run.nodeIds])).toEqual([
+      ['main', ['a1', 'a2']],
+      ['main', ['b1']],
+      ['main', ['a3']],
+    ]);
+    const collapsed = projectTaskViewLayout(layout, runs, new Set());
+    expect(collapsed.rows.filter(row => row.kind === 'task-summary').map(row => row.branchHeads.map(branch => branch.id)))
+      .toEqual([[], ['feature'], ['main']]);
+    expect(collapsed.edges.filter(edge =>
+      collapsed.rows[edge.fromRow]?.node.id === 'a1' && collapsed.rows[edge.toRow]?.node.id === 'b1'))
+      .toHaveLength(2);
+  });
+
+  it('排序改变后相同任务段仍保留稳定身份', () => {
+    const graph = fixture();
+    const oldestRuns = taskViewRuns(graph, layoutGitGraph(graph, 'oldest'));
+    const newestRuns = taskViewRuns(graph, layoutGitGraph(graph, 'newest'));
+    expect(newestRuns.find(run => run.nodeIds.includes('a1'))?.id)
+      .toBe(oldestRuns.find(run => run.nodeIds.includes('a1'))?.id);
   });
 });
