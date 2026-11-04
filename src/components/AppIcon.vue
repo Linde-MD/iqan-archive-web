@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' | 'undo' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'link' | 'release' | 'unrelease' | 'undo' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -14,6 +14,8 @@ const paths = {
   arrow: 'M4 12h16 M14 6l6 6-6 6',
   file: 'M14 3H5v18h14V8Z M14 3v5h5 M9 13h6 M9 17h6',
   shield: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z M8 12l3 3 5-6',
+  download: 'M12 3v12 M7 10l5 5 5-5 M4 19v2h16v-2',
+  upload: 'M12 15V3 M7 8l5-5 5 5 M4 19v2h16v-2',
   'zoom-in': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z M21 21l-4.3-4.3 M11 8v6 M8 11h6',
   'zoom-out': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z M21 21l-4.3-4.3 M8 11h6',
   fit: 'M4 8V4h4 M16 4h4v4 M20 16v4h-4 M8 20H4v-4',

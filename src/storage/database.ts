@@ -246,4 +246,84 @@ export class ArchiveRepository {
     const { id, name, partNumber, revision } = clean.project;
     return { schemaVersion: 3, graph: { ...clean, project: { id, name, partNumber, revision } } };
   }
+
+  async inspectSnapshotImport(graph: ProjectGraph): Promise<boolean> {
+    validateGraph(graph);
+    return this.db.transaction('r', [...this.tables, this.db.directoryBindings], () => this.importHasConflict(graph));
+  }
+
+  async importSnapshot(graph: ProjectGraph): Promise<{ graph: ProjectGraph; copied: boolean }> {
+    validateGraph(graph);
+    return this.db.transaction('rw', [...this.tables, this.db.directoryBindings], async () => {
+      const clean = configurationOnly(graph);
+      clean.project.engineeringDirectoryHint = '';
+      clean.project.wordDirectoryHint = '';
+      const copied = await this.importHasConflict(clean);
+      const imported = copied ? await this.remapImportedGraph(clean) : clean;
+      validateGraph(imported);
+      await this.db.nodes.bulkAdd(imported.nodes);
+      await this.db.edges.bulkAdd(imported.edges);
+      await this.db.branches.bulkAdd(imported.branches);
+      await this.db.tasks.bulkAdd(imported.tasks);
+      await this.db.projects.add(imported.project);
+      return { graph: imported, copied };
+    });
+  }
+
+  private async importHasConflict(graph: ProjectGraph): Promise<boolean> {
+    if (await this.db.projects.get(graph.project.id)) return true;
+    if (await this.db.directoryBindings.where('projectId').equals(graph.project.id).count()) return true;
+    for (const [table, items] of [
+      [this.db.nodes, graph.nodes],
+      [this.db.edges, graph.edges],
+      [this.db.branches, graph.branches],
+      [this.db.tasks, graph.tasks],
+    ] as const) {
+      for (const item of items) if (await table.get(item.id)) return true;
+    }
+    return false;
+  }
+
+  private async remapImportedGraph(graph: ProjectGraph): Promise<ProjectGraph> {
+    async function freshIds(count: number, exists: (id: string) => Promise<boolean>): Promise<string[]> {
+      const ids: string[] = [];
+      const used = new Set<string>();
+      while (ids.length < count) {
+        const id = crypto.randomUUID();
+        if (used.has(id) || await exists(id)) continue;
+        used.add(id);
+        ids.push(id);
+      }
+      return ids;
+    }
+
+    const [projectIds, nodeIds, edgeIds, branchIds, taskIds] = await Promise.all([
+      freshIds(1, async id => Boolean(await this.db.projects.get(id)) || Boolean(await this.db.directoryBindings.where('projectId').equals(id).count())),
+      freshIds(graph.nodes.length, async id => Boolean(await this.db.nodes.get(id))),
+      freshIds(graph.edges.length, async id => Boolean(await this.db.edges.get(id))),
+      freshIds(graph.branches.length, async id => Boolean(await this.db.branches.get(id))),
+      freshIds(graph.tasks.length, async id => Boolean(await this.db.tasks.get(id))),
+    ]);
+    const projectId = projectIds[0]!;
+    const nodeIdMap = new Map(graph.nodes.map((item, index) => [item.id, nodeIds[index]!]));
+    const taskIdMap = new Map(graph.tasks.map((item, index) => [item.id, taskIds[index]!]));
+    return {
+      project: { ...graph.project, id: projectId, revision: 0, engineeringDirectoryHint: '', wordDirectoryHint: '' },
+      nodes: graph.nodes.map(item => ({
+        ...item,
+        id: nodeIdMap.get(item.id)!,
+        projectId,
+        taskId: item.taskId === null ? null : taskIdMap.get(item.taskId)!,
+      })),
+      edges: graph.edges.map((item, index) => ({
+        ...item, id: edgeIds[index]!, projectId,
+        parentId: nodeIdMap.get(item.parentId)!,
+        childId: nodeIdMap.get(item.childId)!,
+      })),
+      branches: graph.branches.map((item, index) => ({
+        ...item, id: branchIds[index]!, projectId, headId: nodeIdMap.get(item.headId)!,
+      })),
+      tasks: graph.tasks.map((item, index) => ({ ...item, id: taskIds[index]!, projectId })),
+    };
+  }
 }

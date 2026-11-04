@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
 import type { Project, ProjectGraph } from './domain/model';
+import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/project-snapshot';
 import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
 import VersionGraph from './components/VersionGraph.vue';
@@ -26,11 +27,16 @@ const error = ref('');
 const status = ref('');
 const submitted = ref(false);
 const activeProjectId = ref('');
+const activeProject = computed(() => projects.value.find(project => project.id === activeProjectId.value) ?? null);
 const projectsCollapsed = ref(false);
 const filesBusy = ref(false);
 const graphBusy = ref(false);
 const view = ref<'files' | 'graph'>('files');
 const versionOrder = ref<VersionOrder>('oldest');
+const importInput = ref<HTMLInputElement | null>(null);
+const importButton = ref<HTMLButtonElement | null>(null);
+const importConfirmButton = ref<HTMLButtonElement | null>(null);
+const importPreview = ref<{ graph: ProjectGraph; fileName: string; conflict: boolean } | null>(null);
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const errorHeading = ref<HTMLElement | null>(null);
@@ -149,6 +155,83 @@ async function savePartNumber() {
   }
 }
 
+async function exportProject() {
+  if (!activeProjectId.value) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    const snapshot = await repository.snapshot(activeProjectId.value);
+    const name = snapshot.graph.project.name
+      .trim()
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+      .replace(/[. ]+$/g, '')
+      .slice(0, 100) || '项目';
+    const blob = new Blob([serializeProjectSnapshot(snapshot)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `IQAN-${name}-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.value = `“${snapshot.graph.project.name}”配置已导出；本地文件、路径与目录授权未包含。`;
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function readImportFile(event: Event) {
+  const input = event.currentTarget as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  importPreview.value = null;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    const graph = await readProjectSnapshotFile(file);
+    const conflict = await repository.inspectSnapshotImport(graph);
+    importPreview.value = { graph, fileName: file.name, conflict };
+    await nextTick();
+    importConfirmButton.value?.focus();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function confirmImport() {
+  const pending = importPreview.value;
+  if (!pending) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    const result = await repository.importSnapshot(pending.graph);
+    importPreview.value = null;
+    projectsCollapsed.value = false;
+    if (!activeProjectId.value) {
+      activeProjectId.value = result.graph.project.id;
+      view.value = 'files';
+    }
+    status.value = result.copied
+      ? `配置已作为“${result.graph.project.name}”的独立副本导入；内部身份已重新生成。工程和软件对比文档目录均未恢复，请重新授权并扫描。`
+      : `项目“${result.graph.project.name}”已恢复。工程和软件对比文档目录均未恢复，请重新授权并扫描。`;
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+    if (!importPreview.value) {
+      await nextTick();
+      importButton.value?.focus();
+    }
+  }
+}
+
+async function cancelImport() {
+  importPreview.value = null;
+  await nextTick();
+  importButton.value?.focus();
+}
+
 onMounted(watchProjects);
 onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
 </script>
@@ -196,6 +279,29 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
     <button v-if="activeProjectId" class="secondary project-rail-toggle" :aria-expanded="!projectsCollapsed" aria-controls="project-rail" @click="projectsCollapsed = !projectsCollapsed">
       <AppIcon name="folder" />{{ projectsCollapsed ? '展开项目区域' : '折叠项目区域' }}
     </button>
+    <section v-if="activeProject || !loading" class="panel project-backup" aria-labelledby="backup-title">
+      <div class="section-heading">
+        <div><p class="eyebrow">PROJECT CONFIGURATION</p><h2 id="backup-title">{{ activeProject ? `配置备份 · ${activeProject.name}` : '导入项目配置' }}</h2></div>
+        <div class="backup-actions">
+          <button v-if="activeProject" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy" @click="exportProject"><AppIcon name="download" />导出 JSON</button>
+          <button ref="importButton" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy" @click="importInput?.click()"><AppIcon name="upload" />导入恢复</button>
+          <input ref="importInput" class="import-file-input" type="file" accept=".json,application/json" aria-hidden="true" tabindex="-1" @change="readImportFile" />
+        </div>
+      </div>
+      <p class="form-help">仅包含项目元数据、版本图、分支、任务和放行状态；不包含工程/软件对比文档、路径或目录授权。</p>
+      <div v-if="importPreview" class="import-preview" aria-labelledby="import-preview-title">
+        <h3 id="import-preview-title" tabindex="-1">导入预览</h3>
+        <p><strong>{{ importPreview.graph.project.name }}</strong> · 零件号 {{ importPreview.graph.project.partNumber }}</p>
+        <p>文件：{{ importPreview.fileName }} · {{ importPreview.graph.nodes.length }} 个版本 · {{ importPreview.graph.edges.length }} 条父边 · {{ importPreview.graph.branches.length }} 个分支 · {{ importPreview.graph.tasks.length }} 个任务</p>
+        <p v-if="importPreview.conflict" class="form-help">检测到项目或内部 ID 冲突。确认后将作为独立副本导入并重新生成全部内部 ID，不覆盖现有项目。</p>
+        <p v-else class="form-help">未发现 ID 冲突；恢复时保留项目身份。若确认前出现冲突，系统会自动改为副本导入。</p>
+        <p class="form-help">JSON 不含本地文件或目录授权；导入后工程与软件对比文档目录均需重新绑定并扫描。</p>
+        <div class="backup-actions">
+          <button ref="importConfirmButton" type="button" :disabled="saving || filesBusy || graphBusy" @click="confirmImport"><AppIcon name="check" />{{ saving ? '正在导入…' : importPreview.conflict ? '导入为副本' : '恢复此项目' }}</button>
+          <button type="button" class="secondary" :disabled="saving" @click="cancelImport">取消</button>
+        </div>
+      </div>
+    </section>
     <div :class="['app-workspace', { 'has-project': activeProjectId, 'projects-collapsed': activeProjectId && projectsCollapsed }]">
     <div id="project-rail" v-show="!activeProjectId || !projectsCollapsed" class="workspace-grid">
       <section class="panel projects" aria-labelledby="projects-title" :aria-busy="loading">
@@ -281,7 +387,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       <div class="notice-mark" aria-hidden="true">i</div>
       <div>
         <h2 id="storage-title">本地存储，不等于永久备份</h2>
-        <p>项目配置保存在当前站点的浏览器 IndexedDB 中，不上传云端。清除浏览器数据可能导致配置丢失。工程和软件对比文档原文件不存入数据库；JSON 备份与恢复将在 SPEC-03 提供，当前尚不可用。</p>
+        <p>项目配置保存在当前站点的浏览器 IndexedDB 中，不上传云端。清除浏览器数据可能导致配置丢失；同一来源下不同仓库路径不是安全隔离，迁移域名或浏览器前请先导出 JSON。可在项目工作区导出和恢复 JSON；工程和软件对比文档原文件不存入数据库，恢复后须重新授权目录。</p>
       </div>
     </section>
     <footer><span>IQAN Archive</span><span>静态前端 · 无需登录 · 不依赖启动器</span></footer>

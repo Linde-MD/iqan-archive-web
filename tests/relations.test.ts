@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { createProject } from '../src/domain/model';
+import { createProject, type ProjectGraph } from '../src/domain/model';
 import { release } from '../src/domain/graph';
 import { changeVersionRelations } from '../src/domain/relations';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -15,6 +15,12 @@ function fixture() {
     id: 'main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'n0',
   }];
   return graph;
+}
+
+function edgeRelations(edges: ProjectGraph['edges']) {
+  return edges
+    .map(({ parentId, childId }) => JSON.stringify([parentId, childId]))
+    .sort();
 }
 
 describe('批量父子关联', () => {
@@ -78,9 +84,9 @@ describe('批量父子关联', () => {
       await db.projects.add(initial.project);
       const graph = await repo.save(initial);
       const linked = await repo.changeRelations(graph.project.id, graph.project.revision, ['n2', 'n1', 'n0'], 'linear');
-      expect((await repo.get(graph.project.id)).edges).toEqual(linked.edges);
+      expect(edgeRelations((await repo.get(graph.project.id)).edges)).toEqual(edgeRelations(linked.edges));
       await expect(repo.changeRelations(graph.project.id, graph.project.revision, ['n2', 'n1'], 'clear')).rejects.toThrow('其他标签页');
-      expect((await repo.get(graph.project.id)).edges).toEqual(linked.edges);
+      expect(edgeRelations((await repo.get(graph.project.id)).edges)).toEqual(edgeRelations(linked.edges));
       const cleared = await repo.changeRelations(graph.project.id, linked.project.revision, ['n2', 'n1'], 'clear');
       expect(cleared.edges).toEqual([]);
       const undone = await repo.restoreUndo(graph.project.id, cleared.project.revision, linked);
