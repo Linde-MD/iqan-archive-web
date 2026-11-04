@@ -492,7 +492,7 @@ function setGraphMode(mode: 'all' | 'tasks') {
   hideVersionHint();
 }
 
-function toggleTaskRun(run: TaskRun) {
+async function toggleTaskRun(run: TaskRun) {
   const isExpanded = expandedTaskRunIds.value.includes(run.id);
   expandedTaskRunIds.value = isExpanded
     ? expandedTaskRunIds.value.filter(id => id !== run.id)
@@ -504,6 +504,10 @@ function toggleTaskRun(run: TaskRun) {
     menu.value = null;
     hideVersionHint();
   }
+  await nextTick();
+  const toggle = [...document.querySelectorAll<HTMLButtonElement>('[data-task-run-id]')]
+    .find(button => button.dataset.taskRunId === run.id);
+  toggle?.focus({ preventScroll: true });
 }
 watch(branchFilter, clearSelectionsForFilter);
 watch(hideIsolated, () => {
@@ -1258,6 +1262,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     v-if="row.kind === 'task-summary' && row.taskRun"
                     type="button"
                     class="git-row-commit git-task-summary"
+                    :data-task-run-id="row.taskRun.id"
                     :aria-expanded="false"
                     :aria-label="`${row.taskRun.task.name}，${row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID'}，${row.taskRun.nodeIds.length} 个连续版本：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
                     :disabled="saving"
@@ -1277,6 +1282,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     v-else-if="row.kind === 'task-header' && row.taskRun"
                     type="button"
                     class="git-row-commit git-task-expanded-toggle"
+                    :data-task-run-id="row.taskRun.id"
                     :aria-expanded="true"
                     :aria-label="`${row.taskRun.task.name}，已展开 ${row.taskRun.nodeIds.length} 个连续版本，点击收起`"
                     :disabled="saving"
