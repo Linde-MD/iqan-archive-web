@@ -30,6 +30,7 @@ Map these roles to the semantic CSS variables in `src/style.css`. Keep normal te
 - UI and Chinese content: `"Segoe UI", "Microsoft YaHei", system-ui, sans-serif`.
 - Version numbers and paths: platform monospace fonts with a readable Chinese fallback.
 - Use compact, clearly grouped headings and labels. Do not fetch external fonts at runtime.
+- When a task has an external ID, show the raw ID before its name (for example, `20 · Task name`), without a redundant `Task ID` prefix in task references. Use a high-contrast monospace badge for the ID and readable text for the task name; keep the label understandable without color alone. Omit the ID badge when no ID is assigned.
 
 ## Layout and components
 

@@ -58,8 +58,24 @@ describe('项目 JSON 快照验证', () => {
   it('仅解析 schemaVersion 3，并生成不带目录信息的有效图', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));
-    expect(parsed).toEqual({ ...graph, project: { ...graph.project, engineeringDirectoryHint: '', wordDirectoryHint: '' } });
+    expect(parsed).toEqual({
+      ...graph,
+      project: { ...graph.project, engineeringDirectoryHint: '', wordDirectoryHint: '' },
+      branches: graph.branches.map((branch, order) => ({ ...branch, order })),
+    });
     expect(parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(snapshot(graph))))).toEqual(parsed);
+  });
+
+  it('以分支数组顺序往返显示优先级，快照不暴露本地排序字段', () => {
+    const graph = graphFixture();
+    const source = snapshot(graph);
+    source.graph.branches.reverse();
+    const serialized = serializeProjectSnapshot(source);
+    const wireBranches = JSON.parse(serialized).graph.branches as Array<Record<string, unknown>>;
+    expect(wireBranches.map(branch => branch.id)).toEqual(source.graph.branches.map(branch => branch.id));
+    expect(wireBranches.every(branch => !('order' in branch))).toBe(true);
+    expect(parseProjectSnapshot(JSON.parse(serialized)).branches.map(branch => [branch.id, branch.order]))
+      .toEqual(source.graph.branches.map((branch, order) => [branch.id, order]));
   });
 
   it('拒绝未知版本、额外字段、错误类型、无效关系及不合法 Task ID', () => {

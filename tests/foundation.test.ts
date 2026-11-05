@@ -264,6 +264,29 @@ describe('Dexie 原子持久化', () => {
     repo.db.close();
   });
 
+  it('分支优先顺序在数据库及 JSON 快照往返中保持，并受修订保护', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    graph = await repo.addBranch(graph.project.id, graph.project.revision, {
+      id: 'branch-main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'M',
+    });
+    graph = await repo.addBranch(graph.project.id, graph.project.revision, {
+      id: 'branch-feature', projectId: graph.project.id, name: '功能线', description: '', color: '#166534', headId: 'B',
+    });
+    const reordered = await repo.saveBranchOrder(graph.project.id, graph.project.revision, ['branch-feature', 'branch-main']);
+    expect(reordered.branches.map(branch => [branch.id, branch.order])).toEqual([
+      ['branch-feature', 0], ['branch-main', 1],
+    ]);
+    await expect(repo.saveBranchOrder(graph.project.id, graph.project.revision, ['branch-main', 'branch-feature']))
+      .rejects.toThrow('其他标签页已更新项目');
+    const snapshot = await repo.snapshot(graph.project.id);
+    expect(snapshot.graph.branches.map(branch => branch.id)).toEqual(['branch-feature', 'branch-main']);
+    expect(snapshot.graph.branches[0]).not.toHaveProperty('order');
+    repo.db.close();
+    await repo.db.open();
+    expect((await repo.get(graph.project.id)).branches.map(branch => branch.id)).toEqual(['branch-feature', 'branch-main']);
+  });
+
   it('删除项目需名称确认和最新修订，原子删除所有所属数据及绑定，不影响其他项目', async () => {
     const repo = repository();
     let graph = await seed(repo);

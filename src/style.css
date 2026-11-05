@@ -260,6 +260,10 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-sidebar { position: sticky; top: 16px; min-width: 0; max-height: min(calc(100dvh - 32px), var(--sidebar-available-height, calc(100dvh - 32px))); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding: 68px 12px 12px; }
 .graph-sidebar.is-editing { height: min(70vh, 640px); border: 1px solid var(--border-strong); border-radius: 10px; background: #152136; padding: 0 16px 16px; }
 .graph-editor-heading { position: sticky; z-index: 3; top: 0; display: flex; justify-content: space-between; align-items: center; min-height: 56px; padding: 4px 0; border-bottom: 1px solid var(--border); background: #152136; color: var(--muted); font-size: 12px; }
+.graph-node-switcher { display: none; }
+.graph-node-switcher select { margin: 0; }
+.graph-node-switcher-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.graph-node-switcher-actions button { min-height: 44px; }
 .graph-sidebar .graph-form { margin: 0; padding: 12px 0 0; border: 0; border-radius: 0; box-shadow: none; }
 .graph-sidebar .graph-form h3 { margin-top: 0; overflow-wrap: anywhere; }
 .graph-sidebar .graph-form label, .graph-sidebar .deletion-rewires label { display: flex; flex-wrap: wrap; }
@@ -338,7 +342,11 @@ tbody tr.row-selected { background: #1a3557; }
 .git-task-summary, .git-task-expanded-toggle { grid-template-columns: 24px fit-content(280px) minmax(0, 1fr); }
 .git-task-summary { min-height: 54px; }
 .git-task-expanded-toggle { color: #eaf3ff; font-weight: 700; }
-.task-summary-heading { min-width: 0; overflow: hidden; color: #f5f8ff; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.task-summary-heading { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: #f5f8ff; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.task-summary-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.task-reference { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px 7px; min-width: 0; }
+.task-reference-id { color: #b7d8ff; background: #203652; border: 1px solid #426286; border-radius: 4px; padding: 0 4px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .92em; font-weight: 700; line-height: 1.55; }
+.task-reference-name { color: #eaf1fc; font-weight: 600; }
 .task-summary-details { min-width: 0; overflow: hidden; color: #c0cde0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .git-task-summary .git-release-icon, .git-task-expanded-toggle .git-release-icon { color: #a4ccff; }
 .git-row-commit[aria-pressed="true"], .git-row-commit.selected { background: #1b4269; }
@@ -382,6 +390,15 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-branch-name { flex: 1; justify-content: space-between; min-width: 0; overflow-wrap: anywhere; }
 .graph-branch-name small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .graph-branch-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; border: 1px solid #ffffff80; }
+.branch-order-list { display: grid; gap: 6px; padding: 0; margin: 12px 0; list-style: none; }
+.branch-order-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: #101a2a; }
+.branch-order-index { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; border: 1px solid #52647e; border-radius: 6px; color: #d8e6fa; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 700; }
+.branch-order-info { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.branch-order-info strong, .branch-order-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-order-info strong { color: #eaf1fc; font-size: 12px; }
+.branch-order-info small { color: var(--muted); font-size: 10px; }
+.branch-order-actions { display: flex; align-items: center; gap: 2px; }
+.branch-order-actions .icon-button { font-size: 18px; font-weight: 700; }
 .graph-detail-actions { position: relative; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .graph-form { margin-top: 16px; border: 1px solid #3c4e69; border-radius: 10px; padding: 16px; background: #152136; box-shadow: 0 12px 32px #02061735; }
 .graph-form form { max-width: 720px; }
@@ -405,6 +422,9 @@ tbody tr.row-selected { background: #1a3557; }
   .graph-layout { grid-template-columns: minmax(0, 1fr); }
   .graph-sidebar { position: static; max-height: 360px; }
   .graph-sidebar.is-editing { position: fixed; z-index: 30; top: 12px; right: 12px; bottom: 12px; width: min(400px, calc(100% - 24px)); height: auto; max-height: none; box-shadow: -16px 0 48px #020617aa; }
+  .graph-node-switcher { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #101c2d; }
+  .graph-node-switcher label { color: var(--ink); font-size: 12px; font-weight: 700; }
+  .graph-node-switcher .form-help { margin: 0; }
 }
 @media (max-width: 720px) {
   .graph-filter { width: 100%; }

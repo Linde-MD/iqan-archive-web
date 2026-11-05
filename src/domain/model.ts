@@ -30,6 +30,14 @@ export interface Branch {
   description: string;
   color: string;
   headId: string;
+  order?: number;
+}
+
+export function orderedBranches(branches: readonly Branch[]): Branch[] {
+  return branches
+    .map((branch, index) => ({ branch, index }))
+    .sort((a, b) => (a.branch.order ?? a.index) - (b.branch.order ?? b.index) || a.index - b.index)
+    .map(({ branch }) => branch);
 }
 
 export interface Task {
@@ -50,8 +58,9 @@ export interface ProjectGraph {
 
 export interface ProjectSnapshot {
   schemaVersion: 3;
-  graph: Omit<ProjectGraph, 'project'> & {
+  graph: Omit<ProjectGraph, 'project' | 'branches'> & {
     project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision'>;
+    branches: Array<Omit<Branch, 'order'>>;
   };
 }
 

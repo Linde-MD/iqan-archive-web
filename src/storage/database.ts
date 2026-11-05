@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
-import { createProject, normalizeVersion, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
+import { createProject, normalizeVersion, orderedBranches, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
+import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
@@ -16,7 +16,15 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
     nodes: graph.nodes.map(({ id, projectId, version, description, taskId, releasedAt }) => ({ id, projectId, version, description, taskId, releasedAt })),
     edges: graph.edges.map(({ id, projectId, parentId, childId }) => ({ id, projectId, parentId, childId })),
     tasks: graph.tasks.map(({ id, projectId, name, description, externalTaskId }) => ({ id, projectId, name, description, externalTaskId })),
-    branches: graph.branches.map(({ id, projectId, name, description, color, headId }) => ({ id, projectId, name, description, color, headId })),
+    branches: orderedBranches(graph.branches).map((branch, order) => ({
+      id: branch.id,
+      projectId: branch.projectId,
+      name: branch.name,
+      description: branch.description,
+      color: branch.color,
+      headId: branch.headId,
+      order,
+    })),
   };
 }
 
@@ -81,12 +89,13 @@ export class ArchiveRepository {
   private async read(projectId: string): Promise<ProjectGraph> {
     const project = await this.db.projects.get(projectId);
     requireCondition(project, 'PROJECT_NOT_FOUND', '项目不存在。');
-    const [nodes, edges, branches, tasks] = await Promise.all([
+    const [nodes, edges, storedBranches, tasks] = await Promise.all([
       this.db.nodes.where('projectId').equals(projectId).toArray(),
       this.db.edges.where('projectId').equals(projectId).toArray(),
       this.db.branches.where('projectId').equals(projectId).toArray(),
       this.db.tasks.where('projectId').equals(projectId).toArray(),
     ]);
+    const branches = orderedBranches(storedBranches).map((branch, order) => ({ ...branch, order }));
     const graph = { project, nodes, edges, branches, tasks };
     validateGraph(graph);
     return graph;
@@ -240,11 +249,24 @@ export class ArchiveRepository {
     return this.change(projectId, revision, graph => updateBranch(graph, branchId, update));
   }
 
+  async saveBranchOrder(projectId: string, revision: number, branchIds: readonly string[]): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => reorderBranches(graph, branchIds));
+  }
+
   async snapshot(projectId: string): Promise<ProjectSnapshot> {
     const graph = await this.get(projectId);
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision } = clean.project;
-    return { schemaVersion: 3, graph: { ...clean, project: { id, name, partNumber, revision } } };
+    return {
+      schemaVersion: 3,
+      graph: {
+        ...clean,
+        project: { id, name, partNumber, revision },
+        branches: clean.branches.map(({ id, projectId, name, description, color, headId }) => ({
+          id, projectId, name, description, color, headId,
+        })),
+      },
+    };
   }
 
   async inspectSnapshotImport(graph: ProjectGraph): Promise<boolean> {

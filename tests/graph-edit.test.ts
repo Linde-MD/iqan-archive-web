@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject, type ProjectGraph } from '../src/domain/model';
-import { createBranch, release, setNodeParents, updateBranch, updateNode } from '../src/domain/graph';
+import { createBranch, release, reorderBranches, setNodeParents, updateBranch, updateNode } from '../src/domain/graph';
 
 function fixture(): ProjectGraph {
   const graph = createProject('工程', '123');
@@ -75,6 +75,22 @@ describe('节点与分支编辑', () => {
     const base = fixture();
     const withBranch = createBranch(base, { id: 'b', projectId: base.project.id, name: '主线', description: '', color: '#2563eb', headId: 'A' });
     expect(() => updateBranch(withBranch, 'b', { color: 'red' })).toThrow('六位十六进制');
+  });
+
+  it('分支顺序可重排且只影响优先级，拒绝遗漏、重复或未知分支', () => {
+    let graph = fixture();
+    graph = createBranch(graph, { id: 'main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'A' });
+    graph = createBranch(graph, { id: 'feature', projectId: graph.project.id, name: '功能线', description: '', color: '#166534', headId: 'B' });
+    const next = reorderBranches(graph, ['feature', 'main']);
+    expect(next.branches.map(branch => [branch.id, branch.order])).toEqual([['feature', 0], ['main', 1]]);
+    expect(next.nodes).toEqual(graph.nodes);
+    expect(next.edges).toEqual(graph.edges);
+    expect(Object.fromEntries(next.branches.map(branch => [branch.id, branch.headId])))
+      .toEqual(Object.fromEntries(graph.branches.map(branch => [branch.id, branch.headId])));
+    expect(graph.branches.map(branch => branch.id)).toEqual(['main', 'feature']);
+    expect(() => reorderBranches(graph, ['main'])).toThrow('全部分支');
+    expect(() => reorderBranches(graph, ['main', 'main'])).toThrow('全部分支');
+    expect(() => reorderBranches(graph, ['main', 'missing'])).toThrow('全部分支');
   });
 
   it('显式移动分支头允许回退、前进及游离放行版本，其他数据不变并拒绝悬空头', () => {

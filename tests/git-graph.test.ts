@@ -66,6 +66,25 @@ describe('Git Graph 投影', () => {
     expect(graph).toEqual(before);
   });
 
+  it('按显式分支顺序分配共享轨道与颜色，让优先分支的共享历史保持直线', () => {
+    const graph = fixture();
+    graph.branches[0]!.order = 1;
+    graph.branches[1]!.order = 0;
+    const layout = layoutGitGraph(graph, 'oldest');
+    expect(layout.branchTracks.map(branch => branch.id)).toEqual(['feature', 'main']);
+    expect(layout.rows.find(row => row.node.id === 'n2')?.laneIndex).toBe(0);
+    expect(layout.rows.find(row => row.node.id === 'n4')?.laneIndex).toBe(0);
+    expect(layout.edges.find(edge => edge.id === 'e1')).toMatchObject({
+      color: '#d946ef', fromLane: 0, toLane: 0,
+    });
+    expect(layout.edges.find(edge => edge.id === 'e3')).toMatchObject({
+      color: '#d946ef', fromLane: 0, toLane: 0,
+    });
+    expect(layout.edges.find(edge => edge.id === 'e2')).toMatchObject({
+      color: '#2563eb', fromLane: 0, toLane: 1,
+    });
+  });
+
   it('不选分支仅显示游离版本，重复或已删除分支不增加节点或轨道', () => {
     const graph = fixture();
     expect(layoutGitGraph(graph, 'oldest', []).rows.map(row => row.node.id)).toEqual(['n5']);

@@ -1,4 +1,4 @@
-import type { Branch, Edge, ProjectGraph, VersionNode } from './model';
+import { orderedBranches, type Branch, type Edge, type ProjectGraph, type VersionNode } from './model';
 import { compareVersionNodes, compareVersions, type VersionOrder } from './version-order';
 
 export const GIT_GRAPH = {
@@ -97,9 +97,10 @@ export function layoutGitGraph(
   visibleNodeIds: ReadonlySet<string> | null = null,
 ): GitGraphLayout {
   const selectedIds = branchIds === null ? null : new Set(branchIds);
+  const allBranches = orderedBranches(graph.branches);
   const branchTracks = selectedIds === null
-    ? graph.branches
-    : graph.branches.filter(branch => selectedIds.has(branch.id));
+    ? allBranches
+    : allBranches.filter(branch => selectedIds.has(branch.id));
   const parents = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
   const incident = new Set<string>();
   for (const edge of graph.edges) {
@@ -108,7 +109,7 @@ export function layoutGitGraph(
     incident.add(edge.childId);
   }
   const allMemberships = new Map<string, Branch[]>();
-  for (const branch of graph.branches) {
+  for (const branch of allBranches) {
     for (const id of branchHistory(branch, parents)) {
       const branches = allMemberships.get(id) ?? [];
       branches.push(branch);

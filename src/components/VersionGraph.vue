@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
-import type { Branch, ProjectGraph, Task, VersionNode } from '../domain/model';
+import { orderedBranches, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -179,6 +179,7 @@ const editorSidebar = ref<HTMLElement>();
 const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
 const selectionAnchorId = ref<string | null>(null);
+const nodeSwitchTargetId = ref('');
 const graphMode = ref<'all' | 'tasks'>('all');
 const expandedTaskRunIds = ref<string[]>([]);
 watch(selectedNodeIds, ids => {
@@ -209,11 +210,19 @@ function closeBranchFilter(event: Event) {
 const activeBranchId = ref<string | null>(null);
 const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
 const menuReturnFocus = ref<HTMLElement | null>(null);
-const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'relations' | 'tasks' | null>(null);
+const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'branch-manager' | 'relations' | 'tasks' | null>(null);
 const nodeSwitchDialog = ref<HTMLDialogElement>();
-const pendingNodeSwitch = ref<{ nodeId: string; mode: 'details' | 'edit'; source: 'node-edit' | 'task-edit' } | null>(null);
+type NodeSwitchSource = 'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'tasks'
+  | 'deletion-preview' | 'branch-delete' | 'relation-preview';
+const pendingNodeSwitch = ref<{ nodeId: string; mode: 'details' | 'edit'; source: NodeSwitchSource } | null>(null);
 const nodeTaskId = ref('');
 const taskForm = ref({ id: '', name: '', description: '', externalTaskId: '' });
+const nodeDraftBaseline = ref('');
+const branchDraftBaseline = ref('');
+const nodeDraftValue = () => JSON.stringify([nodeForm.value, nodeTaskId.value]);
+const branchDraftValue = () => JSON.stringify([
+  branchForm.value.name, branchForm.value.description, branchForm.value.color, branchForm.value.headId,
+]);
 const taskRevision = ref(0);
 const taskDeleteId = ref<string | null>(null);
 const taskQuery = ref('');
@@ -231,9 +240,65 @@ const taskEditDirty = computed(() => {
     || taskForm.value.description !== task.description
     || taskForm.value.externalTaskId !== (task.externalTaskId ?? '');
 });
+const nodeFormDirty = computed(() => {
+  if (panel.value === 'node-edit') return nodeEditDirty.value;
+  if (panel.value === 'parent-edit') return !parentSelectionUnchanged.value;
+  return (panel.value === 'node-add' || panel.value === 'merge')
+    && nodeDraftValue() !== nodeDraftBaseline.value;
+});
+const branchFormDirty = computed(() => (panel.value === 'branch-add' || panel.value === 'branch-edit')
+  && branchDraftValue() !== branchDraftBaseline.value);
+const editorDraftDirty = computed(() => {
+  if (deletionPlan.value || branchDeleteTarget.value || panel.value === 'relations') return true;
+  if (panel.value === 'tasks') return taskEditDirty.value;
+  if (panel.value === 'node-add' || panel.value === 'node-edit' || panel.value === 'parent-edit' || panel.value === 'merge') {
+    return nodeFormDirty.value;
+  }
+  return branchFormDirty.value;
+});
+const editorDraftSource = computed<NodeSwitchSource | null>(() => {
+  if (deletionPlan.value) return 'deletion-preview';
+  if (branchDeleteTarget.value) return 'branch-delete';
+  if (panel.value === 'relations') return 'relation-preview';
+  if (panel.value === 'tasks') return 'tasks';
+  if (panel.value === 'node-add' || panel.value === 'node-edit' || panel.value === 'parent-edit'
+    || panel.value === 'merge' || panel.value === 'branch-add' || panel.value === 'branch-edit') return panel.value;
+  return null;
+});
+const editorDraftLabel = computed(() => {
+  switch (pendingNodeSwitch.value?.source) {
+    case 'tasks': return '任务管理中的任务草稿';
+    case 'branch-add': return '新建分支草稿';
+    case 'branch-edit': return '分支编辑草稿';
+    case 'node-add': return '新增版本草稿';
+    case 'node-edit': return '版本编辑草稿';
+    case 'parent-edit': return '父版本修改草稿';
+    case 'merge': return '合并版本草稿';
+    case 'deletion-preview': return '删除版本预览尚未确认';
+    case 'branch-delete': return '删除分支确认尚未完成';
+    case 'relation-preview': return '父子关联预览尚未确认';
+    default: return '当前面板中的修改';
+  }
+});
+const nodeSwitchCanSave = computed(() => !['deletion-preview', 'branch-delete', 'relation-preview'].includes(
+  pendingNodeSwitch.value?.source ?? '',
+));
+const nodeSwitchSaveDisabled = computed(() => {
+  if (saving.value) return true;
+  switch (pendingNodeSwitch.value?.source) {
+    case 'tasks': return !taskForm.value.name.trim() || graph.value?.project.revision !== taskRevision.value;
+    case 'branch-add':
+    case 'branch-edit': return !branchForm.value.name.trim();
+    case 'node-add': return !nodeForm.value.version.trim();
+    case 'merge': return !nodeForm.value.version.trim() || nodeForm.value.parentIds.length < 2 || !nodeForm.value.targetBranchId;
+    case 'node-edit': return !nodeForm.value.version.trim();
+    case 'parent-edit': return !selectedNode.value || parentSelectionUnchanged.value || !!selectedNode.value.releasedAt;
+    default: return true;
+  }
+});
 
 function taskLabel(task: Task): string {
-  return `${task.name} · ${task.externalTaskId ? `Task ID ${task.externalTaskId}` : '未关联 Task ID'}`;
+  return `${task.externalTaskId ? `${task.externalTaskId} · ` : ''}${task.name}`;
 }
 
 function editTask(task?: Task) {
@@ -248,6 +313,30 @@ function openTasks() {
   panel.value = 'tasks';
   editTask();
   closeMenu(false);
+}
+
+function openBranchManager() {
+  panel.value = 'branch-manager';
+  closeMenu(false);
+}
+
+async function moveBranchOrder(branchId: string, offset: -1 | 1) {
+  const current = graph.value;
+  if (!current || saving.value) return;
+  const branches = orderedBranches(current.branches);
+  const index = branches.findIndex(branch => branch.id === branchId);
+  const targetIndex = index + offset;
+  if (index < 0 || targetIndex < 0 || targetIndex >= branches.length) return;
+  const next = [...branches];
+  [next[index], next[targetIndex]] = [next[targetIndex]!, next[index]!];
+  await operation(`调整分支顺序：${branches[index]!.name}`, async () => {
+    graph.value = await props.repository.saveBranchOrder(
+      props.projectId,
+      current.project.revision,
+      next.map(branch => branch.id),
+    );
+    status.value = `分支“${branches[index]!.name}”已${offset < 0 ? '上移' : '下移'}。`;
+  });
 }
 
 async function saveTaskDraft(): Promise<boolean> {
@@ -297,6 +386,7 @@ const dropTargetId = ref<string | null>(null);
 const pendingBranchMove = ref<{ branchId: string; headId: string; revision: number; targetId: string; name: string } | null>(null);
 const branchHeadOptions = computed(() => [...(graph.value?.nodes ?? [])]
   .sort((a, b) => compareVersions(a.version, b.version)));
+const orderedBranchList = computed(() => orderedBranches(graph.value?.branches ?? []));
 const nodeEditDirty = computed(() => panel.value === 'node-edit' && !!selectedNode.value && (
   nodeForm.value.version !== selectedNode.value.version
   || nodeForm.value.description !== selectedNode.value.description
@@ -455,6 +545,9 @@ const selectedNodes = computed(() => {
   return selectedNodeIds.value.flatMap(id => nodes.has(id) ? [nodes.get(id)!] : []);
 });
 const selectedNode = computed(() => selectedNodes.value.length === 1 ? selectedNodes.value[0] : undefined);
+watch(selectedNode, node => {
+  if (node) nodeSwitchTargetId.value = node.id;
+}, { flush: 'sync' });
 const selectedTask = computed(() => graph.value?.tasks.find(task => task.id === selectedNode.value?.taskId));
 const selectedRelations = computed(() => {
   const ids = new Set(selectedNodeIds.value);
@@ -463,6 +556,12 @@ const selectedRelations = computed(() => {
 const canBuildLinearRelations = computed(() => selectedNodes.value.length >= 2 && selectedRelations.value.length === 0);
 const selectedBranch = computed(() => graph.value?.branches.find(branch => branch.id === activeBranchId.value));
 const nodeById = computed(() => new Map((graph.value?.nodes ?? []).map(node => [node.id, node])));
+const nodeSwitchTarget = computed({
+  get: () => nodeById.value.has(nodeSwitchTargetId.value)
+    ? nodeSwitchTargetId.value
+    : selectedNode.value?.id ?? graph.value?.nodes[0]?.id ?? '',
+  set: (nodeId: string) => { nodeSwitchTargetId.value = nodeId; },
+});
 function taskRunVersions(run: TaskRun): string[] {
   return run.nodeIds.flatMap(id => {
     const version = nodeById.value.get(id)?.version;
@@ -816,9 +915,9 @@ function selectNode(nodeId: string, additive: boolean, range = false) {
 }
 
 function onNodeClick(nodeId: string, event: MouseEvent) {
-  if (panel.value === 'node-edit' || panel.value === 'tasks') {
+  if (editorOpen.value) {
     if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-    if (nodeEditDirty.value || taskEditDirty.value) {
+    if (editorDraftDirty.value) {
       clearNodeClickTimer();
       nodeClickTimer = setTimeout(() => {
         nodeClickTimer = undefined;
@@ -873,6 +972,7 @@ function openBranchMenu(event: MouseEvent, branchId: string) {
 function openNodeAdd(parentIds: readonly string[] = []) {
   nodeTaskId.value = '';
   nodeForm.value = { version: '', description: '', parentIds: [...parentIds], targetBranchId: '' };
+  nodeDraftBaseline.value = nodeDraftValue();
   panel.value = 'node-add';
   closeMenu(false);
 }
@@ -886,6 +986,7 @@ function openNodeEdit() {
     parentIds: [],
     targetBranchId: '',
   };
+  nodeDraftBaseline.value = nodeDraftValue();
   panel.value = 'node-edit';
 }
 
@@ -893,12 +994,16 @@ function openNodeEditFor(nodeId: string) {
   const node = nodeById.value.get(nodeId);
   if (!node) return;
   clearNodeClickTimer();
+  branchDeleteTarget.value = null;
+  deletionPlan.value = null;
+  relationPreview.value = undefined;
   selectedNodeIds.value = [nodeId];
   selectionAnchorId.value = nodeId;
   activeBranchId.value = null;
   closeMenu(false);
   nodeTaskId.value = node.taskId ?? '';
   nodeForm.value = { version: node.version, description: node.description, parentIds: [], targetBranchId: '' };
+  nodeDraftBaseline.value = nodeDraftValue();
   error.value = '';
   status.value = '';
   panel.value = 'node-edit';
@@ -907,6 +1012,10 @@ function openNodeEditFor(nodeId: string) {
 function openNodeDetailsFor(nodeId: string) {
   if (!nodeById.value.has(nodeId)) return;
   clearNodeClickTimer();
+  panel.value = null;
+  branchDeleteTarget.value = null;
+  deletionPlan.value = null;
+  relationPreview.value = undefined;
   selectedNodeIds.value = [nodeId];
   selectionAnchorId.value = nodeId;
   activeBranchId.value = null;
@@ -923,17 +1032,21 @@ function openNodeTarget(nodeId: string, mode: 'details' | 'edit') {
 
 function requestNodeSwitch(nodeId: string, mode: 'details' | 'edit') {
   if (saving.value || pendingNodeSwitch.value || !nodeById.value.has(nodeId)) return;
-  const source = panel.value === 'node-edit' ? 'node-edit' : panel.value === 'tasks' ? 'task-edit' : null;
-  if (!source) {
-    if (!editorOpen.value) openNodeTarget(nodeId, mode);
-    return;
-  }
-  if (source === 'node-edit' && selectedNode.value?.id === nodeId && mode === 'edit') return;
-  if (source === 'node-edit' ? nodeEditDirty.value : taskEditDirty.value) {
+  if (panel.value === 'node-edit' && selectedNode.value?.id === nodeId && mode === 'edit') return;
+  const source = editorDraftSource.value;
+  if (source && editorDraftDirty.value) {
     pendingNodeSwitch.value = { nodeId, mode, source };
     return;
   }
   openNodeTarget(nodeId, mode);
+}
+
+function navigateFromEditor(mode: 'details' | 'edit') {
+  if (!nodeSwitchTarget.value) {
+    status.value = '当前项目没有可切换的版本。';
+    return;
+  }
+  requestNodeSwitch(nodeSwitchTarget.value, mode);
 }
 
 function editNodeFromDoubleClick(nodeId: string) {
@@ -953,10 +1066,15 @@ function discardAndSwitchNode() {
 
 async function saveAndSwitchNode() {
   const target = pendingNodeSwitch.value;
-  if (!target || saving.value) return;
-  const saved = target.source === 'node-edit' ? await submitNode() : await saveTaskDraft();
+  if (!target || saving.value || !nodeSwitchCanSave.value) return;
+  let saved = false;
+  if (target.source === 'tasks') saved = await saveTaskDraft();
+  else if (target.source === 'parent-edit') saved = await submitParentEdit();
+  else if (target.source === 'branch-add' || target.source === 'branch-edit') saved = await submitBranch();
+  else saved = await submitNode();
+  if (!saved) return;
   pendingNodeSwitch.value = null;
-  if (saved) openNodeTarget(target.nodeId, target.mode);
+  openNodeTarget(target.nodeId, target.mode);
 }
 
 function openParentEdit() {
@@ -967,12 +1085,15 @@ function openParentEdit() {
     parentIds: [...(parentIdsOf.value.get(selectedNode.value.id) ?? [])],
     targetBranchId: '',
   };
+  nodeTaskId.value = selectedNode.value.taskId ?? '';
+  nodeDraftBaseline.value = nodeDraftValue();
   panel.value = 'parent-edit';
 }
 
 function openMerge() {
   nodeTaskId.value = '';
   nodeForm.value = { version: '', description: '', parentIds: [...selectedNodeIds.value], targetBranchId: '' };
+  nodeDraftBaseline.value = nodeDraftValue();
   panel.value = 'merge';
 }
 
@@ -1050,9 +1171,9 @@ function createNode(current: ProjectGraph, form: typeof nodeForm.value): Version
   };
 }
 
-async function submitParentEdit() {
-  if (!selectedNode.value) return;
-  await operation('设置父版本', async () => {
+async function submitParentEdit(): Promise<boolean> {
+  if (!selectedNode.value) return false;
+  return operation('设置父版本', async () => {
     const current = graph.value!;
     graph.value = await props.repository.saveNodeParents(
       props.projectId, current.project.revision, selectedNode.value!.id, nodeForm.value.parentIds,
@@ -1064,20 +1185,24 @@ async function submitParentEdit() {
 
 function openBranchAdd(headId: string) {
   branchForm.value = { id: '', name: '', description: '', color: '#2563eb', headId };
+  branchDraftBaseline.value = branchDraftValue();
   panel.value = 'branch-add';
   closeMenu(false);
 }
 
-function openBranchEdit() {
-  const branch = selectedBranch.value;
+function openBranchEdit(branchId?: string) {
+  const branch = branchId
+    ? graph.value?.branches.find(item => item.id === branchId)
+    : selectedBranch.value;
   if (!branch) return;
   branchForm.value = { ...branch };
+  branchDraftBaseline.value = branchDraftValue();
   branchEditRevision.value = graph.value!.project.revision;
   panel.value = 'branch-edit';
 }
 
 async function submitBranch() {
-  await operation(panel.value === 'branch-add' ? '创建分支' : '编辑分支', async () => {
+  return operation(panel.value === 'branch-add' ? '创建分支' : '编辑分支', async () => {
     const current = graph.value!;
     if (panel.value === 'branch-add') {
       const branch: Branch = {
@@ -1293,6 +1418,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         </button>
         <button class="tool-button tool-button-accent" :disabled="saving" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
         <button class="tool-button" :disabled="saving" aria-label="管理任务" title="创建、编辑任务与外部 Task ID；删除任务仅解除版本关联" @click="openTasks"><AppIcon name="file" /><span class="tool-caption">任务管理</span></button>
+        <button class="tool-button" :disabled="saving || editorOpen" aria-label="管理分支顺序" title="查看全部分支并调整顺序；顺序决定共享节点与连线的颜色及优先轨道" @click="openBranchManager"><AppIcon name="branch" /><span class="tool-caption">分支管理</span></button>
       </div>
 
       <div class="graph-toolbar-row">
@@ -1311,7 +1437,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
 
       <div v-if="selectedBranch" class="graph-branch-actions" :style="{ '--branch-color': selectedBranch.color }">
         <span class="branch-selected-indicator">{{ selectedBranch.name }}<small>· 头：{{ nodeById.get(selectedBranch.headId)?.version ?? '未知' }}</small></span>
-        <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑选中分支的名称、说明与颜色" @click="openBranchEdit"><AppIcon name="edit" /><span class="tool-caption">编辑分支</span></button>
+        <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑选中分支的名称、说明与颜色" @click="openBranchEdit()"><AppIcon name="edit" /><span class="tool-caption">编辑分支</span></button>
         <button class="tool-button" :disabled="saving" aria-label="放行分支" title="放行选中分支的头版本及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
         <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从选中分支的头版本创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
         <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，保留版本及父子关系；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
@@ -1382,15 +1508,17 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     class="git-row-commit git-task-summary"
                     :data-task-run-id="row.taskRun.id"
                     :aria-expanded="false"
-                    :aria-label="`${row.taskRun.task.name}，${row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID'}，${row.taskRun.nodeIds.length} 个连续版本：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
+                    :aria-label="`${row.taskRun.task.externalTaskId ? `任务编号 ${row.taskRun.task.externalTaskId}，` : ''}${row.taskRun.task.name}，${row.taskRun.nodeIds.length} 个连续版本：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
                     :disabled="saving"
                     @click="toggleTaskRun(row.taskRun)"
                   >
                     <AppIcon class="git-release-icon" name="file" />
-                    <span class="task-summary-heading">{{ row.taskRun.task.name }}</span>
+                    <span class="task-summary-heading">
+                      <code v-if="row.taskRun.task.externalTaskId" class="task-reference-id">{{ row.taskRun.task.externalTaskId }}</code>
+                      <span>{{ row.taskRun.task.name }}</span>
+                    </span>
                     <span class="task-summary-details">
-                      {{ row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID' }}
-                      · {{ row.taskRun.nodeIds.length }} 个连续版本
+                      {{ row.taskRun.nodeIds.length }} 个连续版本
                       · 已放行 {{ taskRunReleasedCount(row.taskRun) }} 个
                       · {{ taskRunVersions(row.taskRun).join('、') }}
                       · 点击展开
@@ -1407,10 +1535,12 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     @click="toggleTaskRun(row.taskRun)"
                   >
                     <AppIcon class="git-release-icon" name="file" />
-                    <span class="task-summary-heading">{{ row.taskRun.task.name }}</span>
+                    <span class="task-summary-heading">
+                      <code v-if="row.taskRun.task.externalTaskId" class="task-reference-id">{{ row.taskRun.task.externalTaskId }}</code>
+                      <span>{{ row.taskRun.task.name }}</span>
+                    </span>
                     <span class="task-summary-details">
-                      {{ row.taskRun.task.externalTaskId ? `Task ID ${row.taskRun.task.externalTaskId}` : '未关联 Task ID' }}
-                      · 已展开 {{ row.taskRun.nodeIds.length }} 个连续版本 · 点击收起
+                      已展开 {{ row.taskRun.nodeIds.length }} 个连续版本 · 点击收起
                     </span>
                   </button>
                   <button
@@ -1530,6 +1660,17 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <span>图操作面板</span>
           <button class="icon-button" :disabled="saving" aria-label="关闭操作面板" title="关闭操作面板（Escape）" @click="closeEditor"><AppIcon name="clear" /></button>
         </div>
+        <div v-if="editorOpen && graph && graph.nodes.length" class="graph-node-switcher" role="group" aria-label="切换版本">
+          <label for="graph-node-switch-target">切换到版本</label>
+          <select id="graph-node-switch-target" v-model="nodeSwitchTarget" :disabled="saving || !!pendingNodeSwitch">
+            <option v-for="node in graph.nodes" :key="node.id" :value="node.id">{{ node.version }}</option>
+          </select>
+          <div class="graph-node-switcher-actions">
+            <button type="button" class="secondary" :disabled="saving || !!pendingNodeSwitch" @click="navigateFromEditor('details')">查看详情</button>
+            <button type="button" class="secondary" :disabled="saving || !!pendingNodeSwitch" @click="navigateFromEditor('edit')">编辑版本</button>
+          </div>
+          <p class="form-help">也可在图中单击版本查看详情、双击版本进入编辑。</p>
+        </div>
         <div v-if="error" role="alert" class="error"><h3 ref="errorHeading" tabindex="-1">图操作未完成</h3><p>{{ error }}</p></div>
         <p role="status" class="status">{{ status }}</p>
       <template v-if="!editorOpen">
@@ -1538,7 +1679,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <h3>{{ selectedNode.version }}</h3>
         <p class="form-help">{{ selectedNode.description || '（无改动说明）' }}</p>
         <p class="workspace-details">状态：{{ selectedNode.releasedAt ? '已放行' : '未放行' }}</p>
-        <p class="workspace-details">所属任务：{{ selectedTask ? taskLabel(selectedTask) : '未关联任务' }}</p>
+        <p class="workspace-details">所属任务：<span v-if="selectedTask" class="task-reference"><code v-if="selectedTask.externalTaskId" class="task-reference-id">{{ selectedTask.externalTaskId }}</code><span class="task-reference-name">{{ selectedTask.name }}</span></span><span v-else>未关联任务</span></p>
         <p class="workspace-details">父版本：{{ (parentIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无（未关联）' }}</p>
         <p class="workspace-details">子版本：{{ (childIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无' }}</p>
         <p class="workspace-details">分支：{{ (graphLayout?.memberships.get(selectedNode.id) ?? []).map(branch => branch.name).join('、') || '未关联' }}</p>
@@ -1550,7 +1691,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <p class="form-help">{{ selectedBranch.description || '（无分支说明）' }}</p>
         <p class="workspace-details">头版本：{{ nodeById.get(selectedBranch.headId)?.version ?? '未知' }}</p>
         <div class="graph-detail-actions">
-          <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑分支名称、说明与颜色" @click="openBranchEdit"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
+          <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑分支名称、说明与颜色" @click="openBranchEdit()"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
           <button class="tool-button" :disabled="saving" aria-label="放行分支" title="放行分支头及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
           <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从当前分支头创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
           <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，版本及父子关系保留；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
@@ -1560,7 +1701,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <aside v-else class="graph-detail" aria-label="分支图例">
         <p class="eyebrow">BRANCHES</p>
         <ul class="graph-branch-list">
-          <li v-for="branch in graph.branches" :key="branch.id">
+          <li v-for="branch in orderedBranchList" :key="branch.id">
             <button class="graph-branch-swatch-button" :aria-label="`选择分支 ${branch.name}`" :aria-pressed="activeBranchId === branch.id" @click="selectBranch(branch.id)">
               <span class="graph-branch-swatch" :style="{ background: branch.color }"></span>
             </button>
@@ -1596,6 +1737,30 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
     </div>
 
+    <div v-if="panel === 'branch-manager'" class="graph-form" role="dialog" aria-modal="false" aria-label="分支管理">
+      <h3 tabindex="-1">分支管理与顺序</h3>
+      <p class="form-help">顺序靠前的分支优先占用直线轨道，并决定共享版本节点及共同父边的显示颜色。调整仅改变显示优先级，不修改版本关系或分支头。</p>
+      <ol class="branch-order-list" aria-label="全部分支，按优先级排序">
+        <li v-for="(branch, index) in orderedBranchList" :key="branch.id">
+          <span class="branch-order-index" aria-label="顺序">{{ index + 1 }}</span>
+          <span class="graph-branch-swatch" :style="{ background: branch.color }" aria-hidden="true"></span>
+          <span class="branch-order-info">
+            <strong>{{ branch.name }}</strong>
+            <small>头：{{ nodeById.get(branch.headId)?.version ?? '未知' }}</small>
+          </span>
+          <div class="branch-order-actions">
+            <button type="button" class="secondary icon-button" :disabled="saving || index === 0" :aria-label="`上移分支 ${branch.name}`" :title="`上移 ${branch.name}`" @click="moveBranchOrder(branch.id, -1)">↑</button>
+            <button type="button" class="secondary icon-button" :disabled="saving || index === orderedBranchList.length - 1" :aria-label="`下移分支 ${branch.name}`" :title="`下移 ${branch.name}`" @click="moveBranchOrder(branch.id, 1)">↓</button>
+            <button type="button" class="secondary" :disabled="saving" :aria-label="`编辑分支 ${branch.name}`" @click="openBranchEdit(branch.id)">编辑</button>
+          </div>
+        </li>
+      </ol>
+      <p v-if="!orderedBranchList.length" class="form-help">尚无分支。选择版本后创建分支。</p>
+      <div class="actions">
+        <button type="button" class="secondary" :disabled="saving" @click="closeEditor">关闭</button>
+      </div>
+    </div>
+
     <div v-if="panel === 'tasks'" class="graph-form" role="dialog" aria-modal="false" aria-label="任务管理">
       <h3 tabindex="-1">任务管理</h3>
       <p class="form-help">任务可关联多个版本。外部 Task ID 为手工维护的 1–16 位数字编号，同项目唯一；与内部任务 ID 分开，不提供链接、登录或同步。</p>
@@ -1603,7 +1768,14 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <input id="git-task-search" v-model="taskQuery" type="search" placeholder="名称或 Task ID" :disabled="saving" />
       <ul class="task-manager-list" aria-label="项目任务">
         <li v-for="task in filteredTasks" :key="task.id">
-          <div><strong>{{ task.name }}</strong><p>{{ task.externalTaskId ? `Task ID ${task.externalTaskId}` : '未关联 Task ID' }} · {{ graph.nodes.filter(node => node.taskId === task.id).length }} 个版本</p><p v-if="task.description">{{ task.description }}</p></div>
+          <div>
+            <div class="task-reference">
+              <code v-if="task.externalTaskId" class="task-reference-id">{{ task.externalTaskId }}</code>
+              <strong class="task-reference-name">{{ task.name }}</strong>
+            </div>
+            <p>{{ graph.nodes.filter(node => node.taskId === task.id).length }} 个版本</p>
+            <p v-if="task.description">{{ task.description }}</p>
+          </div>
           <div class="actions">
             <button type="button" class="secondary" :disabled="saving" :aria-label="`编辑任务 ${task.name}`" @click="editTask(task)">编辑</button>
             <button type="button" class="secondary" :disabled="saving" :aria-label="`删除任务 ${task.name}`" @click="openTaskDelete(task)">删除</button>
@@ -1804,15 +1976,15 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       @cancel.prevent="cancelNodeSwitch"
     >
       <h3 id="node-switch-heading">切换版本视图</h3>
-      <p v-if="pendingNodeSwitch?.source === 'task-edit'">任务管理中的任务草稿尚未保存。切换到版本“{{ pendingNodeSwitchTarget?.version }}”的{{ pendingNodeSwitch.mode === 'details' ? '详情' : '编辑页' }}前，是否保存任务？</p>
-      <p v-else>当前版本“{{ selectedNode?.version }}”有未保存的修改。切换到“{{ pendingNodeSwitchTarget?.version }}”的{{ pendingNodeSwitch?.mode === 'details' ? '详情' : '编辑页' }}前，是否保存当前修改？</p>
+      <p>{{ editorDraftLabel }}。切换到版本“{{ pendingNodeSwitchTarget?.version }}”的{{ pendingNodeSwitch?.mode === 'details' ? '详情' : '编辑页' }}会放弃当前内容，{{ nodeSwitchCanSave ? '是否先保存？' : '是否放弃当前操作并切换？' }}</p>
       <div class="actions">
         <button
+          v-if="nodeSwitchCanSave"
           type="button"
-          :disabled="saving || (pendingNodeSwitch?.source === 'task-edit' && (!taskForm.name.trim() || graph?.project.revision !== taskRevision))"
+          :disabled="nodeSwitchSaveDisabled"
           @click="saveAndSwitchNode"
-        >{{ pendingNodeSwitch?.source === 'task-edit' ? '保存任务并' : '保存并' }}{{ pendingNodeSwitch?.mode === 'details' ? '查看详情' : '编辑' }}</button>
-        <button type="button" class="secondary" :disabled="saving" @click="discardAndSwitchNode">{{ pendingNodeSwitch?.source === 'task-edit' ? '放弃任务修改并' : '放弃修改并' }}{{ pendingNodeSwitch?.mode === 'details' ? '查看详情' : '编辑' }}</button>
+        >保存草稿并{{ pendingNodeSwitch?.mode === 'details' ? '查看详情' : '编辑' }}</button>
+        <button type="button" class="secondary" :disabled="saving" @click="discardAndSwitchNode">{{ nodeSwitchCanSave ? '放弃草稿并' : '放弃当前操作并' }}{{ pendingNodeSwitch?.mode === 'details' ? '查看详情' : '编辑' }}</button>
         <button type="button" class="secondary" :disabled="saving" autofocus @click="cancelNodeSwitch">取消</button>
       </div>
     </dialog>

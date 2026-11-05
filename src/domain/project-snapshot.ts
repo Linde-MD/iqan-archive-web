@@ -42,7 +42,15 @@ export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
   const { nodes, edges, branches, tasks } = snapshot.graph;
   const entityCount = nodes.length + edges.length + branches.length + tasks.length;
   requireCondition(entityCount <= MAX_SNAPSHOT_ENTITIES, 'SNAPSHOT_ENTITY_LIMIT', `配置实体超过 ${MAX_SNAPSHOT_ENTITIES} 个上限，无法导出为可恢复备份。`);
-  const json = JSON.stringify(snapshot, null, 2);
+  const json = JSON.stringify({
+    ...snapshot,
+    graph: {
+      ...snapshot.graph,
+      branches: branches.map(({ id, projectId, name, description, color, headId }) => ({
+        id, projectId, name, description, color, headId,
+      })),
+    },
+  }, null, 2);
   requireCondition(new TextEncoder().encode(json).byteLength <= MAX_SNAPSHOT_BYTES, 'SNAPSHOT_SIZE_LIMIT', '配置 JSON 超过 20 MiB，无法导出为可恢复备份。');
   return json;
 }
@@ -85,13 +93,14 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       parentId: text(item.parentId, 'edge.parentId'),
       childId: text(item.childId, 'edge.childId'),
     })),
-    branches: parseItems(source.branches, 'graph.branches', ['id', 'projectId', 'name', 'description', 'color', 'headId'], item => ({
+    branches: parseItems(source.branches, 'graph.branches', ['id', 'projectId', 'name', 'description', 'color', 'headId'], (item, index) => ({
       id: text(item.id, 'branch.id'),
       projectId: text(item.projectId, 'branch.projectId'),
       name: text(item.name, 'branch.name'),
       description: text(item.description, 'branch.description'),
       color: text(item.color, 'branch.color'),
       headId: text(item.headId, 'branch.headId'),
+      order: index,
     })),
     tasks: parseItems(source.tasks, 'graph.tasks', ['id', 'projectId', 'name', 'description', 'externalTaskId'], item => ({
       id: text(item.id, 'task.id'),

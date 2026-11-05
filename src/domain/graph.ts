@@ -1,6 +1,6 @@
 import {
   DomainError, normalizeExternalTaskId, normalizeVersion, requireCondition,
-  type ProjectGraph, type Task, type VersionNode,
+  orderedBranches, type ProjectGraph, type Task, type VersionNode,
 } from './model';
 
 function uniqueIds(items: readonly { id: string }[], label: string) {
@@ -67,7 +67,19 @@ export function validateGraph(graph: ProjectGraph): void {
   for (const branch of branches) {
     requireCondition(branch.name.trim() && nodeMap.has(branch.headId), 'BRANCH', '分支名称为空或头节点不存在。');
     requireCondition(/^#[0-9a-f]{6}$/i.test(branch.color), 'COLOR', '分支颜色须为六位十六进制颜色。');
+    requireCondition(branch.order === undefined || (Number.isSafeInteger(branch.order) && branch.order >= 0), 'BRANCH_ORDER', '分支顺序无效。');
   }
+  const explicitBranchOrders = branches.flatMap(branch => branch.order === undefined ? [] : [branch.order]);
+  requireCondition(
+    new Set(explicitBranchOrders).size === explicitBranchOrders.length,
+    'BRANCH_ORDER',
+    '分支顺序不能重复。',
+  );
+  requireCondition(
+    explicitBranchOrders.length === 0 || explicitBranchOrders.length === branches.length,
+    'BRANCH_ORDER',
+    '分支顺序必须全部设置或全部留空。',
+  );
 }
 
 export function updatePartNumber(graph: ProjectGraph, value: string): ProjectGraph {
@@ -325,7 +337,31 @@ export function validateTransition(before: ProjectGraph, after: ProjectGraph): v
 
 export function createBranch(graph: ProjectGraph, branch: ProjectGraph['branches'][number]): ProjectGraph {
   const next = structuredClone(graph);
-  next.branches.push(structuredClone(branch));
+  const branches = orderedBranches(next.branches);
+  next.branches = [
+    ...branches.map((item, order) => ({ ...item, order })),
+    { ...structuredClone(branch), order: branches.length },
+  ];
+  validateGraph(next);
+  return next;
+}
+
+export function reorderBranches(graph: ProjectGraph, branchIds: readonly string[]): ProjectGraph {
+  validateGraph(graph);
+  const branches = orderedBranches(graph.branches);
+  const availableIds = new Set(branches.map(branch => branch.id));
+  requireCondition(
+    branchIds.length === branches.length
+      && new Set(branchIds).size === branches.length
+      && branchIds.every(id => availableIds.has(id)),
+    'BRANCH_ORDER',
+    '分支顺序必须且只能包含项目中的全部分支。',
+  );
+  const orderById = new Map(branchIds.map((id, index) => [id, index]));
+  const next = structuredClone(graph);
+  next.branches = branches
+    .map(branch => ({ ...branch, order: orderById.get(branch.id)! }))
+    .sort((a, b) => a.order! - b.order!);
   validateGraph(next);
   return next;
 }

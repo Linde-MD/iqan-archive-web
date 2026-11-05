@@ -219,7 +219,7 @@ describe('项目事务及v3迁移', () => {
     expect(migrated.tasks).toEqual([]);
     expect(migrated.nodes).toEqual(graph.nodes);
     expect(migrated.edges).toEqual(graph.edges);
-    expect(migrated.branches).toEqual(graph.branches);
+    expect(migrated.branches).toEqual(graph.branches.map((branch, order) => ({ ...branch, order })));
     expect(next.backendDB().version).toBe(40);
     expect(next.tables.map(table => table.name)).not.toContain('files');
     expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
