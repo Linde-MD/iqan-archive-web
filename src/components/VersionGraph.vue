@@ -48,7 +48,7 @@ function scheduleHintClose() {
   hintCloseTimer = setTimeout(hideVersionHint, 150);
 }
 
-function moveVersionHint(event: MouseEvent) {
+function positionVersionHintAtPointer(event: MouseEvent) {
   const hint = versionHint.value;
   if (!hint?.matches(':popover-open')) return;
   const bounds = hint.getBoundingClientRect();
@@ -71,7 +71,7 @@ async function showVersionHint(event: MouseEvent | FocusEvent, node: VersionNode
   if (!hint || hintedNode.value !== node || !anchor.isConnected) return;
   hint.showPopover();
   if (event instanceof MouseEvent) {
-    moveVersionHint(event);
+    positionVersionHintAtPointer(event);
     return;
   }
   const rect = anchor.getBoundingClientRect();
@@ -1552,7 +1552,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :aria-label="`版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
                     :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
-                    @mouseenter="showVersionHint($event, row.node)" @mousemove="moveVersionHint" @mouseleave="scheduleHintClose"
+                    @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
                     @click="onNodeClick(row.node.id, $event)"
@@ -1589,7 +1589,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     :aria-label="`未关联版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
                     :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
-                    @mouseenter="showVersionHint($event, row.node)" @mousemove="moveVersionHint" @mouseleave="scheduleHintClose"
+                    @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
                     @click="onNodeClick(row.node.id, $event)"
