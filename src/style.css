@@ -268,6 +268,40 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-sidebar .graph-form h3 { margin-top: 0; overflow-wrap: anywhere; }
 .graph-sidebar .graph-form label, .graph-sidebar .deletion-rewires label { display: flex; flex-wrap: wrap; }
 .graph-sidebar .graph-form input, .graph-sidebar .graph-form select, .graph-sidebar .graph-form textarea { min-width: 0; max-width: 100%; }
+.markdown-editor { min-width: 0; margin-bottom: 14px; }
+.markdown-editor-toolbar { display: flex; gap: 8px; margin: 0 0 8px; }
+.markdown-editor-toolbar button { min-width: 72px; min-height: 44px; }
+.markdown-editor-toolbar button[aria-pressed="true"] { border-color: var(--accent); background: #203652; color: #fff; }
+.graph-sidebar .graph-form .markdown-editor textarea { width: 100%; min-height: 176px; margin: 0; resize: vertical; font-size: 14px; line-height: 1.6; }
+.markdown-editor-preview { min-height: 176px; }
+.markdown-editor-help { margin: 8px 0 0; }
+.markdown-empty { margin: 0; color: #c0cde0; }
+.markdown-content { min-width: 0; color: #eaf1fc; line-height: 1.65; overflow-wrap: anywhere; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3,
+.markdown-content h4, .markdown-content h5, .markdown-content h6 { margin: 1em 0 .45em; color: #f5f8ff; line-height: 1.35; }
+.markdown-content h1 { font-size: 1.3em; }
+.markdown-content h2 { font-size: 1.2em; }
+.markdown-content h3, .markdown-content h4 { font-size: 1.1em; }
+.markdown-content p, .markdown-content ul, .markdown-content ol, .markdown-content blockquote,
+.markdown-content pre, .markdown-table-scroll, .markdown-content hr { margin: .7em 0; }
+.markdown-content ul, .markdown-content ol { padding-left: 1.5em; }
+.markdown-content li + li { margin-top: .25em; }
+.markdown-content a { color: #9acbff; text-decoration: underline; text-underline-offset: 2px; }
+.markdown-content code { padding: .08em .35em; border: 1px solid #35445c; border-radius: 4px; background: #0b1321; color: #d7e8ff; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .92em; }
+.markdown-content pre { max-width: 100%; overflow: auto; padding: 10px 12px; border: 1px solid #35445c; border-radius: 6px; background: #0b1321; }
+.markdown-content pre code { padding: 0; border: 0; background: transparent; }
+.markdown-content blockquote { padding: 8px 12px; border-left: 3px solid #7db8ff; border-radius: 0 6px 6px 0; background: #111f32; color: #d7e5f8; }
+.markdown-content blockquote > :first-child { margin-top: 0; }
+.markdown-content blockquote > :last-child { margin-bottom: 0; }
+.markdown-content hr { border: 0; border-top: 1px solid #52647e; }
+.markdown-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.markdown-content table { width: max-content; border-collapse: collapse; }
+.markdown-table-scroll table { margin: 0; }
+.markdown-content th, .markdown-content td { padding: 6px 9px; border: 1px solid #52647e; text-align: left; }
+.markdown-content th { background: #20324b; color: #fff; }
+.markdown-content tr:nth-child(even) td { background: #111f32; }
 .graph-sidebar .graph-form .actions { display: grid; grid-template-columns: minmax(0, 1fr); }
 .graph-sidebar .graph-form .actions button { width: 100%; }
 .graph-sidebar .status:not(:empty) { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 8px; overflow-wrap: anywhere; }
@@ -365,7 +399,10 @@ tbody tr.row-selected { background: #1a3557; }
 .version-info-hint-heading .app-icon { flex-shrink: 0; color: #a4ccff; }
 .version-info-hint-heading strong { min-width: 0; flex: 1; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .version-info-hint-heading > span { flex-shrink: 0; color: #c0cde0; font-size: 11px; }
-.version-info-hint p { margin: 10px 0 0; color: #c0cde0; white-space: pre-wrap; }
+.version-hint-description { margin-top: 10px; padding: 10px 12px; border: 1px solid #354a66; border-left: 3px solid #7db8ff; border-radius: 6px; background: #0f1b2d; }
+.version-hint-description > :first-child { margin-top: 0; }
+.version-hint-description > :last-child { margin-bottom: 0; }
+.version-info-hint > .markdown-empty { margin-top: 10px; color: #c0cde0; }
 .git-branch-labels { display: flex; align-items: center; gap: 5px; padding-right: 10px; }
 .git-branch-label {
   min-height: 30px; max-width: 220px; overflow: hidden; padding: 4px 9px;
@@ -382,6 +419,7 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-menu button:hover { background: #253650; }
 .graph-detail { background: #172338; border: 1px solid #34445e; border-radius: 10px; padding: 16px; min-width: 0; font-size: 12px; }
 .graph-detail h3 { display: flex; align-items: center; gap: 8px; font-size: 16px; overflow-wrap: anywhere; }
+.version-description-card { margin: 12px 0 16px; padding: 12px 14px; border: 1px solid #3a526e; border-left: 3px solid #7db8ff; border-radius: 8px; background: #101c2d; box-shadow: inset 0 1px #ffffff08; }
 .graph-branch-list { list-style: none; padding: 0; margin: 8px 0 0; }
 .graph-branch-list li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
 .graph-branch-list li:first-child { border-top: 0; }
@@ -433,6 +471,8 @@ tbody tr.row-selected { background: #1a3557; }
   .branch-selected-indicator { width: 100%; }
   .graph-form .actions button { flex: 1 1 100%; }
   .deletion-rewires label { grid-template-columns: 1fr; }
+  .graph-sidebar .graph-form .markdown-editor textarea,
+  .markdown-content { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .git-graph-row { transition: none; }

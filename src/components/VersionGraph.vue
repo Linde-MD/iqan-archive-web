@@ -10,6 +10,8 @@ import { changeVersionRelations, type BatchRelationAction } from '../domain/rela
 import { projectTaskViewLayout, taskViewRuns, type TaskRun, type TaskViewLayout } from '../domain/task-view';
 import AppIcon from './AppIcon.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
+import MarkdownEditor from './MarkdownEditor.vue';
+import { renderMarkdown } from '../utils/markdown';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
@@ -1677,7 +1679,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       <aside v-if="selectedNode" class="graph-detail" aria-label="版本详情">
         <p class="eyebrow">VERSION DETAIL</p>
         <h3>{{ selectedNode.version }}</h3>
-        <p class="form-help">{{ selectedNode.description || '（无改动说明）' }}</p>
+        <section class="version-description-card" aria-label="改动说明">
+          <div v-if="selectedNode.description.trim()" class="markdown-content" v-html="renderMarkdown(selectedNode.description)"></div>
+          <p v-else class="markdown-empty">（无改动说明）</p>
+        </section>
         <p class="workspace-details">状态：{{ selectedNode.releasedAt ? '已放行' : '未放行' }}</p>
         <p class="workspace-details">所属任务：<span v-if="selectedTask" class="task-reference"><code v-if="selectedTask.externalTaskId" class="task-reference-id">{{ selectedTask.externalTaskId }}</code><span class="task-reference-name">{{ selectedTask.name }}</span></span><span v-else>未关联任务</span></p>
         <p class="workspace-details">父版本：{{ (parentIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无（未关联）' }}</p>
@@ -1814,7 +1819,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
         <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
         <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' && !!selectedNode?.releasedAt)" placeholder="例如：1479-1 20260115" />
         <label for="git-description">改动说明</label>
-        <textarea id="git-description" v-model="nodeForm.description" :disabled="saving" rows="3" placeholder="记录本次版本改动"></textarea>
+        <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" :disabled="saving" />
         <label for="git-node-task">所属任务</label>
         <select id="git-node-task" v-model="nodeTaskId" :disabled="saving">
           <option value="">未关联任务</option>
@@ -1955,7 +1960,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <strong>{{ hintedNode.version }}</strong>
           <span>{{ hintedNode.releasedAt ? '已放行' : '未放行' }}</span>
         </div>
-        <p>{{ hintedNode.description || '（无改动说明）' }}</p>
+        <div v-if="hintedNode.description.trim()" class="markdown-content version-hint-description" v-html="renderMarkdown(hintedNode.description)"></div>
+        <p v-else class="markdown-empty">（无改动说明）</p>
       </template>
     </div>
     <dialog ref="branchMoveDialog" class="branch-move-dialog" aria-labelledby="branch-move-heading" @cancel="saving ? $event.preventDefault() : (pendingBranchMove = null)" @close="pendingBranchMove = null">
