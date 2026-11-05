@@ -24,6 +24,12 @@ const graphScroller = ref<HTMLDivElement>();
 const versionHint = ref<HTMLDivElement>();
 const hintedNode = shallowRef<VersionNode>();
 let hintCloseTimer: ReturnType<typeof setTimeout> | undefined;
+let nodeClickTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearNodeClickTimer() {
+  clearTimeout(nodeClickTimer);
+  nodeClickTimer = undefined;
+}
 
 function keepVersionHint() {
   clearTimeout(hintCloseTimer);
@@ -204,6 +210,8 @@ const activeBranchId = ref<string | null>(null);
 const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
 const menuReturnFocus = ref<HTMLElement | null>(null);
 const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'relations' | 'tasks' | null>(null);
+const nodeSwitchDialog = ref<HTMLDialogElement>();
+const pendingNodeSwitch = ref<{ nodeId: string; mode: 'details' | 'edit'; source: 'node-edit' | 'task-edit' } | null>(null);
 const nodeTaskId = ref('');
 const taskForm = ref({ id: '', name: '', description: '', externalTaskId: '' });
 const taskRevision = ref(0);
@@ -212,6 +220,17 @@ const taskQuery = ref('');
 const filteredTasks = computed(() => (graph.value?.tasks ?? []).filter(task =>
   `${task.name} ${task.externalTaskId ?? ''}`.toLocaleLowerCase().includes(taskQuery.value.trim().toLocaleLowerCase())));
 const taskDeleteTarget = computed(() => graph.value?.tasks.find(task => task.id === taskDeleteId.value));
+const taskEditDirty = computed(() => {
+  if (panel.value !== 'tasks') return false;
+  if (!taskForm.value.id) {
+    return !!(taskForm.value.name || taskForm.value.description || taskForm.value.externalTaskId);
+  }
+  const task = graph.value?.tasks.find(item => item.id === taskForm.value.id);
+  return !task
+    || taskForm.value.name !== task.name
+    || taskForm.value.description !== task.description
+    || taskForm.value.externalTaskId !== (task.externalTaskId ?? '');
+});
 
 function taskLabel(task: Task): string {
   return `${task.name} · ${task.externalTaskId ? `Task ID ${task.externalTaskId}` : '未关联 Task ID'}`;
@@ -231,15 +250,18 @@ function openTasks() {
   closeMenu(false);
 }
 
-async function submitTask() {
-  await operation(taskForm.value.id ? '编辑任务' : '创建任务', async () => {
+async function saveTaskDraft(): Promise<boolean> {
+  return operation(taskForm.value.id ? '编辑任务' : '创建任务', async () => {
     const current = graph.value!;
     graph.value = await props.repository.saveTask(props.projectId, taskRevision.value, {
       ...taskForm.value, id: taskForm.value.id || crypto.randomUUID(), projectId: current.project.id,
     });
     status.value = '任务已保存。Task ID 是手工维护的外部编号，未进行远端验证。';
-    editTask();
   });
+}
+
+async function submitTask() {
+  if (await saveTaskDraft()) editTask();
 }
 
 function openTaskDelete(task: Task) {
@@ -275,11 +297,25 @@ const dropTargetId = ref<string | null>(null);
 const pendingBranchMove = ref<{ branchId: string; headId: string; revision: number; targetId: string; name: string } | null>(null);
 const branchHeadOptions = computed(() => [...(graph.value?.nodes ?? [])]
   .sort((a, b) => compareVersions(a.version, b.version)));
+const nodeEditDirty = computed(() => panel.value === 'node-edit' && !!selectedNode.value && (
+  nodeForm.value.version !== selectedNode.value.version
+  || nodeForm.value.description !== selectedNode.value.description
+  || nodeTaskId.value !== (selectedNode.value.taskId ?? '')
+));
+const pendingNodeSwitchTarget = computed(() => pendingNodeSwitch.value
+  ? nodeById.value.get(pendingNodeSwitch.value.nodeId)
+  : undefined);
 
 watch(pendingBranchMove, async value => {
   await nextTick();
   if (value) branchMoveDialog.value?.showModal();
   else branchMoveDialog.value?.close();
+});
+
+watch(pendingNodeSwitch, async value => {
+  await nextTick();
+  if (value && nodeSwitchDialog.value && !nodeSwitchDialog.value.open) nodeSwitchDialog.value.showModal();
+  else if (!value && nodeSwitchDialog.value?.open) nodeSwitchDialog.value.close();
 });
 
 function startBranchDrag(event: DragEvent, branch: Branch) {
@@ -334,13 +370,16 @@ function updateSidebarHeight() {
 
 function closeEditor() {
   if (saving.value) return;
+  clearNodeClickTimer();
   panel.value = null;
   branchDeleteTarget.value = null;
   deletionPlan.value = null;
 }
 
 function onSidebarFocusOut(event: FocusEvent) {
-  if (event.relatedTarget === fullscreenButton.value) return;
+  if (event.relatedTarget === fullscreenButton.value
+    || (event.relatedTarget instanceof Node && nodeSwitchDialog.value?.contains(event.relatedTarget))
+    || (event.relatedTarget instanceof HTMLElement && event.relatedTarget.matches('.git-row-commit'))) return;
   if (!isFullscreen.value && editorOpen.value && window.matchMedia('(max-width: 1100px)').matches
     && event.relatedTarget instanceof Node && !editorSidebar.value?.contains(event.relatedTarget)) closeEditor();
 }
@@ -555,7 +594,7 @@ watch(() => props.projectId, () => {
   void refresh();
 });
 
-async function operation(label: string, action: () => Promise<void>, recordUndo = true) {
+async function operation(label: string, action: () => Promise<void>, recordUndo = true): Promise<boolean> {
   const before = graph.value ? structuredClone(graph.value) : null;
   saving.value = true;
   emit('busy', true);
@@ -569,8 +608,10 @@ async function operation(label: string, action: () => Promise<void>, recordUndo 
       undoHistory.value.push({ before, afterRevision: after.project.revision, label });
       if (undoHistory.value.length > 50) undoHistory.value.shift();
     }
+    return true;
   } catch (cause) {
     showError(cause);
+    return false;
   } finally {
     saving.value = false;
     emit('busy', false);
@@ -695,6 +736,7 @@ onMounted(() => {
   void refresh();
 });
 onUnmounted(() => {
+  clearNodeClickTimer();
   hideVersionHint();
   window.removeEventListener('scroll', onHintScroll, true);
   window.removeEventListener('resize', hideVersionHint);
@@ -773,6 +815,24 @@ function selectNode(nodeId: string, additive: boolean, range = false) {
   menu.value = null;
 }
 
+function onNodeClick(nodeId: string, event: MouseEvent) {
+  if (panel.value === 'node-edit' || panel.value === 'tasks') {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (nodeEditDirty.value || taskEditDirty.value) {
+      clearNodeClickTimer();
+      nodeClickTimer = setTimeout(() => {
+        nodeClickTimer = undefined;
+        requestNodeSwitch(nodeId, 'details');
+      }, 500);
+      return;
+    }
+    requestNodeSwitch(nodeId, 'details');
+    return;
+  }
+  if (editorOpen.value) return;
+  selectNode(nodeId, event.ctrlKey || event.metaKey, event.shiftKey);
+}
+
 function openNodeMenu(event: MouseEvent, nodeId: string) {
   event.preventDefault();
   menuReturnFocus.value = event.currentTarget as HTMLElement;
@@ -829,18 +889,74 @@ function openNodeEdit() {
   panel.value = 'node-edit';
 }
 
-function editNodeFromDoubleClick(nodeId: string) {
-  if (saving.value) return;
-  if (editorOpen.value) {
-    if (panel.value === 'node-edit' && selectedNodeIds.value.length === 1 && selectedNodeIds.value[0] === nodeId) return;
-    status.value = '请先保存或取消当前操作，再编辑其他版本。';
-    return;
-  }
+function openNodeEditFor(nodeId: string) {
+  const node = nodeById.value.get(nodeId);
+  if (!node) return;
+  clearNodeClickTimer();
   selectedNodeIds.value = [nodeId];
   selectionAnchorId.value = nodeId;
   activeBranchId.value = null;
   closeMenu(false);
-  openNodeEdit();
+  nodeTaskId.value = node.taskId ?? '';
+  nodeForm.value = { version: node.version, description: node.description, parentIds: [], targetBranchId: '' };
+  error.value = '';
+  status.value = '';
+  panel.value = 'node-edit';
+}
+
+function openNodeDetailsFor(nodeId: string) {
+  if (!nodeById.value.has(nodeId)) return;
+  clearNodeClickTimer();
+  selectedNodeIds.value = [nodeId];
+  selectionAnchorId.value = nodeId;
+  activeBranchId.value = null;
+  closeMenu(false);
+  error.value = '';
+  status.value = '';
+  panel.value = null;
+}
+
+function openNodeTarget(nodeId: string, mode: 'details' | 'edit') {
+  if (mode === 'details') openNodeDetailsFor(nodeId);
+  else openNodeEditFor(nodeId);
+}
+
+function requestNodeSwitch(nodeId: string, mode: 'details' | 'edit') {
+  if (saving.value || pendingNodeSwitch.value || !nodeById.value.has(nodeId)) return;
+  const source = panel.value === 'node-edit' ? 'node-edit' : panel.value === 'tasks' ? 'task-edit' : null;
+  if (!source) {
+    if (!editorOpen.value) openNodeTarget(nodeId, mode);
+    return;
+  }
+  if (source === 'node-edit' && selectedNode.value?.id === nodeId && mode === 'edit') return;
+  if (source === 'node-edit' ? nodeEditDirty.value : taskEditDirty.value) {
+    pendingNodeSwitch.value = { nodeId, mode, source };
+    return;
+  }
+  openNodeTarget(nodeId, mode);
+}
+
+function editNodeFromDoubleClick(nodeId: string) {
+  clearNodeClickTimer();
+  requestNodeSwitch(nodeId, 'edit');
+}
+
+function cancelNodeSwitch() {
+  pendingNodeSwitch.value = null;
+}
+
+function discardAndSwitchNode() {
+  const target = pendingNodeSwitch.value;
+  pendingNodeSwitch.value = null;
+  if (target) openNodeTarget(target.nodeId, target.mode);
+}
+
+async function saveAndSwitchNode() {
+  const target = pendingNodeSwitch.value;
+  if (!target || saving.value) return;
+  const saved = target.source === 'node-edit' ? await submitNode() : await saveTaskDraft();
+  pendingNodeSwitch.value = null;
+  if (saved) openNodeTarget(target.nodeId, target.mode);
 }
 
 function openParentEdit() {
@@ -891,23 +1007,25 @@ function removeDeletionParent(childId: string, parentId: string) {
     .filter(id => id !== parentId);
 }
 
-async function submitNode() {
-  await operation(panel.value === 'node-edit' ? '编辑版本' : panel.value === 'merge' ? '合并版本' : '新增版本', async () => {
+async function submitNode(): Promise<boolean> {
+  const actionPanel = panel.value;
+  if (actionPanel !== 'node-add' && actionPanel !== 'node-edit' && actionPanel !== 'merge') return false;
+  return operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
     const current = graph.value!;
-    if (panel.value === 'node-add') {
+    if (actionPanel === 'node-add') {
       const node = createNode(current, nodeForm.value);
       graph.value = await props.repository.addNode(
         props.projectId, current.project.revision, node, nodeForm.value.parentIds, nodeForm.value.targetBranchId || null,
       );
       status.value = '版本已新增。';
-    } else if (panel.value === 'node-edit') {
+    } else if (actionPanel === 'node-edit') {
       graph.value = await props.repository.saveNode(props.projectId, current.project.revision, selectedNode.value!.id, {
         version: nodeForm.value.version,
         description: nodeForm.value.description,
         taskId: nodeTaskId.value || null,
       });
       status.value = '版本已更新。';
-    } else if (panel.value === 'merge') {
+    } else if (actionPanel === 'merge') {
       const node = createNode(current, nodeForm.value);
       graph.value = await props.repository.merge(
         props.projectId, current.project.revision, node, nodeForm.value.parentIds, nodeForm.value.targetBranchId,
@@ -1305,7 +1423,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     @mouseenter="showVersionHint($event, row.node)" @mousemove="moveVersionHint" @mouseleave="scheduleHintClose"
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
-                    @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
+                    @click="onNodeClick(row.node.id, $event)"
                     @dblclick.prevent="editNodeFromDoubleClick(row.node.id)"
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
@@ -1342,7 +1460,7 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
                     @mouseenter="showVersionHint($event, row.node)" @mousemove="moveVersionHint" @mouseleave="scheduleHintClose"
                     @focus="showVersionHint($event, row.node)" @blur="scheduleHintClose"
                     @pointerdown="hideVersionHint"
-                    @click="selectNode(row.node.id, $event.ctrlKey || $event.metaKey, $event.shiftKey)"
+                    @click="onNodeClick(row.node.id, $event)"
                     @dblclick.prevent="editNodeFromDoubleClick(row.node.id)"
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
@@ -1680,6 +1798,23 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <button class="secondary" :disabled="saving" autofocus @click="pendingBranchMove = null">取消</button>
         </div>
       </template>
+    </dialog>
+    <dialog
+      ref="nodeSwitchDialog" class="branch-move-dialog" aria-labelledby="node-switch-heading"
+      @cancel.prevent="cancelNodeSwitch"
+    >
+      <h3 id="node-switch-heading">切换版本视图</h3>
+      <p v-if="pendingNodeSwitch?.source === 'task-edit'">任务管理中的任务草稿尚未保存。切换到版本“{{ pendingNodeSwitchTarget?.version }}”的{{ pendingNodeSwitch.mode === 'details' ? '详情' : '编辑页' }}前，是否保存任务？</p>
+      <p v-else>当前版本“{{ selectedNode?.version }}”有未保存的修改。切换到“{{ pendingNodeSwitchTarget?.version }}”的{{ pendingNodeSwitch?.mode === 'details' ? '详情' : '编辑页' }}前，是否保存当前修改？</p>
+      <div class="actions">
+        <button
+          type="button"
+          :disabled="saving || (pendingNodeSwitch?.source === 'task-edit' && (!taskForm.name.trim() || graph?.project.revision !== taskRevision))"
+          @click="saveAndSwitchNode"
+        >{{ pendingNodeSwitch?.source === 'task-edit' ? '保存任务并' : '保存并' }}{{ pendingNodeSwitch?.mode === 'details' ? '查看详情' : '编辑' }}</button>
+        <button type="button" class="secondary" :disabled="saving" @click="discardAndSwitchNode">{{ pendingNodeSwitch?.source === 'task-edit' ? '放弃任务修改并' : '放弃修改并' }}{{ pendingNodeSwitch?.mode === 'details' ? '查看详情' : '编辑' }}</button>
+        <button type="button" class="secondary" :disabled="saving" autofocus @click="cancelNodeSwitch">取消</button>
+      </div>
     </dialog>
   </section>
 </template>
