@@ -10,7 +10,7 @@ import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
-const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'oldest' });
+const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const emit = defineEmits<{ busy: [value: boolean] }>();
 const graph = shallowRef<ProjectGraph>();
 const engineering = ref<InstanceType<typeof DirectoryPanel>>();
