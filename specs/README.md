@@ -22,7 +22,7 @@
 | 应用实现 | 已有 Vue 入口、领域/存储模块、项目与文件工作区、Vitest 测试与 Vite 构建。 | SPEC-01 代码完成，待原生目录与键盘实机补验；完整图等后续 UI 未完成。 | DEC-001 |
 | 包管理 | `package.json`、`package-lock.json`、npm 的 dev/test/typecheck/build/preview。 | 沿用 npm，不新增文件管理依赖。 | DEC-001 |
 | 部署边界 | GitHub Pages 误发布源码导致空白页；已补 Actions 构建并部署 `dist`，待提交及切换 Source 后线上验收。 | 本地生产产物仓库子路径加载/刷新已验；线上另验。仅发布应用产物，不发布用户文件/配置。 | DEC-002、DEC-011 |
-| Windows 启动器 | 尚未安装；已建立独立 Launcher 工程与 LSP 规格，用户确认 C#/.NET 10/WinForms、SDK/CLI、自包含，目标 Windows 11 x64。 | URI 按需激活；工程 open/compare v1 已冻结，浏览器只发送相对路径，Launcher 本机绑定并逐次确认。协议解析、安装发布及 IQANdesign 兼容尚未验收。 | DEC-011、DEC-013、DEC-016、DEC-017、DEC-018、Q-016、Q-017 |
+| Windows 启动器 | 尚未安装；已建立独立 Launcher 工程与 LSP 规格，用户确认 C#/.NET 10/WinForms、SDK/CLI、自包含，目标 Windows 11 x64。 | URI v1 语法解析、启动参数分派和静态归档路径检查已在 Launcher LSP-01 实现并通过本机测试；浏览器请求生成/联调、本机配置与逐次确认、协议注册、最终路径竞态保护及 IQANdesign 兼容仍未验收。 | DEC-011、DEC-013、DEC-016、DEC-017、DEC-018、Q-016、Q-017 |
 | UI 设计依据 | UI/UX Pro Max `dark-mode-oled` 风格经工程桌面工具适用性筛选；深海军蓝分层工作台、冷蓝操作色、响应式侧栏与图形画布。DESIGN 记录当前 token。 | 不照搬霓虹发光或原 Claude 暖色示例；使用系统中文字体与 Vue/CSS 轻动效。完整键盘/原生目录仍待实机补验。 | DEC-003、REQ-025 |
 | 图形画布 | Git Graph 投影、固定行高版本列表、图命令与撤销/重做、任务关联与图内聚合、分支优先顺序已实现并补充单测。 | 独立任务看板及双向跳转归 SPEC-07；其他浏览器验收、窄屏/触屏和 SPEC-04 双版本对比仍未完成。 | Q-003、REQ-032/033/035 |
 | 持久化与工程文件 | 当前 Dexie v4、v1 升级检查、移除旧文件表、项目事务/修订保护、独立本机目录句柄、schemaVersion 3 配置快照；任务编号字段为 `externalTaskId`。 | SPEC-07 实施时需迁移至 Dexie v5 / schemaVersion 4，保存可配置选项及任务状态/类型/顺序；完整 JSON UI 仍归 SPEC-03。 | DEC-006、DEC-007 |

@@ -1,0 +1,218 @@
+{
+  "valid": [
+    {
+      "name": "open-basic",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "operation": "Open",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "files": [
+        "1479_iqan_project_files/v1/model.idax"
+      ]
+    },
+    {
+      "name": "compare-preserves-a-b-order",
+      "uri": "iqanarchive://compare?v=1&project=550e8400-e29b-41d4-a716-446655440000&fileA=1479_iqan_project_files%2Fv1%2Fmodel-a.idax&fileB=1479_iqan_project_files%2Fv2%2Fmodel-b.idax",
+      "operation": "Compare",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "files": [
+        "1479_iqan_project_files/v1/model-a.idax",
+        "1479_iqan_project_files/v2/model-b.idax"
+      ]
+    },
+    {
+      "name": "utf8-space-plus-percent",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2F%E4%B8%AD%E6%96%87%20dir%2Fplus%2Bpercent%25.idax",
+      "operation": "Open",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "files": [
+        "1479_iqan_project_files/中文 dir/plus+percent%.idax"
+      ]
+    },
+    {
+      "name": "double-encoded-separator-is-not-decoded-twice",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fname%252Ftext.idax",
+      "operation": "Open",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "files": [
+        "1479_iqan_project_files/name%2Ftext.idax"
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "name": "uppercase-scheme",
+      "uri": "IQANARCHIVE://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "unsupported-operation",
+      "uri": "iqanarchive://execute?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "UnsupportedOperation"
+    },
+    {
+      "name": "extra-authority-path",
+      "uri": "iqanarchive://open/path?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "authority-port",
+      "uri": "iqanarchive://open:443?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "authority-userinfo",
+      "uri": "iqanarchive://user@open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "fragment",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax#fragment",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "second-question-mark",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1?model.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "unknown-version",
+      "uri": "iqanarchive://open?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "UnsupportedVersion"
+    },
+    {
+      "name": "invalid-uuid-version",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-31d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidProjectId"
+    },
+    {
+      "name": "reordered-fields",
+      "uri": "iqanarchive://open?project=550e8400-e29b-41d4-a716-446655440000&v=1&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "duplicate-field",
+      "uri": "iqanarchive://open?v=1&v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "unknown-query-field",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax&origin=https%3A%2F%2Fexample.test",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "extra-equals",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2Fmodel=idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "missing-compare-file-b",
+      "uri": "iqanarchive://compare?v=1&project=550e8400-e29b-41d4-a716-446655440000&fileA=project%2Fmodel-a.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "compare-fields-out-of-order",
+      "uri": "iqanarchive://compare?v=1&project=550e8400-e29b-41d4-a716-446655440000&fileB=project%2Fmodel-b.idax&fileA=project%2Fmodel-a.idax",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "raw-plus",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fplus+name.idax",
+      "failure": "InvalidEncoding"
+    },
+    {
+      "name": "lowercase-percent-hex",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2fv1%2Fmodel.idax",
+      "failure": "InvalidEncoding"
+    },
+    {
+      "name": "malformed-percent",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fbad%G0.idax",
+      "failure": "InvalidEncoding"
+    },
+    {
+      "name": "invalid-utf8",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fbad%FF.idax",
+      "failure": "InvalidEncoding"
+    },
+    {
+      "name": "escaped-unreserved",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2F%6Dodel.idax",
+      "failure": "InvalidEncoding"
+    },
+    {
+      "name": "backslash-path-separator",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%5Cv1%5Cmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "parent-traversal",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2F..%2Fmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "absolute-drive-path",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=C%3A%2Foutside%2Fmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "root-relative-path",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=%2Froot%2Fmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "unc-path",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=%2F%2Fserver%2Fshare%2Fmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "device-path",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=%5C%5C%3F%5CC%3A%5Coutside%5Cmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "raw-path-separator",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project/file.idax",
+      "failure": "InvalidEncoding"
+    },
+    {
+      "name": "reserved-device-name",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2FCON.txt",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "trailing-dot",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2Fmodel.idax.",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "trailing-space",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2Fmodel.idax%20",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "alternate-data-stream",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2Fmodel.idax%3Astream",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "nul-character",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2Fbad%00name.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "empty-path",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "invalid-uuid-variant",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-1716-446655440000&file=project%2Fmodel.idax",
+      "failure": "InvalidProjectId"
+    },
+    {
+      "name": "raw-non-ascii",
+      "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2F中文.idax",
+      "failure": "NonAscii"
+    }
+  ]
+}
