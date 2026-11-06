@@ -5,7 +5,7 @@ import type { ProjectGraph } from '../domain/model';
 import { orderedVersionNodes, type VersionOrder } from '../domain/version-order';
 import type { ArchiveRepository } from '../storage/database';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
-import { locateFile, type DirectoryRole } from '../files/directories';
+import { fileOperationErrorMessage, locateFile, type DirectoryRole } from '../files/directories';
 import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
@@ -44,7 +44,7 @@ function toggleAll() {
 }
 
 function showError(cause: unknown) {
-  error.value = cause instanceof Error ? cause.message : '文件操作失败，请重试。';
+  error.value = fileOperationErrorMessage(cause);
   status.value = '';
   void nextTick(() => errorHeading.value?.focus());
 }

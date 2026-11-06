@@ -5,7 +5,7 @@ import { matchScannedFiles, parseEngineeringName, registerCandidates, type FileC
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
-import { checkPermission, locateFile, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
 
 const databases: Dexie[] = [];
 afterEach(async () => { for (const db of databases.splice(0)) await db.delete(); });
@@ -94,6 +94,14 @@ describe('文件名和版本身份', () => {
 });
 
 describe('只读目录扫描与定位', () => {
+  it('将文件或目录不存在的浏览器错误转换为中文原因和恢复建议', () => {
+    const message = fileOperationErrorMessage(new DOMException('A requested file or directory could not be found at the time an operation was processed.', 'NotFoundError'));
+    expect(message).toContain('找不到所需的文件或目录');
+    expect(message).toContain('重新选择并绑定目录，然后重新扫描');
+    expect(message).not.toContain('A requested');
+    expect(fileOperationErrorMessage(new Error('项目修订冲突'))).toBe('项目修订冲突');
+    expect(fileOperationErrorMessage(undefined)).toBe('文件操作失败，请重试。');
+  });
   it('递归扫描区分角色，返回完整相对路径，不读取文件内容', async () => {
     const root = directory('root', [file('ignore.txt'), directory('sub', [
       file('001 V1.IDAX'), file('报告.DOC'), file('对比.docx'), file('错误.dox'),

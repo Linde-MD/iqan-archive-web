@@ -789,12 +789,12 @@ function onGlobalKeyDown(event: KeyboardEvent) {
     void restoreHistory(key === 'y');
   }
   if (event.key === 'Escape') {
-    if (hintedNode.value) {
-      hideVersionHint();
-      return;
-    }
     if (menu.value) {
       closeMenu();
+      return;
+    }
+    if (hintedNode.value) {
+      hideVersionHint();
       return;
     }
     if (isFullscreen.value) return;
@@ -811,6 +811,12 @@ function closeMenu(restoreFocus = true) {
   const target = menuReturnFocus.value;
   menuReturnFocus.value = null;
   if (restoreFocus && target) void nextTick(() => target.focus());
+}
+
+function onMenuOutsidePointerDown(event: PointerEvent) {
+  if (menu.value && !event.composedPath().includes(menuElement.value as EventTarget)) {
+    closeMenu(false);
+  }
 }
 
 function onMenuKeyDown(event: KeyboardEvent) {
@@ -834,6 +840,7 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onGlobalKeyDown);
   window.addEventListener('pointerdown', closeBranchFilter);
+  window.addEventListener('pointerdown', onMenuOutsidePointerDown, true);
   window.addEventListener('resize', updateSidebarHeight);
   window.addEventListener('scroll', updateSidebarHeight, { passive: true });
   void refresh();
@@ -846,6 +853,7 @@ onUnmounted(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onGlobalKeyDown);
   window.removeEventListener('pointerdown', closeBranchFilter);
+  window.removeEventListener('pointerdown', onMenuOutsidePointerDown, true);
   window.removeEventListener('resize', updateSidebarHeight);
   window.removeEventListener('scroll', updateSidebarHeight);
 });

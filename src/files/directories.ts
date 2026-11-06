@@ -21,6 +21,14 @@ export interface DirectoryBinding {
   role: DirectoryRole;
   handle: DirectoryHandle;
 }
+
+export function fileOperationErrorMessage(cause: unknown): string {
+  if (cause instanceof DOMException && cause.name === 'NotFoundError') {
+    return '找不到所需的文件或目录。文件或目录可能已移动、重命名或删除，或者所在磁盘、网络共享暂时不可用。请先确认原目录可以访问，再重新选择并绑定目录，然后重新扫描。';
+  }
+  return cause instanceof Error ? cause.message : '文件操作失败，请重试。';
+}
+
 declare global {
   interface Window {
     showDirectoryPicker?: (options: { mode: 'read' }) => Promise<DirectoryHandle>;
