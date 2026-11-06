@@ -4,7 +4,7 @@ import { liveQuery } from 'dexie';
 import { orderedBranches, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
 import { matchComparisonDocuments, type FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri } from '../domain/iqan-protocol';
-import { checkPermission, fileOperationErrorMessage, locateFile, scanDirectory, type DirectoryHandle } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -425,25 +425,26 @@ async function refreshComparisonDocuments() {
   comparisonDocumentsByNode.value = new Map();
   documentScanError.value = '';
   try {
-    const binding = await props.repository.db.directoryBindings.get([props.projectId, 'word']);
-    if (!binding || !await checkPermission(binding.handle)) return;
-    documentRootSnapshot = binding.handle;
-    const candidates = await scanDirectory(binding.handle, 'word', controller.signal, () => undefined);
-    const [latestGraph, latestBinding] = await Promise.all([
+    const root = await props.repository.getArchiveRoot();
+    if (!root || !await checkPermission(root)) return;
+    const graphAtScan = await props.repository.get(props.projectId);
+    const binding = await resolveProjectDirectory(root, graphAtScan.project.name, 'word');
+    if (!await checkPermission(binding)) return;
+    documentRootSnapshot = binding;
+    const candidates = await scanDirectory(binding, 'word', controller.signal, () => undefined);
+    const [latestGraph, latestRoot] = await Promise.all([
       props.repository.get(props.projectId),
-      props.repository.db.directoryBindings.get([props.projectId, 'word']),
+      props.repository.getArchiveRoot(),
     ]);
-    if (controller.signal.aborted || !latestBinding || !(await sameDocumentDirectory(binding.handle, latestBinding.handle))) return;
+    if (controller.signal.aborted || !latestRoot || !(await sameDirectory(root, latestRoot))) return;
+    const latestBinding = await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'word');
+    if (!(await sameDirectory(binding, latestBinding))) return;
     comparisonDocumentsByNode.value = matchComparisonDocuments(latestGraph, candidates);
   } catch (cause) {
     if (!controller.signal.aborted) documentScanError.value = fileOperationErrorMessage(cause);
   } finally {
     if (documentScanController === controller) documentScanController = undefined;
   }
-}
-
-async function sameDocumentDirectory(snapshot: DirectoryHandle, current: DirectoryHandle): Promise<boolean> {
-  return snapshot.isSameEntry ? current.isSameEntry ? snapshot.isSameEntry(current) : false : snapshot === current;
 }
 
 async function openNodeDocuments(event: MouseEvent, node: VersionNode) {
@@ -475,30 +476,33 @@ async function requestNodeDocument(nodeId: string, relativePath: string) {
   error.value = '';
   status.value = '正在检查软件对比文档…';
   try {
-    const [binding, latestGraph] = await Promise.all([
-      props.repository.db.directoryBindings.get([props.projectId, 'word']),
+    const [root, latestGraph] = await Promise.all([
+      props.repository.getArchiveRoot(),
       props.repository.get(props.projectId),
     ]);
-    if (!binding || !documentRootSnapshot || !(await sameDocumentDirectory(documentRootSnapshot, binding.handle)))
-      throw new Error('软件对比文档目录绑定已改变，请重新扫描目录。');
-    if (!await checkPermission(binding.handle)) throw new Error('软件对比文档目录授权已失效，请重新授权。');
+    if (!root || !documentRootSnapshot) throw new Error('请先授权归档根目录并扫描软件对比文档。');
+    if (!await checkPermission(root)) throw new Error('归档根目录授权已失效，请重新授权。');
+    const binding = await resolveProjectDirectory(root, latestGraph.project.name, 'word');
+    if (!(await sameDirectory(documentRootSnapshot, binding))) throw new Error('归档根目录或项目文档子目录已改变，请重新扫描。');
+    if (!await checkPermission(binding)) throw new Error('归档根目录授权已失效，请重新授权。');
     const latestNode = latestGraph.nodes.find(node => node.id === nodeId);
     if (!latestNode || latestNode.version !== originalNode.version || latestGraph.project.partNumber !== activeGraph.project.partNumber)
       throw new Error('项目零件号或版本信息已变化，请重新读取版本图。');
-    const candidates = await scanDirectory(binding.handle, 'word', new AbortController().signal, () => undefined);
+    const candidates = await scanDirectory(binding, 'word', new AbortController().signal, () => undefined);
     const matching = matchComparisonDocuments(latestGraph, candidates).get(nodeId) ?? [];
     if (!matching.some(file => file.relativePath === relativePath))
       throw new Error(`文档“${relativePath}”已不再对应版本“${latestNode.version}”，请重新扫描。`);
-    await locateFile(binding.handle, relativePath);
-    const [finalGraph, finalBinding] = await Promise.all([
+    await locateFile(binding, relativePath);
+    const [finalGraph, finalRoot] = await Promise.all([
       props.repository.get(props.projectId),
-      props.repository.db.directoryBindings.get([props.projectId, 'word']),
+      props.repository.getArchiveRoot(),
     ]);
-    if (!finalBinding || !(await sameDocumentDirectory(binding.handle, finalBinding.handle))
+    if (!finalRoot || !(await sameDirectory(root, finalRoot))
+      || !(await sameDirectory(binding, await resolveProjectDirectory(finalRoot, finalGraph.project.name, 'word')))
       || finalGraph.project.partNumber !== latestGraph.project.partNumber
       || finalGraph.nodes.find(item => item.id === nodeId)?.version !== latestNode.version)
       throw new Error('检查期间目录或版本已变化，请重新扫描后再打开。');
-    const uri = buildDocumentOpenUri(props.projectId, binding.handle.name, relativePath);
+    const uri = buildDocumentOpenUri(props.projectId, binding.name, relativePath);
     window.location.assign(uri);
     status.value = '已请求本地启动器，请查看系统提示。网页无法确认 Word 是否已打开文档。';
   } catch (cause) {

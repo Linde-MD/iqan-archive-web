@@ -2,7 +2,7 @@
 import { nextTick, onUnmounted, ref, watch } from 'vue';
 import type { ProjectGraph, VersionNode } from '../domain/model';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
-import { checkPermission, fileOperationErrorMessage, locateFile, scanDirectory, type DirectoryHandle } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { buildCompareUri, buildOpenUri } from '../domain/iqan-protocol';
 
@@ -61,13 +61,13 @@ function validateSelection(graph: ProjectGraph, nodeIds: readonly string[], targ
   });
 }
 
-async function getEngineeringBinding(): Promise<{ handle: DirectoryHandle; name: string }> {
-  const binding = await props.repository.db.directoryBindings.get([props.projectId, 'engineering']);
-  if (!binding) throw new Error('当前项目尚未绑定工程目录。请前往“项目文件”绑定并授权工程目录。');
-  if (!await checkPermission(binding.handle)) {
-    throw new Error('工程目录读取授权已失效。请前往“项目文件”重新授权后再试。');
-  }
-  return { handle: binding.handle, name: binding.handle.name };
+async function getEngineeringBinding(projectName: string): Promise<{ handle: DirectoryHandle; name: string }> {
+  const root = await props.repository.getArchiveRoot();
+  if (!root) throw new Error('请先授权归档根目录。');
+  if (!await checkPermission(root)) throw new Error('归档根目录授权已失效，请重新授权。');
+  const handle = await resolveProjectDirectory(root, projectName, 'engineering');
+  if (!await checkPermission(handle)) throw new Error('工程子目录无法读取，请确认归档根目录权限。');
+  return { handle, name: handle.name };
 }
 
 async function scanEngineeringDirectory(handle: DirectoryHandle, signal: AbortSignal): Promise<FileCandidate[]> {
@@ -100,7 +100,7 @@ async function open(targetAction: Action, nodeIds: readonly string[]) {
       throw new Error('项目版本图刚刚发生变化，请重新选择版本后再试。');
     }
     const nodes = validateSelection(graph, nodeIds, targetAction);
-    const binding = await getEngineeringBinding();
+    const binding = await getEngineeringBinding(graph.project.name);
     const candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
     const latestGraph = await props.repository.get(props.projectId);
     if (latestGraph.project.revision !== graph.project.revision) {
@@ -172,7 +172,7 @@ async function prepareRequest(requestImmediately = false) {
       throw new Error('请为每个版本明确选择一个工程文件。');
     }
 
-    const binding = await getEngineeringBinding();
+    const binding = await getEngineeringBinding(current.project.name);
     if (binding.name !== directoryName.value) throw new Error('工程目录绑定已变化，旧预览已失效。请重新扫描。');
     const candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
     const latestGraph = await props.repository.get(props.projectId);

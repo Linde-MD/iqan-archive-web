@@ -2,20 +2,42 @@ import { requireCondition } from '../domain/model';
 import { relativeParts, type FileCandidate } from '../domain/filenames';
 
 export type DirectoryRole = 'engineering' | 'word';
+export interface ArchiveRootBinding {
+  id: 'root';
+  handle: DirectoryHandle;
+}
 export interface DirectoryHandle {
   readonly kind: 'directory';
   readonly name: string;
   isSameEntry?(other: DirectoryHandle): Promise<boolean>;
   values(): AsyncIterable<DirectoryHandle | FileHandle>;
-  getDirectoryHandle(name: string): Promise<DirectoryHandle>;
-  getFileHandle(name: string): Promise<FileHandle>;
-  queryPermission(options: { mode: 'read' }): Promise<PermissionState>;
-  requestPermission(options: { mode: 'read' }): Promise<PermissionState>;
+  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<DirectoryHandle>;
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileHandle>;
+  queryPermission(options: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
+  requestPermission(options: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
 }
 export interface FileHandle {
   readonly kind: 'file';
   readonly name: string;
   getFile(): Promise<File>;
+  createWritable?(): Promise<FileSystemWritableFileStream>;
+}
+
+export function projectDirectoryName(projectName: string, role: DirectoryRole): string {
+  const suffix = role === 'engineering' ? '_iqan_project_files' : '_software_changes_docs';
+  const name = `${projectName.trim()}${suffix}`;
+  requireCondition(Boolean(projectName.trim()) && name.length <= 255 && name.trim() === name && !/[<>:"/\\|?*\u0000-\u001f]/.test(name)
+    && !/[. ]$/.test(name) && relativeParts(name).length === 1,
+  'PROJECT_DIRECTORY_NAME', '项目名不能用于 Windows 目录名；请修改项目名后重试。');
+  return name;
+}
+
+export async function resolveProjectDirectory(
+  root: DirectoryHandle,
+  projectName: string,
+  role: DirectoryRole,
+): Promise<DirectoryHandle> {
+  return root.getDirectoryHandle(projectDirectoryName(projectName, role));
 }
 export interface DirectoryBinding {
   projectId: string;
@@ -23,31 +45,37 @@ export interface DirectoryBinding {
   handle: DirectoryHandle;
 }
 
+export async function sameDirectory(first: DirectoryHandle, second: DirectoryHandle): Promise<boolean> {
+  if (first === second) return true;
+  if (first.isSameEntry) return first.isSameEntry(second);
+  return second.isSameEntry ? second.isSameEntry(first) : false;
+}
+
 export function fileOperationErrorMessage(cause: unknown): string {
   if (cause instanceof DOMException && cause.name === 'NotFoundError') {
-    return '找不到所需的文件或目录。文件或目录可能已移动、重命名或删除，或者所在磁盘、网络共享暂时不可用。请先确认原目录可以访问，再重新选择并绑定目录，然后重新扫描。';
+    return '找不到所需的文件或目录。文件或目录可能已移动、重命名或删除，或者所在磁盘、网络共享暂时不可用。请确认归档根目录及对应项目子目录存在后重试扫描。';
   }
   return cause instanceof Error ? cause.message : '文件操作失败，请重试。';
 }
 
 declare global {
   interface Window {
-    showDirectoryPicker?: (options: { mode: 'read' }) => Promise<DirectoryHandle>;
+    showDirectoryPicker?: (options: { mode: 'read' | 'readwrite' }) => Promise<DirectoryHandle>;
   }
 }
 
-export async function chooseDirectory(): Promise<DirectoryHandle | null> {
+export async function chooseDirectory(mode: 'read' | 'readwrite' = 'read'): Promise<DirectoryHandle | null> {
   requireCondition(window.isSecureContext && window.showDirectoryPicker, 'DIRECTORY_UNSUPPORTED', '当前浏览器不支持目录授权，请使用安全上下文中的 Chrome 或 Edge。');
   try {
-    return await window.showDirectoryPicker({ mode: 'read' });
+    return await window.showDirectoryPicker({ mode });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') return null;
     throw cause;
   }
 }
 
-export async function checkPermission(handle: DirectoryHandle, request = false): Promise<boolean> {
-  return await (request ? handle.requestPermission({ mode: 'read' }) : handle.queryPermission({ mode: 'read' })) === 'granted';
+export async function checkPermission(handle: DirectoryHandle, request = false, mode: 'read' | 'readwrite' = 'read'): Promise<boolean> {
+  return await (request ? handle.requestPermission({ mode }) : handle.queryPermission({ mode })) === 'granted';
 }
 
 export async function scanDirectory(
@@ -56,7 +84,7 @@ export async function scanDirectory(
   signal: AbortSignal,
   progress: (count: number) => void,
 ): Promise<FileCandidate[]> {
-  requireCondition(await checkPermission(root), 'DIRECTORY_PERMISSION', '目录未授权，请点击重新授权。');
+  requireCondition(await checkPermission(root), 'DIRECTORY_PERMISSION', '归档根目录未授权，请在根目录面板中重新授权。');
   const result: FileCandidate[] = [];
   const stack = [{ iterator: root.values()[Symbol.asyncIterator](), path: '' }];
   let count = 0;
@@ -88,7 +116,7 @@ export async function scanDirectory(
 
 export async function locateFile(root: DirectoryHandle, path: string): Promise<FileHandle> {
   const parts = relativeParts(path);
-  requireCondition(await checkPermission(root), 'DIRECTORY_PERMISSION', '目录未授权，请点击重新授权。');
+  requireCondition(await checkPermission(root), 'DIRECTORY_PERMISSION', '归档根目录未授权，请在根目录面板中重新授权。');
   try {
     let directory = root;
     for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);

@@ -2,7 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import { createProject, normalizeVersion, orderedBranches, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
 import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
-import type { DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
+import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
@@ -35,6 +35,7 @@ export class ArchiveDatabase extends Dexie {
   branches!: Table<Branch, string>;
   tasks!: Table<Task, string>;
   directoryBindings!: Table<DirectoryBinding, [string, DirectoryRole]>;
+  archiveRoots!: Table<ArchiveRootBinding, string>;
 
   constructor(name = 'iqan-archive-web') {
     super(name);
@@ -60,6 +61,10 @@ export class ArchiveDatabase extends Dexie {
     this.version(3).stores({ files: null });
     this.version(4).stores({
       tasks: 'id, projectId, &[projectId+externalTaskId]',
+    });
+    this.version(5).stores({
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+      archiveRoots: 'id',
     });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
@@ -199,6 +204,16 @@ export class ArchiveRepository {
       requireCondition(await this.db.projects.get(projectId), 'PROJECT_NOT_FOUND', '项目不存在。');
       await this.db.directoryBindings.put({ projectId, role, handle });
     });
+  }
+
+  async setArchiveRoot(handle: DirectoryHandle): Promise<void> {
+    await this.db.transaction('rw', [this.db.archiveRoots], async () => {
+      await this.db.archiveRoots.put({ id: 'root', handle });
+    });
+  }
+
+  async getArchiveRoot(): Promise<DirectoryHandle | undefined> {
+    return (await this.db.archiveRoots.get('root'))?.handle;
   }
 
   async release(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {

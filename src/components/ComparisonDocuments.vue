@@ -3,11 +3,11 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue
 import type { ArchiveRepository } from '../storage/database';
 import type { FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri } from '../domain/iqan-protocol';
-import { checkPermission, fileOperationErrorMessage, locateFile, type DirectoryHandle } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, sameDirectory, type DirectoryHandle } from '../files/directories';
 import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; rootHandle?: DirectoryHandle | undefined }>();
 const emit = defineEmits<{ busy: [value: boolean]; graph: [] }>();
 const directory = ref<InstanceType<typeof DirectoryPanel>>();
 const files = shallowRef<FileCandidate[]>([]);
@@ -68,10 +68,6 @@ async function showMenu(event: MouseEvent | KeyboardEvent, file: FileCandidate) 
   await nextTick();
   menuElement.value?.querySelector<HTMLButtonElement>('button')?.focus();
 }
-async function sameDirectory(handle: DirectoryHandle): Promise<boolean> {
-  const root = scannedRoot.value;
-  return !!root && (handle.isSameEntry ? await handle.isSameEntry(root) : handle === root);
-}
 function onRowKeyDown(event: KeyboardEvent, file: FileCandidate) {
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) void showMenu(event, file);
   else if (event.key === 'Enter' && event.target === event.currentTarget) {
@@ -88,14 +84,13 @@ async function openDocument(file: FileCandidate) {
   status.value = '正在检查文档…';
   try {
     await props.repository.get(props.projectId);
-    const binding = await props.repository.db.directoryBindings.get([props.projectId, 'word']);
-    if (!binding || !await sameDirectory(binding.handle)) throw new Error('文档目录绑定已改变，请重新扫描后再打开。');
-    if (!await checkPermission(binding.handle)) throw new Error('文档目录未授权，请重新授权后再打开。');
-    await locateFile(binding.handle, file.relativePath);
-    const latest = await props.repository.db.directoryBindings.get([props.projectId, 'word']);
-    if (!latest || !await sameDirectory(latest.handle)) throw new Error('文件检查期间目录绑定已改变，请重新扫描。');
-    if (!await checkPermission(latest.handle)) throw new Error('文档目录授权已失效，请重新授权。');
-    const uri = buildDocumentOpenUri(props.projectId, binding.handle.name, file.relativePath);
+    const binding = directory.value?.getHandle();
+    if (!binding || !scannedRoot.value || !await sameDirectory(binding, scannedRoot.value)) throw new Error('文档子目录已改变，请重新扫描后再打开。');
+    if (!await checkPermission(binding)) throw new Error('归档根目录授权已失效，请重新授权后再打开。');
+    await locateFile(binding, file.relativePath);
+    const latest = directory.value?.getHandle();
+    if (!latest || !await sameDirectory(binding, latest)) throw new Error('文件检查期间归档根目录或项目已改变，请重新扫描。');
+    const uri = buildDocumentOpenUri(props.projectId, binding.name, file.relativePath);
     if (disposed) return;
     window.location.assign(uri);
     status.value = '已请求本地启动器，请查看系统提示。网页无法确认 Word 是否已打开文档。';
@@ -116,7 +111,7 @@ onUnmounted(() => { disposed = true; window.removeEventListener('pointerdown', o
       <div><p class="eyebrow">COMPARISON DOCUMENTS</p><h2 id="document-title">软件对比文档</h2></div>
       <button class="secondary" :disabled="busy" @click="emit('graph')"><AppIcon name="branch" />版本图</button>
     </div>
-    <DirectoryPanel ref="directory" :repository="repository" :project-id="projectId" role="word" :disabled="opening" auto-scan
+    <DirectoryPanel ref="directory" :project-name="projectName" :root-handle="rootHandle" role="word" :disabled="opening" auto-scan
       @results="receiveFiles" @invalidate="invalidate" @busy="scanningChanged" @error="error = fileOperationErrorMessage($event)" />
     <div class="document-filters">
       <label for="document-search">搜索文档</label>

@@ -5,7 +5,8 @@ import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, regi
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
-import { checkPermission, fileOperationErrorMessage, locateFile, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
+import { listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
 
 const databases: Dexie[] = [];
 afterEach(async () => { for (const db of databases.splice(0)) await db.delete(); });
@@ -38,7 +39,47 @@ function directory(name: string, entries: (DirectoryHandle | FileHandle)[], perm
   };
 }
 
+function writableDirectory(name: string, initial: Record<string, string> = {}, permission: PermissionState = 'granted') {
+  const contents = new Map(Object.entries(initial));
+  const makeFile = (fileName: string): FileHandle => ({
+    kind: 'file', name: fileName,
+    async getFile() { return new File([contents.get(fileName) ?? ''], fileName); },
+    async createWritable() {
+      let value = '';
+      return {
+        async write(data: Blob | string) { value = typeof data === 'string' ? data : await data.text(); },
+        async close() { contents.set(fileName, value); },
+        async abort() {},
+      } as FileSystemWritableFileStream;
+    },
+  });
+  const handle: DirectoryHandle = {
+    kind: 'directory', name,
+    async *values() { for (const fileName of contents.keys()) yield makeFile(fileName); },
+    async queryPermission() { return permission; },
+    async requestPermission() { return permission; },
+    async getDirectoryHandle(child) { throw new DOMException(`目录缺失：${child}`, 'NotFoundError'); },
+    async getFileHandle(fileName, options) {
+      if (contents.has(fileName)) return makeFile(fileName);
+      if (options?.create) { contents.set(fileName, ''); return makeFile(fileName); }
+      throw new DOMException(`文件缺失：${fileName}`, 'NotFoundError');
+    },
+  };
+  return { handle, contents };
+}
+
 describe('文件名和版本身份', () => {
+  it('按项目名推导统一根目录下的工程和文档子目录，并拒绝非法 Windows 名称', async () => {
+    expect(projectDirectoryName('项目 A', 'engineering')).toBe('项目 A_iqan_project_files');
+    expect(projectDirectoryName('项目 A', 'word')).toBe('项目 A_software_changes_docs');
+    const root = directory('IQAN_Archive', [directory('项目 A_iqan_project_files', []), directory('项目 A_software_changes_docs', [])]);
+    expect((await resolveProjectDirectory(root, '项目 A', 'engineering')).name).toBe('项目 A_iqan_project_files');
+    expect((await resolveProjectDirectory(root, '项目 A', 'word')).name).toBe('项目 A_software_changes_docs');
+    expect(() => projectDirectoryName('项目/逃逸', 'engineering')).toThrow();
+    expect(() => projectDirectoryName(' '.repeat(2), 'engineering')).toThrow();
+    expect(() => projectDirectoryName('A'.repeat(256), 'engineering')).toThrow();
+    expect(projectDirectoryName('CON', 'word')).toBe('CON_software_changes_docs');
+  });
   it('保留前导零和完整日期文本，空白归一，不校验版本中的日历日期', () => {
     expect(parseEngineeringName(' 001\t V1.0-3  \t20261399.IDAX ')).toEqual({ partNumber: '001', version: 'V1.0-3 20261399', extension: '.idax' });
     expect(parseEngineeringName('001 vA-B.1.idsx').version).toBe('vA-B.1');
@@ -143,7 +184,7 @@ describe('只读目录扫描与定位', () => {
   it('将文件或目录不存在的浏览器错误转换为中文原因和恢复建议', () => {
     const message = fileOperationErrorMessage(new DOMException('A requested file or directory could not be found at the time an operation was processed.', 'NotFoundError'));
     expect(message).toContain('找不到所需的文件或目录');
-    expect(message).toContain('重新选择并绑定目录，然后重新扫描');
+    expect(message).toContain('归档根目录及对应项目子目录存在后重试扫描');
     expect(message).not.toContain('A requested');
     expect(fileOperationErrorMessage(new Error('项目修订冲突'))).toBe('项目修订冲突');
     expect(fileOperationErrorMessage(undefined)).toBe('文件操作失败，请重试。');
@@ -182,7 +223,51 @@ describe('只读目录扫描与定位', () => {
   });
 });
 
+describe('统一归档根目录 JSON 文件', () => {
+  it('仅列出根目录直接子级 JSON，并受 5000 项扫描上限约束', async () => {
+    const root = writableDirectory('IQAN_Archive', {
+      'b.json': '{}',
+      'A.JSON': '{}',
+      'readme.txt': 'not json',
+    });
+    const names = (await listJsonBackups(root.handle)).map(file => file.name);
+    expect(names).toEqual(['A.JSON', 'b.json']);
+
+    const oversized: DirectoryHandle = {
+      ...root.handle,
+      async *values() { for (let index = 0; index <= MAX_ARCHIVE_ROOT_ENTRIES; index++) yield file(`entry-${index}.txt`); },
+    };
+    await expect(listJsonBackups(oversized)).rejects.toThrow('超过 5000 个');
+    await expect(listJsonBackups({ ...root.handle, async queryPermission() { return 'denied'; } }))
+      .rejects.toThrow('授权已失效');
+  });
+
+  it('导出在归档根目录创建唯一 JSON，遇到重名则换名，不覆盖旧备份', async () => {
+    const stamp = '2026-11-06T12-00-00-000Z';
+    const root = writableDirectory('IQAN_Archive', { [`IQAN-项目-${stamp}-first.json`]: 'existing backup' });
+    const ids = ['first', 'second'];
+    const name = await writeJsonBackup(root.handle, '项目', '{"schemaVersion":3}', new Date('2026-11-06T12:00:00.000Z'), () => ids.shift()!);
+    expect(name).toBe(`IQAN-项目-${stamp}-second.json`);
+    expect(root.contents.get(`IQAN-项目-${stamp}-first.json`)).toBe('existing backup');
+    expect(root.contents.get(name)).toBe('{"schemaVersion":3}');
+    await expect(writeJsonBackup({ ...root.handle, async queryPermission() { return 'denied'; } }, '项目', '{}'))
+      .rejects.toThrow('读写授权已失效');
+  });
+});
+
 describe('项目事务及v3迁移', () => {
+  it('统一归档根目录跨项目共享且不进入项目快照或项目删除事务', async () => {
+    const archiveRepository = repo();
+    const first = await archiveRepository.create('项目甲', '001');
+    const second = await archiveRepository.create('项目乙', '002');
+    const root = { kind: 'directory' as const, name: 'IQAN_Archive' } as DirectoryHandle;
+    await archiveRepository.setArchiveRoot(root);
+    expect((await archiveRepository.getArchiveRoot())?.name).toBe('IQAN_Archive');
+    expect(await archiveRepository.snapshot(first.project.id)).not.toHaveProperty('archiveRoot');
+    await archiveRepository.deleteProject(first.project.id, first.project.revision, first.project.name);
+    expect((await archiveRepository.getArchiveRoot())?.name).toBe('IQAN_Archive');
+    expect(await archiveRepository.get(second.project.id)).toEqual(second);
+  });
   it('登记/零件号修改往返，修订冲突及批次非法输入完整回滚，快照无本地文件/目录', async () => {
     const repository = repo();
     let graph = await repository.create('项目', '001');
@@ -226,12 +311,12 @@ describe('项目事务及v3迁移', () => {
     const next = new ArchiveDatabase(name); databases.push(next);
     return { db, next, nodes, project: graph.project };
   }
-  it('v1升级到v4保留原图和版本身份', async () => {
+  it('v1升级到v5保留原图和版本身份', async () => {
     const { next, nodes, project } = await oldDatabase(false);
     const graph = await new ArchiveRepository(next).get(project.id);
     expect(graph.nodes).toEqual(nodes);
     expect(await next.directoryBindings.count()).toBe(0);
-    expect(next.backendDB().version).toBe(40);
+    expect(next.backendDB().version).toBe(50);
   });
   it('v1规范化碰撞拒绝升级且回滚，旧数据库可恢复', async () => {
     const { db, next, nodes } = await oldDatabase(true);
@@ -251,7 +336,7 @@ describe('项目事务及v3迁移', () => {
     await repository.db.open();
     expect(await repository.get(graph.project.id)).toEqual(graph);
   });
-  it('v2升级到v4移除文件表并保留图与目录绑定', async () => {
+  it('v2升级到v5移除文件表、保留旧绑定并初始化全局根目录表', async () => {
     const name = `v2-${crypto.randomUUID()}`;
     const old = new Dexie(name); databases.push(old);
     old.version(2).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]', files: 'id, projectId, nodeId', directoryBindings: '[projectId+role], projectId' });
@@ -274,7 +359,8 @@ describe('项目事务及v3迁移', () => {
     expect(migrated.nodes).toEqual(graph.nodes);
     expect(migrated.edges).toEqual(graph.edges);
     expect(migrated.branches).toEqual(graph.branches.map((branch, order) => ({ ...branch, order })));
-    expect(next.backendDB().version).toBe(40);
+    expect(next.backendDB().version).toBe(50);
+    expect(next.tables.map(table => table.name)).toContain('archiveRoots');
     expect(next.tables.map(table => table.name)).not.toContain('files');
     expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
     const changed = await repository.setPartNumber(graph.project.id, 0, '002');

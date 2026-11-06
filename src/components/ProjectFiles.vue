@@ -6,10 +6,11 @@ import { orderedVersionNodes, type VersionOrder } from '../domain/version-order'
 import type { ArchiveRepository } from '../storage/database';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { fileOperationErrorMessage, locateFile, type DirectoryRole } from '../files/directories';
+import type { DirectoryHandle } from '../files/directories';
 import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; rootHandle?: DirectoryHandle | undefined }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const emit = defineEmits<{ busy: [value: boolean] }>();
 const graph = shallowRef<ProjectGraph>();
@@ -87,7 +88,7 @@ async function register() {
 async function locate(path: string) {
   await operation(async () => {
     const root = engineering.value?.getHandle();
-    if (!root) throw new Error('请先绑定工程目录。');
+    if (!root) throw new Error('请先选择统一归档根目录并确认项目工程子目录存在。');
     await locateFile(root, path);
     status.value = `文件存在且可读取：${path}。未启动本机程序。`;
   });
@@ -111,14 +112,14 @@ onUnmounted(() => subscription?.unsubscribe());
     <p role="status">{{ status }}</p>
     <template v-if="graph">
       <div class="workspace-meta"><strong>{{ graph.project.name }}</strong><span>零件号 <code>{{ graph.project.partNumber }}</code></span><span class="count">{{ graph.nodes.length }} 个版本 · {{ scanned ? rows.filter(row => row.nodeId !== null).length : '尚未扫描' }}{{ scanned ? ' 个关联文件' : '' }}</span></div>
-      <details class="workspace-details"><summary>项目标识与扫描规则</summary><p class="project-id">稳定项目 ID：<code>{{ graph.project.id }}</code></p><p>只读递归扫描，每次最多枚举 5000 个条目。文件名日期文本属于完整版本号；磁盘修改时间不决定身份。按当前零件号与完整版本自动关联，扫描结果只留在本次会话，配置快照不包含本地文件信息。不支持目录 API 时仍可查看版本图。</p></details>
+      <details class="workspace-details"><summary>项目标识与扫描规则</summary><p class="project-id">稳定项目 ID：<code>{{ graph.project.id }}</code></p><p>从统一归档根目录分别扫描“{{ projectName }}_iqan_project_files”和“{{ projectName }}_software_changes_docs”，只读递归扫描，每次最多枚举 5000 个条目。文件名日期文本属于完整版本号；磁盘修改时间不决定身份。按当前零件号与完整版本自动关联，扫描结果只留在本次会话，配置快照不包含本地文件信息。不支持目录 API 时仍可查看版本图。</p></details>
       <div class="directory-grid">
-        <DirectoryPanel ref="engineering" :repository="repository" :project-id="projectId" role="engineering" :disabled="busy" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="candidates = $event; scanned = true" />
-        <DirectoryPanel :repository="repository" :project-id="projectId" role="word" :disabled="busy" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="comparisonDocuments = $event; comparisonDocumentsScanned = true" />
+        <DirectoryPanel ref="engineering" :project-name="projectName" :root-handle="rootHandle" role="engineering" :disabled="busy" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="candidates = $event; scanned = true" />
+        <DirectoryPanel :project-name="projectName" :root-handle="rootHandle" role="word" :disabled="busy" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="comparisonDocuments = $event; comparisonDocumentsScanned = true" />
       </div>
 
       <h3>工程扫描预览</h3>
-      <p v-if="!scanned">尚未扫描工程目录。</p>
+      <p v-if="!scanned">尚未扫描工程子目录。</p>
       <p v-else-if="!rows.length">本次未找到 .idax、.idsx、.idvx 文件。</p>
       <template v-else>
         <p class="form-help">已有版本自动关联，无需登记。仅没有对应版本的合法文件可选；登记只创建版本，不保存文件路径，不推断父边或推进分支。</p>

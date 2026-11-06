@@ -35,6 +35,7 @@ Map these roles to the semantic CSS variables in `src/style.css`. Keep normal te
 ## Layout and components
 
 - Keep the project list as a persistent desktop rail beside the active file or graph workspace; stack regions on narrow screens.
+- Present one global archive-root control for browser directory authorization. Derive separate engineering and document directories per project; keep each scan project-scoped. JSON backup import/export uses the root directory directly, while handles and paths stay out of JSON.
 - Align the top edges of the project rail and active workspace; rely on the outer grid gap for stacked spacing instead of an extra workspace top margin.
 - Allow the entire project rail to collapse without unmounting forms, retaining a visible expand control. Resize only the history viewport with a 44px bottom-right handle, bounded by its column width; arrow keys adjust size and Home restores defaults. Keep toolbar and inspector geometry independent. Layout preferences are session-only.
 - Provide native fullscreen for the graph with elevated floating control and inspector surfaces. Allow both to collapse without discarding form input. Reserve desktop space so focused graph rows remain unobscured; on narrow screens use a dismissible inspector overlay. Keep an exit control visible when tools collapse, honor native Escape, and restore normal geometry on exit. Fullscreen is view-only state, not a graph command.
