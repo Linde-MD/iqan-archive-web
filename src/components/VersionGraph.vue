@@ -2,6 +2,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
 import { orderedBranches, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
+import { matchComparisonDocuments, type FileCandidate } from '../domain/filenames';
+import { buildDocumentOpenUri } from '../domain/iqan-protocol';
+import { checkPermission, fileOperationErrorMessage, locateFile, scanDirectory, type DirectoryHandle } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -95,6 +98,13 @@ const isFullscreen = ref(false);
 const fullscreenPending = ref(false);
 const fullscreenToolsVisible = ref(true);
 const fullscreenSidebarVisible = ref(true);
+const comparisonDocumentsByNode = shallowRef(new Map<string, FileCandidate[]>());
+const documentScanError = ref('');
+const documentChoice = shallowRef<{ nodeId: string; version: string; files: FileCandidate[] }>();
+const selectedDocumentPath = ref('');
+const documentChoiceDialog = ref<HTMLDialogElement>();
+let documentScanController: AbortController | undefined;
+let documentRootSnapshot: DirectoryHandle | undefined;
 
 async function toggleFullscreen() {
   if (fullscreenPending.value) return;
@@ -399,6 +409,105 @@ const nodeEditDirty = computed(() => panel.value === 'node-edit' && !!selectedNo
 const pendingNodeSwitchTarget = computed(() => pendingNodeSwitch.value
   ? nodeById.value.get(pendingNodeSwitch.value.nodeId)
   : undefined);
+
+watch(documentChoice, async value => {
+  await nextTick();
+  if (value && documentChoiceDialog.value && !documentChoiceDialog.value.open) {
+    documentChoiceDialog.value.showModal();
+    documentChoiceDialog.value.querySelector<HTMLSelectElement>('select')?.focus();
+  } else if (!value && documentChoiceDialog.value?.open) documentChoiceDialog.value.close();
+});
+
+async function refreshComparisonDocuments() {
+  documentScanController?.abort();
+  const controller = new AbortController();
+  documentScanController = controller;
+  comparisonDocumentsByNode.value = new Map();
+  documentScanError.value = '';
+  try {
+    const binding = await props.repository.db.directoryBindings.get([props.projectId, 'word']);
+    if (!binding || !await checkPermission(binding.handle)) return;
+    documentRootSnapshot = binding.handle;
+    const candidates = await scanDirectory(binding.handle, 'word', controller.signal, () => undefined);
+    const [latestGraph, latestBinding] = await Promise.all([
+      props.repository.get(props.projectId),
+      props.repository.db.directoryBindings.get([props.projectId, 'word']),
+    ]);
+    if (controller.signal.aborted || !latestBinding || !(await sameDocumentDirectory(binding.handle, latestBinding.handle))) return;
+    comparisonDocumentsByNode.value = matchComparisonDocuments(latestGraph, candidates);
+  } catch (cause) {
+    if (!controller.signal.aborted) documentScanError.value = fileOperationErrorMessage(cause);
+  } finally {
+    if (documentScanController === controller) documentScanController = undefined;
+  }
+}
+
+async function sameDocumentDirectory(snapshot: DirectoryHandle, current: DirectoryHandle): Promise<boolean> {
+  return snapshot.isSameEntry ? current.isSameEntry ? snapshot.isSameEntry(current) : false : snapshot === current;
+}
+
+async function openNodeDocuments(event: MouseEvent, node: VersionNode) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (saving.value || editorOpen.value) return;
+  const available = comparisonDocumentsByNode.value.get(node.id) ?? [];
+  if (!available.length) {
+    showError(new Error(documentScanError.value || `未找到版本“${node.version}”对应的软件对比文档。`));
+    return;
+  }
+  if (available.length > 1) {
+    selectedDocumentPath.value = available[0]!.relativePath;
+    documentChoice.value = { nodeId: node.id, version: node.version, files: available };
+    return;
+  }
+  await requestNodeDocument(node.id, available[0]!.relativePath);
+}
+
+async function requestNodeDocument(nodeId: string, relativePath: string) {
+  if (saving.value) return;
+  documentChoice.value = undefined;
+  const activeGraph = graph.value;
+  if (!activeGraph) return;
+  const originalNode = activeGraph.nodes.find(node => node.id === nodeId);
+  if (!originalNode) { showError(new Error('版本已不存在，请重新读取版本图。')); return; }
+  saving.value = true;
+  emit('busy', true);
+  error.value = '';
+  status.value = '正在检查软件对比文档…';
+  try {
+    const [binding, latestGraph] = await Promise.all([
+      props.repository.db.directoryBindings.get([props.projectId, 'word']),
+      props.repository.get(props.projectId),
+    ]);
+    if (!binding || !documentRootSnapshot || !(await sameDocumentDirectory(documentRootSnapshot, binding.handle)))
+      throw new Error('软件对比文档目录绑定已改变，请重新扫描目录。');
+    if (!await checkPermission(binding.handle)) throw new Error('软件对比文档目录授权已失效，请重新授权。');
+    const latestNode = latestGraph.nodes.find(node => node.id === nodeId);
+    if (!latestNode || latestNode.version !== originalNode.version || latestGraph.project.partNumber !== activeGraph.project.partNumber)
+      throw new Error('项目零件号或版本信息已变化，请重新读取版本图。');
+    const candidates = await scanDirectory(binding.handle, 'word', new AbortController().signal, () => undefined);
+    const matching = matchComparisonDocuments(latestGraph, candidates).get(nodeId) ?? [];
+    if (!matching.some(file => file.relativePath === relativePath))
+      throw new Error(`文档“${relativePath}”已不再对应版本“${latestNode.version}”，请重新扫描。`);
+    await locateFile(binding.handle, relativePath);
+    const [finalGraph, finalBinding] = await Promise.all([
+      props.repository.get(props.projectId),
+      props.repository.db.directoryBindings.get([props.projectId, 'word']),
+    ]);
+    if (!finalBinding || !(await sameDocumentDirectory(binding.handle, finalBinding.handle))
+      || finalGraph.project.partNumber !== latestGraph.project.partNumber
+      || finalGraph.nodes.find(item => item.id === nodeId)?.version !== latestNode.version)
+      throw new Error('检查期间目录或版本已变化，请重新扫描后再打开。');
+    const uri = buildDocumentOpenUri(props.projectId, binding.handle.name, relativePath);
+    window.location.assign(uri);
+    status.value = '已请求本地启动器，请查看系统提示。网页无法确认 Word 是否已打开文档。';
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+    emit('busy', false);
+  }
+}
 
 watch(pendingBranchMove, async value => {
   await nextTick();
@@ -780,6 +889,11 @@ async function restoreHistory(redo: boolean) {
 
 function onGlobalKeyDown(event: KeyboardEvent) {
   if (pendingBranchMove.value) return;
+  if (documentChoice.value && event.key === 'Escape') {
+    event.preventDefault();
+    documentChoice.value = undefined;
+    return;
+  }
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (key === 'z' || key === 'y')) {
     const target = event.target;
@@ -844,8 +958,10 @@ onMounted(() => {
   window.addEventListener('resize', updateSidebarHeight);
   window.addEventListener('scroll', updateSidebarHeight, { passive: true });
   void refresh();
+  void refreshComparisonDocuments();
 });
 onUnmounted(() => {
+  documentScanController?.abort();
   clearNodeClickTimer();
   hideVersionHint();
   window.removeEventListener('scroll', onHintScroll, true);
@@ -1526,7 +1642,14 @@ function onIqanDialogClosed() {
                 :style="{ gridTemplateColumns: graphColumns }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
-                <div class="git-graph-main-cell">
+                <div class="git-graph-main-cell" :class="{ 'has-version-slot': row.kind === 'version' && !row.isolated }">
+                  <button
+                    v-if="row.kind === 'version' && !row.isolated && (comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
+                    type="button" class="git-document-action git-document-slot"
+                    :aria-label="`打开版本 ${row.node.version} 的软件对比文档${comparisonDocumentsByNode.get(row.node.id)!.length > 1 ? `，${comparisonDocumentsByNode.get(row.node.id)!.length} 份` : ''}`"
+                    :title="`打开软件对比文档（${comparisonDocumentsByNode.get(row.node.id)!.length} 份）`"
+                    @pointerdown.stop @click="openNodeDocuments($event, row.node)"><AppIcon name="documents" /></button>
+                  <span v-else-if="row.kind === 'version' && !row.isolated" class="git-document-slot-empty" aria-hidden="true"></span>
                   <button
                     v-if="row.kind === 'task-summary' && row.taskRun"
                     type="button"
@@ -1587,7 +1710,8 @@ function onIqanDialogClosed() {
                     <span class="git-commit-version">{{ row.node.version }}</span>
                     <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                   </button>
-                  <span v-if="row.kind !== 'task-header' && !row.isolated && row.branchHeads.length" class="git-branch-labels">
+                  <div v-if="row.kind !== 'task-header' && !row.isolated && row.branchHeads.length" class="git-node-accessories">
+                  <span v-if="row.branchHeads.length" class="git-branch-labels">
                     <button
                       v-for="branch in row.branchHeads"
                       :key="branch.id"
@@ -1603,8 +1727,16 @@ function onIqanDialogClosed() {
                       @contextmenu="openBranchMenu($event, branch.id)"
                     >{{ branch.name }}</button>
                   </span>
+                  </div>
                 </div>
-                <div v-if="!hideIsolated" class="git-graph-orphan-cell">
+                <div v-if="!hideIsolated" class="git-graph-orphan-cell" :class="{ 'has-version-slot': row.kind === 'version' && row.isolated }">
+                  <button
+                    v-if="row.kind === 'version' && row.isolated && (comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
+                    type="button" class="git-document-action git-orphan-document-action"
+                    :aria-label="`打开未关联版本 ${row.node.version} 的软件对比文档`"
+                    :title="`打开软件对比文档（${comparisonDocumentsByNode.get(row.node.id)!.length} 份）`"
+                    @pointerdown.stop @click="openNodeDocuments($event, row.node)"><AppIcon name="documents" /></button>
+                  <span v-else-if="row.kind === 'version' && row.isolated" class="git-document-slot-empty" aria-hidden="true"></span>
                   <button
                     v-if="row.kind === 'version' && row.isolated"
                     class="git-row-commit git-row-orphan"
@@ -1679,6 +1811,20 @@ function onIqanDialogClosed() {
         @status="status = $event"
         @closed="onIqanDialogClosed"
       />
+      <dialog ref="documentChoiceDialog" class="branch-move-dialog document-choice-dialog" aria-labelledby="document-choice-title"
+        @cancel.prevent="documentChoice = undefined" @close="documentChoice = undefined"
+        @keydown.escape.prevent.stop="documentChoice = undefined">
+        <h3 id="document-choice-title">选择软件对比文档</h3>
+        <p>版本 {{ documentChoice?.version }} 有多份文档。</p>
+        <label for="version-document-choice">打开文档</label>
+        <select id="version-document-choice" v-if="documentChoice" v-model="selectedDocumentPath">
+          <option v-for="file in documentChoice.files" :key="file.relativePath" :value="file.relativePath">{{ file.relativePath }}</option>
+        </select>
+        <div class="actions">
+          <button type="button" :disabled="saving || !selectedDocumentPath" @click="documentChoice && requestNodeDocument(documentChoice.nodeId, selectedDocumentPath)">在 Word 中打开</button>
+          <button type="button" class="secondary" :disabled="saving" @click="documentChoice = undefined">取消</button>
+        </div>
+      </dialog>
       <button
         v-show="!isFullscreen" class="graph-resize-handle" aria-label="调整历史画布尺寸"
         title="拖拽调整宽高；方向键调整，Shift 加速，Home 恢复默认"

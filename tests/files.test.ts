@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
-import { matchScannedFiles, parseEngineeringName, registerCandidates, type FileCandidate } from '../src/domain/filenames';
+import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, registerCandidates, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -90,6 +90,52 @@ describe('文件名和版本身份', () => {
     const added = registerCandidates(released, [candidate(), candidate('001 V2.idax')]);
     expect(added.nodes[0]).toEqual(released.nodes[0]);
     expect(added.nodes).toHaveLength(2);
+  });
+});
+
+describe('软件对比文档版本匹配', () => {
+  it('按项目零件号和完整版本前缀临时匹配，保留任意后缀与多份文档', () => {
+    const graph = registerCandidates(createProject('项目', '14798046800'), [
+      candidate('14798046800 V1.0-2.idax'),
+      candidate('14798046800 V1.0-28.idax'),
+    ]);
+    const documents = [
+      candidate('14798046800 V1.0-28 20260108软件对比文档.docx'),
+      candidate('14798046800 V1.0-28 第二份说明.doc', 'docs'),
+      candidate('14798046800 V1.0-2 20260101 任意内容.docx'),
+      candidate('其他零件 V1.0-28 20260108.docx'),
+      candidate('14798046800 V1.0-28.pdf'),
+      candidate('14798046800 V1.0-28 ../非法.docx'),
+    ];
+    const result = matchComparisonDocuments(graph, documents);
+    const longVersion = graph.nodes.find(node => node.version === 'V1.0-28')!;
+    const shortVersion = graph.nodes.find(node => node.version === 'V1.0-2')!;
+    expect(result.get(longVersion.id)?.map(file => file.fileName)).toEqual([
+      '14798046800 V1.0-28 20260108软件对比文档.docx',
+      '14798046800 V1.0-28 第二份说明.doc',
+    ]);
+    expect(result.get(shortVersion.id)?.map(file => file.fileName)).toEqual(['14798046800 V1.0-2 20260101 任意内容.docx']);
+  });
+
+  it('不匹配只有前缀相似但版本不完整的文件', () => {
+    const graph = registerCandidates(createProject('项目', '001'), [candidate('001 V1.0-28.idax')]);
+    const [node] = graph.nodes;
+    expect(matchComparisonDocuments(graph, [candidate('001 V1.0-280说明.docx')]).get(node!.id)).toEqual([]);
+  });
+
+  it('匹配日期后紧连中文说明的完整版本名', () => {
+    const graph = registerCandidates(createProject('项目', '14798046800'), [
+      candidate('14798046800 V1.0-29 20260430.idax'),
+      candidate('14798046800 V1.0-29 20260421.idax'),
+    ]);
+    const current = graph.nodes.find(node => node.version === 'V1.0-29 20260430')!;
+    const earlier = graph.nodes.find(node => node.version === 'V1.0-29 20260421')!;
+    const matches = matchComparisonDocuments(graph, [
+      candidate('14798046800 V1.0-29 20260430软件对比文档.docx'),
+      candidate('14798046800 V1.0-29 20260421软件对比文档.docx'),
+    ]);
+    expect(matches.get(current.id)?.map(file => file.fileName)).toEqual(['14798046800 V1.0-29 20260430软件对比文档.docx']);
+    expect(matches.get(earlier.id)?.map(file => file.fileName)).toEqual(['14798046800 V1.0-29 20260421软件对比文档.docx']);
   });
 });
 

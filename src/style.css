@@ -366,6 +366,22 @@ tbody tr.row-selected { background: #1a3557; }
 .git-graph-row.isolated:hover { background: #25213c; }
 .git-graph-lanes { align-self: stretch; min-width: 0; }
 .git-graph-main-cell { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 8px; min-width: 0; }
+.git-graph-main-cell.has-version-slot { grid-template-columns: 28px minmax(0, 1fr) max-content; }
+.git-graph-main-cell.has-version-slot > .git-document-slot,
+.git-graph-main-cell.has-version-slot > .git-document-slot-empty { grid-column: 1; grid-row: 1; }
+.git-graph-main-cell.has-version-slot > .git-row-commit { grid-column: 2; grid-row: 1; }
+.git-graph-main-cell.has-version-slot > .git-node-accessories { grid-column: 3; grid-row: 1; }
+.git-document-slot-empty { display: block; width: 28px; height: 28px; }
+.git-node-accessories { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.git-document-action { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 4px; border: 1px solid #58769a; border-radius: 6px; background: #14243a; color: #a9d0ff; cursor: pointer; }
+.git-document-action:hover, .git-document-action:focus-visible { border-color: #8bc3ff; background: #1c3858; color: #eaf4ff; outline: 2px solid #77baff; outline-offset: 2px; }
+.git-document-action .app-icon { width: 18px; height: 18px; }
+.git-orphan-document-action { margin-left: 4px; }
+.git-graph-orphan-cell.has-version-slot { display: grid; grid-template-columns: 28px minmax(0, 1fr) max-content; }
+.git-graph-orphan-cell.has-version-slot > .git-orphan-document-action,
+.git-graph-orphan-cell.has-version-slot > .git-document-slot-empty { grid-column: 1; grid-row: 1; margin: 0; }
+.git-graph-orphan-cell.has-version-slot > .git-row-commit { grid-column: 2; grid-row: 1; }
+.git-graph-orphan-cell.has-version-slot > .git-branch-labels { grid-column: 3; grid-row: 1; }
 .git-row-commit {
   display: grid; grid-template-columns: 24px fit-content(280px) minmax(0, 1fr); align-items: center; justify-content: start;
   gap: 8px; width: 100%; min-width: 0; min-height: 54px; padding: 6px 12px;

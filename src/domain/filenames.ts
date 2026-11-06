@@ -69,3 +69,30 @@ export function matchScannedFiles(graph: ProjectGraph, candidates: readonly File
   });
   return { rows, matches, missing: graph.nodes.filter(node => matches.get(node.id)!.length === 0) };
 }
+
+export function matchComparisonDocuments(graph: ProjectGraph, candidates: readonly FileCandidate[]) {
+  const matches = new Map(graph.nodes.map(node => [node.id, [] as FileCandidate[]]));
+  const nodes = [...graph.nodes].sort((left, right) => right.version.length - left.version.length);
+  for (const candidate of candidates) {
+    try {
+      const parts = relativeParts(candidate.relativePath);
+      requireCondition(parts.at(-1) === candidate.fileName, 'FILE_NAME', '文件名与相对路径不一致。');
+      requireCondition(/\.(doc|docx)$/i.test(candidate.fileName), 'DOCUMENT_EXTENSION', '仅支持 .doc/.docx 软件对比文档。');
+      const prefix = new RegExp(`^${graph.project.partNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]+`);
+      const body = candidate.fileName.replace(/\.(doc|docx)$/i, '');
+      const versionText = body.replace(prefix, '');
+      if (versionText === body) continue;
+      const normalized = versionText.replace(/[ \t]+/g, ' ');
+      const node = nodes.find(item => {
+        if (normalized === item.version) return true;
+        if (!normalized.startsWith(item.version)) return false;
+        const nextCharacter = normalized[item.version.length];
+        return nextCharacter === ' ' || (nextCharacter !== undefined && !/[A-Za-z0-9.-]/.test(nextCharacter));
+      });
+      if (node) matches.get(node.id)!.push(candidate);
+    } catch (cause) {
+      if (!(cause instanceof DomainError)) throw cause;
+    }
+  }
+  return matches;
+}
