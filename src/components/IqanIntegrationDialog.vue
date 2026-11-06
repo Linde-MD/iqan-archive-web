@@ -2,7 +2,7 @@
 import { nextTick, onUnmounted, ref, watch } from 'vue';
 import type { ProjectGraph, VersionNode } from '../domain/model';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
-import { checkPermission, locateFile, scanDirectory, type DirectoryHandle } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, scanDirectory, type DirectoryHandle } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { buildCompareUri, buildOpenUri } from '../domain/iqan-protocol';
 
@@ -13,7 +13,7 @@ const props = defineProps<{
   repository: ArchiveRepository;
   projectId: string;
 }>();
-const emit = defineEmits<{ closed: [] }>();
+const emit = defineEmits<{ closed: []; status: [message: string] }>();
 
 const dialog = ref<HTMLDialogElement>();
 const action = ref<Action>('open');
@@ -29,6 +29,7 @@ const scanCount = ref(0);
 const error = ref('');
 const status = ref('');
 const preparedUri = ref('');
+const requestedUri = ref('');
 let controller: AbortController | undefined;
 
 const title = () => action.value === 'open' ? '在 IQANdesign 中打开' : '对比所选版本';
@@ -36,12 +37,13 @@ const selectedNodes = () => orderedNodeIds.value.map(id => snapshotNodes.value.f
 
 function invalidatePreparedRequest() {
   preparedUri.value = '';
+  requestedUri.value = '';
   status.value = '';
 }
 
 watch(selectedPaths, invalidatePreparedRequest, { deep: true });
 watch(() => props.graph.project.revision, revision => {
-  if (dialog.value?.open && snapshotRevision.value !== undefined && revision !== snapshotRevision.value) {
+  if (snapshotRevision.value !== undefined && revision !== snapshotRevision.value) {
     invalidatePreparedRequest();
     error.value = '项目版本图已变化，旧预览已失效。请关闭并重新选择版本。';
   }
@@ -85,12 +87,14 @@ async function open(targetAction: Action, nodeIds: readonly string[]) {
   snapshotRevision.value = undefined;
   snapshotNodes.value = [];
   preparedUri.value = '';
+  requestedUri.value = '';
   error.value = '';
   status.value = '';
   controller?.abort();
   const operationController = new AbortController();
   controller = operationController;
-  dialog.value?.showModal();
+  let autoRequest = false;
+  emit('status', '正在检查工程文件，请稍候…');
   busy.value = true;
 
   try {
@@ -121,13 +125,24 @@ async function open(targetAction: Action, nodeIds: readonly string[]) {
     selectedPaths.value = latestNodes.map(node => grouped[node.id]!.length === 1 ? grouped[node.id]![0]!.relativePath : '');
     directoryName.value = binding.name;
     await nextTick();
-    dialog.value?.querySelector<HTMLSelectElement>('select')?.focus({ preventScroll: true });
+    operationController.signal.throwIfAborted();
+    autoRequest = selectedPaths.value.every(path => !!path);
+    if (!autoRequest) {
+      error.value = '存在多个匹配文件，请为每个版本明确选择一个工程文件后请求启动器。';
+      dialog.value?.showModal();
+      dialog.value?.querySelector<HTMLSelectElement>('select')?.focus({ preventScroll: true });
+    }
   } catch (cause) {
-    if (!operationController.signal.aborted) error.value = cause instanceof Error ? cause.message : '准备本地操作失败，请重试。';
+    if (!operationController.signal.aborted) {
+      error.value = fileOperationErrorMessage(cause);
+      dialog.value?.showModal();
+    }
   } finally {
     busy.value = false;
     controller = undefined;
+    emit('status', '');
   }
+  if (autoRequest && !operationController.signal.aborted) await prepareRequest(true);
 }
 
 function swapOrder() {
@@ -137,12 +152,13 @@ function swapOrder() {
   invalidatePreparedRequest();
 }
 
-async function prepareRequest() {
+async function prepareRequest(requestImmediately = false) {
   if (busy.value) return;
   error.value = '';
   status.value = '';
   preparedUri.value = '';
   busy.value = true;
+  emit('status', '正在重新检查工程文件，请稍候…');
   const operationController = new AbortController();
   controller = operationController;
 
@@ -179,12 +195,29 @@ async function prepareRequest() {
       await locateFile(binding.handle, path);
     }
 
+    const finalGraph = await props.repository.get(props.projectId);
+    if (finalGraph.project.revision !== snapshotRevision.value || finalGraph.project.partNumber !== snapshotPartNumber.value) {
+      throw new Error('文件检查期间项目已变化，请关闭并重新选择版本。');
+    }
+    operationController.signal.throwIfAborted();
     preparedUri.value = action.value === 'open'
       ? buildOpenUri(latestGraph.project.id, binding.name, selectedPaths.value[0]!)
       : buildCompareUri(latestGraph.project.id, binding.name, selectedPaths.value[0]!, selectedPaths.value[1]!);
     status.value = '文件已重新扫描并定位。点击下方链接后，浏览器将请求打开本地启动器。';
+    if (requestImmediately) {
+      window.location.assign(preparedUri.value);
+      requestedUri.value = preparedUri.value;
+      if (dialog.value?.open) dialog.value.close();
+      emit('status', '已请求本地启动器，请查看系统提示。网页无法确认启动结果；若没有出现系统提示，可使用“手动请求 Launcher”重试。');
+    } else {
+      emit('status', '');
+    }
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '验证工程文件失败，请重试。';
+    if (!operationController.signal.aborted) {
+      error.value = fileOperationErrorMessage(cause);
+      dialog.value?.showModal();
+      emit('status', '');
+    }
   } finally {
     busy.value = false;
     controller = undefined;
@@ -193,6 +226,7 @@ async function prepareRequest() {
 
 function markRequested() {
   status.value = '已请求本地启动器，请查看系统提示。网页无法确认启动器是否已安装、IQANdesign 是否启动或操作是否完成。';
+  emit('status', status.value);
 }
 
 function cancelDialog(event: Event) {
@@ -213,6 +247,7 @@ onUnmounted(() => controller?.abort());
 </script>
 
 <template>
+  <a v-if="requestedUri && !busy" class="integration-launch-link" :href="requestedUri" @click="markRequested">手动请求 Launcher</a>
   <dialog ref="dialog" class="iqan-integration-dialog" :aria-busy="busy" aria-labelledby="iqan-dialog-title" @cancel="cancelDialog" @close="closeDialog">
     <header class="iqan-dialog-header">
       <div>
@@ -257,8 +292,8 @@ onUnmounted(() => controller?.abort());
 
     <div class="integration-actions">
       <button type="button" class="secondary" :disabled="busy" @click="dialog?.close()">取消</button>
-      <button v-if="snapshotNodes.length" type="button" :disabled="busy || selectedPaths.some(path => !path)" @click="prepareRequest">
-        {{ busy ? '检查中…' : '重新检查文件并准备请求' }}
+      <button v-if="snapshotNodes.length" type="button" :disabled="busy || selectedPaths.some(path => !path)" @click="prepareRequest(true)">
+        {{ busy ? '检查中…' : '检查并请求 Launcher' }}
       </button>
       <a v-if="preparedUri" class="integration-launch-link" :href="preparedUri" @click="markRequested">
         {{ action === 'open' ? '请求 Launcher 打开工程' : '请求 Launcher 对比工程' }}

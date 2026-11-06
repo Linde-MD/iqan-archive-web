@@ -1675,6 +1675,7 @@ function onIqanDialogClosed() {
         :graph="graph"
         :repository="repository"
         :project-id="projectId"
+        @status="status = $event"
         @closed="onIqanDialogClosed"
       />
       <button
