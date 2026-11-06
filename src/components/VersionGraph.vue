@@ -9,6 +9,7 @@ import { compareVersions, type VersionOrder } from '../domain/version-order';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
 import { projectTaskViewLayout, taskViewRuns, type TaskRun, type TaskViewLayout } from '../domain/task-view';
 import AppIcon from './AppIcon.vue';
+import IqanIntegrationDialog from './IqanIntegrationDialog.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import { renderMarkdown } from '../utils/markdown';
@@ -178,6 +179,7 @@ function onResizeKeydown(event: KeyboardEvent) {
 }
 const menuElement = ref<HTMLDivElement>();
 const editorSidebar = ref<HTMLElement>();
+const iqanIntegration = ref<InstanceType<typeof IqanIntegrationDialog>>();
 const scale = ref(1);
 const selectedNodeIds = ref<string[]>([]);
 const selectionAnchorId = ref<string | null>(null);
@@ -1352,6 +1354,16 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
   else if (action === 'branch' && count === 1) openBranchAdd(selectedNodeIds.value[0]!);
   else if (action === 'merge' && count >= 2) openMerge();
 }
+
+function startIqanAction(action: 'open' | 'compare', nodeIds: readonly string[]) {
+  if (saving.value || editorOpen.value) return;
+  closeMenu(false);
+  iqanIntegration.value?.open(action, nodeIds);
+}
+
+function onIqanDialogClosed() {
+  void nextTick(() => graphScroller.value?.focus({ preventScroll: true }));
+}
 </script>
 
 <template>
@@ -1424,6 +1436,8 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
       </div>
 
       <div class="graph-toolbar-row">
+        <button class="tool-button" :disabled="saving || editorOpen || selectedNodeIds.length !== 1" aria-label="在 IQANdesign 中打开选中版本" title="重新扫描并检查文件后，请求本地启动器打开工程" @click="startIqanAction('open', selectedNodeIds)"><AppIcon name="file" /><span class="tool-caption">打开工程</span></button>
+        <button class="tool-button tool-button-accent" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" aria-label="对比选中的两个版本" title="按当前选择顺序预览并对比两个工程文件" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" /><span class="tool-caption">对比工程</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="新增子版本" title="为选中的一个版本新增子版本" @click="startNodeAction('add')"><AppIcon name="plus" /><span class="tool-caption">新增子版本</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="编辑版本" title="编辑选中版本的版本号与说明；已放行版本仅可编辑说明" @click="startNodeAction('edit')"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" aria-label="设置父版本" title="搜索选择父版本；已放行版本不可修改父边" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
@@ -1624,12 +1638,15 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
 
       <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : '分支操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
+          <button role="menuitem" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" />对比所选版本（已选 {{ selectedNodeIds.length }} 个）</button>
           <button role="menuitem" :disabled="saving" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
           <button role="menuitem" :disabled="saving || !selectedRelations.length" @click="openRelationPreview('clear')"><AppIcon name="clear" />清除父子关联</button>
           <button role="menuitem" :disabled="saving || !canBuildLinearRelations" @click="openRelationPreview('linear')"><AppIcon name="link" />构建线性关联</button>
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除所选版本</button>
         </template>
         <template v-else-if="menu.kind === 'node'">
+          <button role="menuitem" :disabled="saving || editorOpen" @click="startIqanAction('open', [menu.id])"><AppIcon name="file" />在 IQANdesign 中打开</button>
+          <button role="menuitem" disabled><AppIcon name="compare" />对比所选版本（需选中 2 个）</button>
           <button role="menuitem" :disabled="saving" @click="openNodeAdd([menu.id]); closeMenu(false)"><AppIcon name="plus" />新增子版本</button>
           <button role="menuitem" :disabled="saving" @click="openBranchAdd(menu.id)"><AppIcon name="branch" />创建分支</button>
           <button role="menuitem" :disabled="saving" @click="openNodeEdit(); closeMenu(false)"><AppIcon name="edit" />编辑</button>
@@ -1644,6 +1661,14 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
           <button role="menuitem" :disabled="saving" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
         </template>
       </div>
+      <IqanIntegrationDialog
+        v-if="graph"
+        ref="iqanIntegration"
+        :graph="graph"
+        :repository="repository"
+        :project-id="projectId"
+        @closed="onIqanDialogClosed"
+      />
       <button
         v-show="!isFullscreen" class="graph-resize-handle" aria-label="调整历史画布尺寸"
         title="拖拽调整宽高；方向键调整，Shift 加速，Home 恢复默认"

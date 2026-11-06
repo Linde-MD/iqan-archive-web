@@ -135,7 +135,7 @@
 | [SPEC-01 项目与文件名解析](./SPEC-01-projects-and-filenames.md) | 双目录授权、递归扫描/解析、预览登记与定位重绑、软件对比文档列表。 | 核心；直接打开后续 | SPEC-00 项目/版本/事务契约 | 可实施 | 代码完成，待原生目录/键盘实机验收 | 首版规则已确认；AC-09/10 待补验 |
 | [SPEC-02 版本分支图](./SPEC-02-version-graph.md) | 分支/任务/放行、外部 Task ID 展示与编辑、双节点对比入口。 | 核心 | SPEC-00 图模型；可与 SPEC-01 并行；状态按 SPEC-04 | 框架 | 部分（分支内连续任务节点聚合已实现；AC-09/10 已验收） | 双版本对比归 SPEC-04；AC-15 和其他完整验收待补齐 |
 | [SPEC-03 本地持久化与发布准备](./SPEC-03-persistence-and-release.md) | schemaVersion 3 JSON 恢复与 Pages 部署。 | 核心；无二进制备份 | SPEC-00、SPEC-01/02 数据往返 | 可实施 | 部分（JSON 导出/校验/原子恢复、生产构建及子路径本地验证已完成） | Pages 实站及本机平台验收 |
-| [SPEC-04 IQANdesign 本地打开与版本对比](./SPEC-04-iqandesign-integration.md) | 网页选择/预览、协议请求/降级和联调。 | 可选本机能力 | SPEC-00/01 文件契约、SPEC-02 选择/菜单、SPEC-05 独立验收 | 框架 | 未开始 | Q-015；Q-014/Q-017 已解决 |
+| [SPEC-04 IQANdesign 本地打开与版本对比](./SPEC-04-iqandesign-integration.md) | 网页选择/预览、协议请求/降级和联调。 | 可选本机能力 | SPEC-00/01 文件契约、SPEC-02 选择/菜单、冻结的 SPEC-05 URI v1；本机联调另需 Launcher 独立验收 | 可实施（网页阶段） | 部分（Web 选择/预览/URI 请求已实现；本机联调待 Launcher 安装） | Q-015；Launcher 安装/验收 |
 | [SPEC-05 Windows 协议启动器](./SPEC-05-windows-launcher.md) | 安装注册、本机绑定、逐次确认、路径校验和受限进程调用。 | 可选 | SPEC-00 项目/文件契约；工程 open/compare URI v1 已冻结，可独立开发 | 框架 | 未开始 | Q-015、Q-016；Q-017 已解决 |
 | [SPEC-06 文档关联后续迭代](./SPEC-06-document-associations.md) | 首版后文档关联版本或版本对。 | 增强 | SPEC-01/02，直接打开另依赖 Launcher LSP-04 | 框架 | 未开始 | Q-019 |
 | [SPEC-07 项目任务看板](./SPEC-07-task-board.md) | 独立看板、Task ID/Status/Type/Description、选项维护、拖拽及图节点双向跳转。 | 核心 | SPEC-00 任务/事务契约、SPEC-02 任务图投影、SPEC-03 看板 schema 契约；不依赖 JSON UI 完成 | 可实施 | 未开始 | 无 |

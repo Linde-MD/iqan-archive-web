@@ -60,7 +60,7 @@ iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iq
 iqanarchive://compare?v=1&project=550e8400-e29b-41d4-a716-446655440000&fileA=1479_iqan_project_files%2Fv1%2Fmodel-a.idax&fileB=1479_iqan_project_files%2Fv2%2Fmodel-b.idax
 ```
 
-- **URI 语法：**scheme 必须为小写 `iqanarchive`；authority 只能是小写操作名 `open` 或 `compare`，其后不得有路径、端口、用户信息、fragment。查询字段名区分大小写且顺序固定：`open` 为 `v`、`project`、`file`；`compare` 为 `v`、`project`、`fileA`、`fileB`。字段缺失、重复、重排、未知字段、额外分隔符和其他操作均拒绝。v1 只接受字面值 `1`；未知版本拒绝，不做降级兼容。
+- **URI 语法：**scheme 必须为小写 `iqanarchive`；authority 只能是小写操作名 `open` 或 `compare`，其后不得有路径、端口、用户信息、fragment。为兼容部分协议激活链路，可接受 `open/`、`compare/` 这种“空路径尾斜杠”形式并按对应操作处理，其他带路径形式仍拒绝。查询字段名区分大小写且顺序固定：`open` 为 `v`、`project`、`file`；`compare` 为 `v`、`project`、`fileA`、`fileB`。字段缺失、重复、重排、未知字段、额外分隔符和其他操作均拒绝。v1 只接受字面值 `1`；未知版本拒绝，不做降级兼容。
 - **编码：**整个 URI 必须是 ASCII。查询值按 UTF-8 字节做 RFC 3986 百分号编码；仅 `A-Z a-z 0-9 - . _ ~` 可不编码，其他字节一律编码为大写 `%HH`。不使用 HTML form 解码，`+` 不代表空格且裸 `+` 非规范、拒绝；空格编码为 `%20`。每个字段值只解码一次，畸形 `%`、无效 UTF-8、非规范编码均拒绝。路径分隔符在 wire URI 中编码为 `%2F`，解码后只允许 `/` 作为分隔符并禁止 `\`；双重编码不再解码，例如 `%252F` 解码一次后只是路径段中的字面 `%2F`。
 - **格式与限额：**完整 URI 最长 16,384 个 ASCII 字符；`project` 必须是 36 字符小写 UUID v4 文本（与 Web `crypto.randomUUID()` 输出一致）。解码后的单个文件相对路径最多 2,048 个 UTF-8 字节；每个路径段最多 255 个 UTF-16 code unit。`open` 恰有一个 `file`，`compare` 恰有 `fileA`、`fileB` 两个非空路径。超过任一限额即拒绝；限额仅约束协议输入，不保证目标文件系统接受该路径。
 - URI 不需要包含发起页面的域名、origin 或端口；Windows 自定义协议激活不会自动把网页地址作为可信来源交给 Launcher。当前部署地址 `https://linde-md.github.io/iqan-archive-web/` 与本地测试地址（通常为 `http://localhost:5174`）都无需在 Launcher 手动设置或列入来源白名单。即使 URI 带有自报 origin，也只能作为不可信显示信息，不能用于认证或替代本机确认。

@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import { buildCompareUri, buildOpenUri } from '../src/domain/iqan-protocol';
+import fixture from '../specs/fixtures/launcher-uri-v1.json';
+
+const projectId = '550e8400-e29b-41d4-a716-446655440000';
+
+describe('Launcher 工程 URI v1', () => {
+  it('生成与共享夹具完全一致的 open 和 compare URI', () => {
+    const open = fixture.valid.find(item => item.name === 'open-basic')!;
+    const compare = fixture.valid.find(item => item.name === 'compare-preserves-a-b-order')!;
+    expect(buildOpenUri(open.projectId, '1479_iqan_project_files', 'v1/model.idax')).toBe(open.uri);
+    expect(buildCompareUri(compare.projectId, '1479_iqan_project_files', 'v1/model-a.idax', 'v2/model-b.idax')).toBe(compare.uri);
+  });
+
+  it.each([
+    ['utf8-space-plus-percent', '中文 dir/plus+percent%.idax'],
+    ['double-encoded-separator-is-not-decoded-twice', 'name%2Ftext.idax'],
+  ])('匹配共享夹具中的编码边界：%s', (name, relativePath) => {
+    const expected = fixture.valid.find(item => item.name === name)!;
+    expect(buildOpenUri(expected.projectId, '1479_iqan_project_files', relativePath)).toBe(expected.uri);
+  });
+
+  it('按 UTF-8 字节和 RFC 3986 编码空格、加号、百分号及保留标点', () => {
+    expect(buildOpenUri(projectId, '工程 项目', "子目录/a+b!'().idax")).toBe(
+      'iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=%E5%B7%A5%E7%A8%8B%20%E9%A1%B9%E7%9B%AE%2F%E5%AD%90%E7%9B%AE%E5%BD%95%2Fa%2Bb%21%27%28%29.idax',
+    );
+  });
+
+  it.each([
+    ['大写 UUID', '550E8400-E29B-41D4-A716-446655440000', 'dir', 'file.idax'],
+    ['越界路径', projectId, 'dir', '../file.idax'],
+    ['反斜线路径', projectId, 'dir', 'sub\\file.idax'],
+    ['Windows 保留设备名', projectId, 'dir', 'CON.idax'],
+    ['控制台设备名', projectId, 'dir', 'CONOUT$.idax'],
+    ['尾随点', projectId, 'dir', 'file.idax.'],
+    ['非法字符', projectId, 'dir', 'bad?.idax'],
+  ])('拒绝不符合协议的路径或项目标识（%s）', (_name, id, directory, path) => {
+    expect(() => buildOpenUri(id, directory, path)).toThrow();
+  });
+
+  it('拒绝同一个文件的大小写变体和超限路径', () => {
+    expect(() => buildCompareUri(projectId, 'dir', 'V1/model.idax', 'v1/MODEL.IDAX')).toThrow('同一个工程文件');
+    expect(() => buildOpenUri(projectId, 'dir', `${'a'.repeat(256)}.idax`)).toThrow('Windows 不支持');
+    expect(() => buildOpenUri(projectId, 'dir', Array.from({ length: 3 }, () => '中'.repeat(250)).join('/') + '/model.idax')).toThrow('2048');
+  });
+});
