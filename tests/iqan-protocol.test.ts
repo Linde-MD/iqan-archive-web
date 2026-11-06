@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { buildCompareUri, buildOpenUri } from '../src/domain/iqan-protocol';
+import { buildCompareUri, buildDocumentOpenUri, buildOpenUri } from '../src/domain/iqan-protocol';
 import fixture from '../specs/fixtures/launcher-uri-v1.json';
 
 const projectId = '550e8400-e29b-41d4-a716-446655440000';
 
 describe('Launcher 工程 URI v1', () => {
+  it('文档使用独立 v2 操作，限定格式并复用路径校验', () => {
+    const shared = fixture.documentValid[0]!;
+    expect(buildDocumentOpenUri(shared.projectId, 'documents', 'release.docx')).toBe(shared.uri);
+    expect(buildDocumentOpenUri(projectId, 'documents', '说明 A.DOCX')).toBe(`iqanarchive://open-document?v=2&project=${projectId}&file=documents%2F%E8%AF%B4%E6%98%8E%20A.DOCX`);
+    expect(() => buildDocumentOpenUri(projectId, 'documents', 'file.exe')).toThrow();
+    expect(() => buildDocumentOpenUri(projectId, 'documents', '../file.doc')).toThrow();
+  });
   it('生成与共享夹具完全一致的 open 和 compare URI', () => {
     const open = fixture.valid.find(item => item.name === 'open-basic')!;
     const compare = fixture.valid.find(item => item.name === 'compare-preserves-a-b-order')!;

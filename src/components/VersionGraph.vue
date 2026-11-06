@@ -16,7 +16,7 @@ import { renderMarkdown } from '../utils/markdown';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
-const emit = defineEmits<{ busy: [value: boolean] }>();
+const emit = defineEmits<{ busy: [value: boolean]; documents: [] }>();
 
 const graph = shallowRef<ProjectGraph>();
 const error = ref('');
@@ -1440,6 +1440,7 @@ function onIqanDialogClosed() {
         </button>
         <button class="tool-button tool-button-accent" :disabled="saving" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
         <button class="tool-button" :disabled="saving" aria-label="管理任务" title="创建、编辑任务与外部 Task ID；删除任务仅解除版本关联" @click="openTasks"><AppIcon name="file" /><span class="tool-caption">任务管理</span></button>
+        <button class="tool-button" :disabled="saving || editorOpen" aria-label="查看软件对比文档" title="软件对比文档" @click="emit('documents')"><AppIcon name="documents" /><span class="tool-caption">软件对比文档</span></button>
         <button class="tool-button" :disabled="saving || editorOpen" aria-label="管理分支顺序" title="查看全部分支并调整顺序；顺序决定共享节点与连线的颜色及优先轨道" @click="openBranchManager"><AppIcon name="branch" /><span class="tool-caption">分支管理</span></button>
       </div>
 

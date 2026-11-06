@@ -5,6 +5,7 @@ export type DirectoryRole = 'engineering' | 'word';
 export interface DirectoryHandle {
   readonly kind: 'directory';
   readonly name: string;
+  isSameEntry?(other: DirectoryHandle): Promise<boolean>;
   values(): AsyncIterable<DirectoryHandle | FileHandle>;
   getDirectoryHandle(name: string): Promise<DirectoryHandle>;
   getFileHandle(name: string): Promise<FileHandle>;

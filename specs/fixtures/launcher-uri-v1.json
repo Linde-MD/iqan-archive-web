@@ -1,4 +1,28 @@
 {
+  "documentValid": [
+    {
+      "name": "document-open-basic",
+      "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx",
+      "operation": "OpenDocument",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "files": ["documents/release.docx"]
+    },
+    {
+      "name": "document-unicode-root-slash",
+      "uri": "iqanarchive://open-document/?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2F%E8%AF%B4%E6%98%8E%20A.DOC",
+      "operation": "OpenDocument",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "files": ["documents/说明 A.DOC"]
+    }
+  ],
+  "documentInvalid": [
+    { "name": "document-v1-forbidden", "uri": "iqanarchive://open-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
+    { "name": "document-unknown-version", "uri": "iqanarchive://open-document?v=3&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
+    { "name": "document-extra-field", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx&exe=Word", "failure": "InvalidSyntax" },
+    { "name": "document-engineering-extension", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.idax", "failure": "InvalidPath" },
+    { "name": "document-parent-traversal", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2F..%2Frelease.docx", "failure": "InvalidPath" },
+    { "name": "document-absolute-path", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=C%3A%2Frelease.doc", "failure": "InvalidPath" }
+  ],
   "valid": [
     {
       "name": "open-basic",

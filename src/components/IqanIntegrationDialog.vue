@@ -29,7 +29,6 @@ const scanCount = ref(0);
 const error = ref('');
 const status = ref('');
 const preparedUri = ref('');
-const requestedUri = ref('');
 let controller: AbortController | undefined;
 
 const title = () => action.value === 'open' ? '在 IQANdesign 中打开' : '对比所选版本';
@@ -37,7 +36,6 @@ const selectedNodes = () => orderedNodeIds.value.map(id => snapshotNodes.value.f
 
 function invalidatePreparedRequest() {
   preparedUri.value = '';
-  requestedUri.value = '';
   status.value = '';
 }
 
@@ -87,7 +85,6 @@ async function open(targetAction: Action, nodeIds: readonly string[]) {
   snapshotRevision.value = undefined;
   snapshotNodes.value = [];
   preparedUri.value = '';
-  requestedUri.value = '';
   error.value = '';
   status.value = '';
   controller?.abort();
@@ -206,9 +203,8 @@ async function prepareRequest(requestImmediately = false) {
     status.value = '文件已重新扫描并定位。点击下方链接后，浏览器将请求打开本地启动器。';
     if (requestImmediately) {
       window.location.assign(preparedUri.value);
-      requestedUri.value = preparedUri.value;
       if (dialog.value?.open) dialog.value.close();
-      emit('status', '已请求本地启动器，请查看系统提示。网页无法确认启动结果；若没有出现系统提示，可使用“手动请求 Launcher”重试。');
+      emit('status', '已请求本地启动器，请查看系统提示。网页无法确认启动结果；若没有出现系统提示，请检查 Launcher 安装及浏览器外部应用权限后重新发起操作。');
     } else {
       emit('status', '');
     }
@@ -247,7 +243,6 @@ onUnmounted(() => controller?.abort());
 </script>
 
 <template>
-  <a v-if="requestedUri && !busy" class="integration-launch-link" :href="requestedUri" @click="markRequested">手动请求 Launcher</a>
   <dialog ref="dialog" class="iqan-integration-dialog" :aria-busy="busy" aria-labelledby="iqan-dialog-title" @cancel="cancelDialog" @close="closeDialog">
     <header class="iqan-dialog-header">
       <div>

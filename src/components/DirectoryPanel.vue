@@ -5,7 +5,7 @@ import { checkPermission, chooseDirectory, scanDirectory, type DirectoryHandle, 
 import type { FileCandidate } from '../domain/filenames';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string; role: DirectoryRole; disabled: boolean }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; role: DirectoryRole; disabled: boolean; autoScan?: boolean }>();
 const emit = defineEmits<{
   results: [files: FileCandidate[]];
   invalidate: [];
@@ -96,7 +96,10 @@ async function unbind() {
 }
 
 defineExpose({ getHandle: () => handle.value });
-onMounted(restore);
+onMounted(async () => {
+  await restore();
+  if (!disposed && props.autoScan && handle.value && permission.value === '已授权') await scan();
+});
 onUnmounted(() => { disposed = true; controller?.abort(); });
 </script>
 

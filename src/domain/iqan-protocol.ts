@@ -64,6 +64,13 @@ export function buildOpenUri(projectId: string, directoryName: string, fileRelat
   return assertUriLength(`iqanarchive://open?v=1&project=${projectId}&file=${encodeRfc3986(path)}`);
 }
 
+export function buildDocumentOpenUri(projectId: string, directoryName: string, fileRelativePath: string): string {
+  assertProjectId(projectId);
+  const path = archiveRelativePath(directoryName, fileRelativePath);
+  requireCondition(/\.(doc|docx)$/i.test(fileRelativePath), 'URI_DOCUMENT', '仅支持打开 .doc/.docx 软件对比文档。');
+  return assertUriLength(`iqanarchive://open-document?v=2&project=${projectId}&file=${encodeRfc3986(path)}`);
+}
+
 export function buildCompareUri(
   projectId: string,
   directoryName: string,

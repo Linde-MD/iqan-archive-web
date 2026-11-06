@@ -7,6 +7,7 @@ import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/proj
 import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
 import VersionGraph from './components/VersionGraph.vue';
+import ComparisonDocuments from './components/ComparisonDocuments.vue';
 import AppIcon from './components/AppIcon.vue';
 
 const db = new ArchiveDatabase();
@@ -29,9 +30,11 @@ const submitted = ref(false);
 const activeProjectId = ref('');
 const activeProject = computed(() => projects.value.find(project => project.id === activeProjectId.value) ?? null);
 const projectsCollapsed = ref(false);
-const filesBusy = ref(false);
+const filesPanelBusy = ref(false);
+const documentsBusy = ref(false);
+const filesBusy = computed(() => filesPanelBusy.value || documentsBusy.value);
 const graphBusy = ref(false);
-const view = ref<'files' | 'graph'>('files');
+const view = ref<'files' | 'graph' | 'documents'>('files');
 const versionOrder = ref<VersionOrder>('newest');
 const importInput = ref<HTMLInputElement | null>(null);
 const importButton = ref<HTMLButtonElement | null>(null);
@@ -319,17 +322,17 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         </div>
         <TransitionGroup v-else name="list" tag="ul" class="project-list">
           <li v-for="project in projects" :key="project.id">
-            <div class="project-symbol"><AppIcon name="folder" /></div>
             <div class="project-info">
               <div class="project-title-line">
                 <h3>{{ project.name }}</h3>
                 <span class="project-state">已保存</span>
+                <button class="project-part-number" :disabled="saving || filesBusy || graphBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
               </div>
-              <button class="project-part-number" :disabled="saving || filesBusy || graphBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
             </div>
             <div class="project-actions">
-              <button class="secondary icon-button" :disabled="filesBusy || graphBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
-              <button class="secondary icon-button" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="activeProjectId = project.id; view = 'graph'"><AppIcon name="branch" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="activeProjectId = project.id; view = 'graph'"><AppIcon name="branch" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 软件对比文档`" :title="`查看 ${project.name} 软件对比文档`" :aria-pressed="activeProjectId === project.id && view === 'documents'" @click="activeProjectId = project.id; view = 'documents'"><AppIcon name="documents" /></button>
             </div>
           </li>
         </TransitionGroup>
@@ -379,8 +382,9 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </section>
     </div>
 
-    <ProjectFiles v-if="activeProjectId" v-show="view === 'files'" :key="`files-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="filesBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" />
+    <ProjectFiles v-if="activeProjectId" v-show="view === 'files'" :key="`files-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="filesPanelBusy = $event" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" @documents="view = 'documents'" />
+    <ComparisonDocuments v-if="activeProjectId && view === 'documents'" :key="`documents-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" @busy="documentsBusy = $event" @graph="view = 'graph'" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">
