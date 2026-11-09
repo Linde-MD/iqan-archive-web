@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject, type ProjectGraph } from '../src/domain/model';
-import { createBranch, release, reorderBranches, setNodeParents, updateBranch, updateNode } from '../src/domain/graph';
+import { createBranch, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode } from '../src/domain/graph';
 
 function fixture(): ProjectGraph {
   const graph = createProject('工程', '123');
@@ -35,9 +35,51 @@ describe('节点与分支编辑', () => {
     expect(() => setNodeParents(graph, 'A', ['B'])).toThrow('成环');
   });
 
-  it('已放行 child 的父边不可修改', () => {
-    const released = release(fixture(), 'B', '2026-01-01T00:00:00.000Z');
-    expect(() => setNodeParents(released, 'B', [])).toThrow('已放行版本的父边已锁定');
+  it('已放行 child 可更换父节点并自动补齐新祖先的放行状态', () => {
+    const releasedAt = '2026-01-01T00:00:00.000Z';
+    const graph = fixture();
+    const projectId = graph.project.id;
+    graph.nodes.push(
+      { id: 'C', projectId, version: 'C', description: '', taskId: null, releasedAt: null },
+      { id: 'D', projectId, version: 'D', description: '', taskId: null, releasedAt: null },
+      { id: 'E', projectId, version: 'E', description: '', taskId: null, releasedAt: null },
+    );
+    graph.edges.push(
+      { id: 'bd', projectId, parentId: 'B', childId: 'D' },
+      { id: 'ec', projectId, parentId: 'E', childId: 'C' },
+    );
+    const released = release(graph, 'D', releasedAt);
+    const before = structuredClone(released);
+    const next = setNodeParents(released, 'B', ['C']);
+    expect(next.edges.filter(edge => edge.childId === 'B').map(edge => edge.parentId)).toEqual(['C']);
+    expect(next.nodes.find(node => node.id === 'B')!.releasedAt).toBe(releasedAt);
+    expect(next.nodes.find(node => node.id === 'C')!.releasedAt).toBe(releasedAt);
+    expect(next.nodes.find(node => node.id === 'E')!.releasedAt).toBe(releasedAt);
+    expect(next.nodes.find(node => node.id === 'D')!.releasedAt).toBe(releasedAt);
+    expect(next.nodes.find(node => node.id === 'A')!.releasedAt).toBe(releasedAt);
+    expect(released).toEqual(before);
+  });
+
+  it('撤销放行清除目标及所有后代并保留祖先状态', () => {
+    const graph = fixture();
+    const projectId = graph.project.id;
+    graph.nodes.push(
+      { id: 'C', projectId, version: 'C', description: '', taskId: null, releasedAt: null },
+      { id: 'D', projectId, version: 'D', description: '', taskId: null, releasedAt: null },
+      { id: 'E', projectId, version: 'E', description: '', taskId: null, releasedAt: null },
+    );
+    graph.edges.push(
+      { id: 'bc', projectId, parentId: 'B', childId: 'C' },
+      { id: 'cd', projectId, parentId: 'C', childId: 'D' },
+      { id: 'be', projectId, parentId: 'B', childId: 'E' },
+    );
+    const released = release(graph, 'D', '2026-01-01T00:00:00.000Z');
+    const before = structuredClone(released);
+    const next = revokeRelease(released, 'B');
+    expect(next.nodes.map(node => [node.id, node.releasedAt])).toEqual([
+      ['A', '2026-01-01T00:00:00.000Z'], ['B', null], ['C', null], ['D', null], ['E', null],
+    ]);
+    expect(released).toEqual(before);
   });
 
   it('updateNode 修改版本/说明/任务引用，保持身份', () => {

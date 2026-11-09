@@ -16,12 +16,18 @@ export function changeVersionRelations(
   const next = structuredClone(graph);
   if (action === 'clear') {
     requireCondition(related.length > 0, 'NO_RELATIONS', '所选版本没有可清除的父子关联。');
+    requireCondition(
+      !related.some(edge => graph.nodes.find(node => node.id === edge.childId)?.releasedAt !== null),
+      'RELEASE_LOCK', '已放行版本的父边在批量清除中已锁定；如需更换请使用单节点设置父版本。',
+    );
     const removed = new Set(related.map(edge => edge.id));
     next.edges = next.edges.filter(edge => !removed.has(edge.id));
   } else {
     requireCondition(action === 'linear', 'RELATION_ACTION', '不支持的父子关联操作。');
     requireCondition(related.length === 0, 'NOT_ISOLATED', '仅可为全部没有父子关联的游离版本构建线性关联。');
     nodes.sort((a, b) => compareVersionNodes(a, b, 'oldest'));
+    requireCondition(nodes.slice(1).every(node => node.releasedAt === null),
+      'RELEASE_LOCK', '批量线性关联不能为已放行版本新增父边。');
     for (let index = 1; index < nodes.length; index++) {
       next.edges.push({
         id: crypto.randomUUID(), projectId: graph.project.id,

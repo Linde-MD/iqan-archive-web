@@ -124,13 +124,19 @@ export function release(graph: ProjectGraph, targetId: string, time: string): Pr
 export function revokeRelease(graph: ProjectGraph, targetId: string): ProjectGraph {
   validateGraph(graph);
   getNode(graph, targetId);
-  for (const node of graph.nodes) {
-    if (node.id !== targetId && node.releasedAt !== null && ancestors(graph, node.id).has(targetId)) {
-      throw new DomainError('RELEASED_DESCENDANT', '存在已放行后代，请先撤销后代放行。');
-    }
+  const children = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  for (const edge of graph.edges) children.get(edge.parentId)!.push(edge.childId);
+  const descendants = new Set<string>();
+  const pending = [targetId];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (descendants.has(id)) continue;
+    descendants.add(id);
+    pending.push(...children.get(id)!);
   }
   const next = structuredClone(graph);
-  getNode(next, targetId).releasedAt = null;
+  for (const node of next.nodes) if (descendants.has(node.id)) node.releasedAt = null;
+  validateGraph(next);
   return next;
 }
 
@@ -326,12 +332,8 @@ export function validateTransition(before: ProjectGraph, after: ProjectGraph): v
   for (const node of before.nodes.filter(item => item.releasedAt !== null)) {
     const updated = after.nodes.find(item => item.id === node.id);
     requireCondition(updated, 'RELEASE_LOCK', '已放行节点删除必须使用额外确认的删除命令。');
-    const parents = (graph: ProjectGraph) => graph.edges.filter(edge => edge.childId === node.id).map(edge => edge.parentId).sort();
-    requireCondition(
-      node.version === updated.version
-      && JSON.stringify(parents(before)) === JSON.stringify(parents(after)),
-      'RELEASE_LOCK', '已放行版本的版本号和父边已锁定，请先撤销放行。',
-    );
+    requireCondition(node.version === updated.version,
+      'RELEASE_LOCK', '已放行版本的版本号已锁定，请先撤销放行。');
   }
 }
 
@@ -419,7 +421,6 @@ export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: 
   if (currentParents.length === parentIds.length && currentParents.every(id => parentIds.includes(id))) {
     return structuredClone(graph);
   }
-  requireCondition(child.releasedAt === null, 'RELEASE_LOCK', '已放行版本的父边已锁定，不能调整父节点。');
   for (const id of parentIds) {
     requireCondition(id !== childId, 'SELF_PARENT', '版本不能成为自己的父节点。');
     getNode(graph, id);
@@ -433,6 +434,22 @@ export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: 
     next.edges.push(retained.get(parentId) ?? {
       id: crypto.randomUUID(), projectId: graph.project.id, parentId, childId,
     });
+  }
+  if (child.releasedAt !== null) {
+    const parents = new Map(next.nodes.map(node => [node.id, [] as string[]]));
+    for (const edge of next.edges) parents.get(edge.childId)?.push(edge.parentId);
+    const ancestorIds = new Set<string>();
+    const pending = [childId];
+    while (pending.length) {
+      const ancestorId = pending.pop()!;
+      if (ancestorIds.has(ancestorId)) continue;
+      ancestorIds.add(ancestorId);
+      pending.push(...(parents.get(ancestorId) ?? []));
+    }
+    for (const ancestorId of ancestorIds) {
+      const ancestor = getNode(next, ancestorId);
+      if (ancestor.releasedAt === null) ancestor.releasedAt = child.releasedAt;
+    }
   }
   validateTransition(graph, next);
   return next;

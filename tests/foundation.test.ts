@@ -86,9 +86,10 @@ describe('领域基础', () => {
     expect(next.nodes.filter(node => node.releasedAt).map(node => node.id).sort()).toEqual(['A', 'B', 'M', 'R']);
     expect(release(next, 'M', '2026-10-30T00:00:00Z')).toEqual(next);
     expect(graph.nodes.every(node => node.releasedAt === null)).toBe(true);
-    expect(() => revokeRelease(next, 'R')).toThrow('已放行后代');
+    expect(revokeRelease(next, 'R').nodes.every(node => node.releasedAt === null)).toBe(true);
     const revoked = revokeRelease(next, 'M');
     expect(revoked.nodes.find(node => node.id === 'A')!.releasedAt).not.toBeNull();
+    expect(revoked.nodes.find(node => node.id === 'D')!.releasedAt).toBeNull();
   });
 
   it('外部 Task ID 仅接受 1–16 位数字，保留前导零，空白转 null', () => {

@@ -322,7 +322,7 @@ const nodeSwitchSaveDisabled = computed(() => {
     case 'node-add': return !nodeForm.value.version.trim();
     case 'merge': return !nodeForm.value.version.trim() || nodeForm.value.parentIds.length < 2 || !nodeForm.value.targetBranchId;
     case 'node-edit': return !nodeForm.value.version.trim();
-    case 'parent-edit': return !selectedNode.value || parentSelectionUnchanged.value || !!selectedNode.value.releasedAt;
+    case 'parent-edit': return !selectedNode.value || parentSelectionUnchanged.value;
     default: return true;
   }
 });
@@ -1658,7 +1658,7 @@ async function saveAndSwitchNode() {
 }
 
 function openParentEdit() {
-  if (!selectedNode.value || selectedNode.value.releasedAt) return;
+  if (!selectedNode.value) return;
   nodeForm.value = {
     version: selectedNode.value.version,
     description: selectedNode.value.description,
@@ -1935,12 +1935,15 @@ function createNode(current: ProjectGraph, form: typeof nodeForm.value): Version
 
 async function submitParentEdit(): Promise<boolean> {
   if (!selectedNode.value) return false;
+  const wasReleased = selectedNode.value.releasedAt !== null;
   return operation('设置父版本', async () => {
     const current = graph.value!;
     graph.value = await props.repository.saveNodeParents(
       props.projectId, current.project.revision, selectedNode.value!.id, nodeForm.value.parentIds,
     );
-    status.value = '父版本已更新。';
+    status.value = wasReleased
+      ? '父版本已更新；新父节点及其未放行祖先已按原放行时间自动补齐放行状态。'
+      : '父版本已更新。';
     panel.value = null;
   });
 }
@@ -2000,15 +2003,41 @@ async function releaseBranch() {
   });
 }
 
+function descendantNodeIds(nodeId: string): Set<string> {
+  const descendants = new Set<string>();
+  const pending = [...(childIdsOf.value.get(nodeId) ?? [])];
+  while (pending.length) {
+    const childId = pending.pop()!;
+    if (descendants.has(childId)) continue;
+    descendants.add(childId);
+    pending.push(...(childIdsOf.value.get(childId) ?? []));
+  }
+  return descendants;
+}
+
 async function releaseSelectedNode() {
   if (!selectedNode.value) return;
   const node = selectedNode.value;
+  const expectedRevision = graph.value!.project.revision;
+  const descendants = node.releasedAt ? descendantNodeIds(node.id) : new Set<string>();
+  if (node.releasedAt && (childIdsOf.value.get(node.id)?.length ?? 0) > 0) {
+    const releasedDescendants = [...descendants]
+      .filter(id => nodeById.value.get(id)?.releasedAt !== null)
+      .map(id => nodeById.value.get(id)!.version);
+    const detail = releasedDescendants.length
+      ? `其中 ${releasedDescendants.length} 个当前已放行：${releasedDescendants.join('、')}。`
+      : '后代当前均未放行，但会一并清除其放行状态。';
+    if (!window.confirm(`版本“${node.version}”有 ${childIdsOf.value.get(node.id)!.length} 个直接子节点、${descendants.size} 个后代。\n确认撤销本版本放行，并同步撤销所有后代放行吗？\n${detail}\n祖先版本和分支头不会改变。`)) return;
+  }
   await operation(node.releasedAt ? '撤销版本放行' : '放行版本', async () => {
-    const current = graph.value!;
+    const current = await props.repository.get(props.projectId);
+    if (current.project.revision !== expectedRevision) throw new Error('版本图已变化，未执行撤销；请检查最新放行状态后重试。');
     graph.value = node.releasedAt
       ? await props.repository.revoke(props.projectId, current.project.revision, node.id)
       : await props.repository.release(props.projectId, current.project.revision, node.id);
-    status.value = node.releasedAt ? '放行已撤销。' : '版本及全部祖先已放行。';
+    status.value = node.releasedAt
+      ? descendants.size ? `已撤销放行，并同步撤销 ${descendants.size} 个后代版本。` : '放行已撤销。'
+      : '版本及全部祖先已放行。';
   });
 }
 
@@ -2203,7 +2232,7 @@ function onIqanDialogClosed() {
         <button class="tool-button tool-button-accent" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" aria-label="对比选中的两个版本" title="按当前选择顺序预览并对比两个工程文件" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" /><span class="tool-caption">对比工程</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="新增子版本" title="为选中的一个版本新增子版本" @click="startNodeAction('add')"><AppIcon name="plus" /><span class="tool-caption">新增子版本</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="编辑版本" title="编辑选中版本的版本号与说明；已放行版本仅可编辑说明" @click="startNodeAction('edit')"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" aria-label="设置父版本" title="搜索选择父版本；已放行版本不可修改父边" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="设置父版本" :title="selectedNode?.releasedAt ? '可直接修改已放行版本的父节点；新父链祖先会自动补齐放行状态' : '搜索并设置选中版本的父节点'" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
         <button class="tool-button" :disabled="saving || selectedNodeIds.length < 2" aria-label="合并版本" title="选择至少两个版本后创建合并版本" @click="startNodeAction('merge')"><AppIcon name="merge" /><span class="tool-caption">合并</span></button>
         <button class="tool-button tool-button-danger" :disabled="saving || selectedNodeIds.length < 2 || !selectedRelations.length" aria-label="清除父子关联" title="预览清除所选版本的全部直接父子边，包括与未选版本的关系；已放行父边不可修改" @click="openRelationPreview('clear')"><AppIcon name="clear" /><span class="tool-caption">清除关联</span></button>
         <button class="tool-button" :disabled="saving || !canBuildLinearRelations" aria-label="构建线性关联" title="将所选游离版本按版本号从旧到新线性关联；不受当前显示排序影响" @click="openRelationPreview('linear')"><AppIcon name="link" /><span class="tool-caption">线性关联</span></button>
@@ -2510,7 +2539,7 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving" @click="openNodeAdd([menu.id]); closeMenu(false)"><AppIcon name="plus" />新增子版本</button>
           <button role="menuitem" :disabled="saving" @click="openBranchAdd(menu.id)"><AppIcon name="branch" />创建分支</button>
           <button role="menuitem" :disabled="saving" @click="openNodeEdit(); closeMenu(false)"><AppIcon name="edit" />编辑</button>
-          <button role="menuitem" :disabled="saving || !!selectedNode?.releasedAt" @click="openParentEdit(); closeMenu(false)"><AppIcon name="link" />设置父版本</button>
+          <button role="menuitem" :disabled="saving" @click="openParentEdit(); closeMenu(false)" :title="selectedNode?.releasedAt ? '更换父节点后会自动补齐新放行链' : undefined"><AppIcon name="link" />设置父版本</button>
           <button role="menuitem" :disabled="saving" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除</button>
         </template>
@@ -2813,9 +2842,10 @@ function onIqanDialogClosed() {
             <button type="button" class="secondary icon-button" :disabled="saving" :aria-label="`移除父版本 ${nodeById.get(id)?.version ?? id}`" @click="removeParent(id)"><AppIcon name="clear" /></button>
           </li>
         </ul>
+        <p v-if="selectedNode?.releasedAt" class="form-help">此版本已放行。保存新的父节点后，新父节点及其未放行祖先会按此版本的原放行时间自动补齐；旧祖先保留原放行状态，分支头不会自动改变。</p>
         <p v-else class="form-help">留空表示该版本为根版本。关系修改不自动改变分支头。</p>
         <div class="actions">
-          <button type="submit" :disabled="saving || parentSelectionUnchanged || !!selectedNode?.releasedAt"><AppIcon name="check" />保存父版本</button>
+          <button type="submit" :disabled="saving || parentSelectionUnchanged"><AppIcon name="check" />保存父版本</button>
           <button type="button" class="secondary" :disabled="saving" @click="panel = null">取消</button>
         </div>
       </form>
