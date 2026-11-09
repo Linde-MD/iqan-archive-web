@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onUnmounted, ref, watch } from 'vue';
-import type { ProjectGraph, VersionNode } from '../domain/model';
+import type { ArchiveLocation, ProjectGraph, VersionNode } from '../domain/model';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
@@ -17,6 +17,7 @@ const emit = defineEmits<{ closed: []; status: [message: string] }>();
 
 const dialog = ref<HTMLDialogElement>();
 const action = ref<Action>('open');
+const selectedLocation = ref<ArchiveLocation>('shared');
 const orderedNodeIds = ref<string[]>([]);
 const candidatesByNode = ref<Record<string, FileCandidate[]>>({});
 const selectedPaths = ref<string[]>([]);
@@ -61,12 +62,12 @@ function validateSelection(graph: ProjectGraph, nodeIds: readonly string[], targ
   });
 }
 
-async function getEngineeringBinding(projectName: string): Promise<{ handle: DirectoryHandle; name: string }> {
-  const root = await props.repository.getArchiveRoot();
-  if (!root) throw new Error('请先授权归档根目录。');
-  if (!await checkPermission(root)) throw new Error('归档根目录授权已失效，请重新授权。');
+async function getEngineeringBinding(projectName: string, location: ArchiveLocation): Promise<{ handle: DirectoryHandle; name: string }> {
+  const root = await props.repository.getArchiveRoot(location);
+  if (!root) throw new Error(`请先授权${location === 'local' ? '本地' : '共享'}归档根目录。`);
+  if (!await checkPermission(root)) throw new Error(`${location === 'local' ? '本地' : '共享'}归档根目录授权已失效，请重新授权。`);
   const handle = await resolveProjectDirectory(root, projectName, 'engineering');
-  if (!await checkPermission(handle)) throw new Error('工程子目录无法读取，请确认归档根目录权限。');
+  if (!await checkPermission(handle)) throw new Error(`工程子目录无法读取，请确认${location === 'local' ? '本地' : '共享'}根目录权限。`);
   return { handle, name: handle.name };
 }
 
@@ -75,9 +76,10 @@ async function scanEngineeringDirectory(handle: DirectoryHandle, signal: AbortSi
   return scanDirectory(handle, 'engineering', signal, count => { scanCount.value = count; });
 }
 
-async function open(targetAction: Action, nodeIds: readonly string[]) {
+async function open(targetAction: Action, nodeIds: readonly string[], preferredLocation: ArchiveLocation = 'local') {
   if (busy.value) return;
   action.value = targetAction;
+  selectedLocation.value = targetAction === 'open' ? preferredLocation : 'shared';
   orderedNodeIds.value = [...nodeIds];
   candidatesByNode.value = {};
   selectedPaths.value = [];
@@ -100,8 +102,37 @@ async function open(targetAction: Action, nodeIds: readonly string[]) {
       throw new Error('项目版本图刚刚发生变化，请重新选择版本后再试。');
     }
     const nodes = validateSelection(graph, nodeIds, targetAction);
-    const binding = await getEngineeringBinding(graph.project.name);
-    const candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
+    let binding: { handle: DirectoryHandle; name: string };
+    let candidates: FileCandidate[];
+    if (targetAction === 'open') {
+      const byLocation = new Map<ArchiveLocation, { binding: { handle: DirectoryHandle; name: string }; candidates: FileCandidate[] }>();
+      const locations: ArchiveLocation[] = [preferredLocation, preferredLocation === 'local' ? 'shared' : 'local'];
+      const failures: string[] = [];
+      for (const location of locations) {
+        try {
+          const candidateBinding = await getEngineeringBinding(graph.project.name, location);
+          const scanned = await scanEngineeringDirectory(candidateBinding.handle, operationController.signal);
+          const matches = matchScannedFiles(graph, scanned).matches;
+          if (nodes.some(node => (matches.get(node.id)?.length ?? 0) > 0)) {
+            byLocation.set(location, { binding: candidateBinding, candidates: scanned });
+          }
+        } catch (cause) {
+          if (operationController.signal.aborted) throw cause;
+          failures.push(cause instanceof Error ? cause.message : '目录扫描失败。');
+        }
+      }
+      const chosenLocation = locations.find(location => byLocation.has(location));
+      const chosen = chosenLocation ? byLocation.get(chosenLocation) : undefined;
+      if (!chosen || !chosenLocation) {
+        throw new Error(failures[0] ?? `共享和本地目录中都没有找到版本“${nodes[0]!.version}”对应的工程文件。`);
+      }
+      selectedLocation.value = chosenLocation;
+      binding = chosen.binding;
+      candidates = chosen.candidates;
+    } else {
+      binding = await getEngineeringBinding(graph.project.name, 'shared');
+      candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
+    }
     const latestGraph = await props.repository.get(props.projectId);
     if (latestGraph.project.revision !== graph.project.revision) {
       throw new Error('扫描期间项目版本图已变化，请重新选择版本后再试。');
@@ -172,7 +203,7 @@ async function prepareRequest(requestImmediately = false) {
       throw new Error('请为每个版本明确选择一个工程文件。');
     }
 
-    const binding = await getEngineeringBinding(current.project.name);
+    const binding = await getEngineeringBinding(current.project.name, selectedLocation.value);
     if (binding.name !== directoryName.value) throw new Error('工程目录绑定已变化，旧预览已失效。请重新扫描。');
     const candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
     const latestGraph = await props.repository.get(props.projectId);
@@ -198,7 +229,7 @@ async function prepareRequest(requestImmediately = false) {
     }
     operationController.signal.throwIfAborted();
     preparedUri.value = action.value === 'open'
-      ? buildOpenUri(latestGraph.project.id, binding.name, selectedPaths.value[0]!)
+      ? buildOpenUri(latestGraph.project.id, binding.name, selectedPaths.value[0]!, selectedLocation.value)
       : buildCompareUri(latestGraph.project.id, binding.name, selectedPaths.value[0]!, selectedPaths.value[1]!);
     status.value = '文件已重新扫描并定位。点击下方链接后，浏览器将请求打开本地启动器。';
     if (requestImmediately) {
@@ -263,7 +294,7 @@ onUnmounted(() => controller?.abort());
         <button type="button" class="secondary" :disabled="busy" @click="swapOrder">交换 A / B</button>
       </div>
 
-      <p class="directory-caption">工程目录名：<code>{{ directoryName }}</code>（仅目录名，非完整路径）</p>
+      <p class="directory-caption">{{ selectedLocation === 'local' ? '本地' : '共享' }}工程 · <code>{{ directoryName }}</code></p>
       <div class="integration-files">
         <label v-for="(node, index) in selectedNodes()" :key="node.id" class="integration-file">
           <span>

@@ -35,7 +35,7 @@
 
 用户确认需要打开软件对比文档，首版格式为 `.doc/.docx`，后续使用本机 Word 打开原文件；SPEC-01 仅列文件，无直接打开入口。业务名称不以格式或打开程序命名。Launcher [LSP-04](../../iqan-archive-launcher/specs/LSP-04-word-opening.md) 负责后续实施，保留既有规格路径和编号。
 
-工程 URI v1 不接受文档；2026-11-06 用户确认独立 `open-document` v2、Word 普通打开和共用工程归档根目录，取代原“另设文档根目录”的规划。Word 程序仍由本机独立配置、逐次确认、执行前重验；禁止通用 shell 文件关联和网页指定 EXE/参数。具体契约见第 3.1 节。文档可能含宏/外链，不承诺无风险，不启用宏或关闭保护；进程创建不等于文档已打开，无可靠网页回传。
+工程 URI v1 不接受文档；文档使用独立 `open-document` v3，显式传 `local/shared`，旧 v2 无来源字段请求兼容为 shared。Word 普通打开和来源根目录解析见第 3.1 节。Word 程序仍由本机独立配置、逐次确认、执行前重验；禁止通用 shell 文件关联和网页指定 EXE/参数。文档可能含宏/外链，不承诺无风险，不启用宏或关闭保护；进程创建不等于文档已打开，无可靠网页回传。
 
 - 本轮软件对比文档打开已有实现和测试，版本关联仍暂缓；不将测试替身当作真实 Word 加载成功。
 
@@ -76,22 +76,22 @@ iqanarchive://compare?v=1&project=550e8400-e29b-41d4-a716-446655440000&fileA=147
 - **文件路径语义：**`file`/`fileA`/`fileB` 是归档根目录相对路径，第一段必须是已绑定工程目录名，且该目录是归档根目录直接子目录；之后至少含一个文件名段。拒绝空段、`.`、`..`、反斜线、绝对路径、盘符/盘符相对路径、UNC、设备路径、ADS、NUL、Windows 保留设备名及以空格/点结尾的路径段。完成语法解析不代表路径安全；Launcher 仍须执行本地路径边界、存在性与重解析点检查。协议解析也不代表扩展名已获 IQANdesign 实机支持，扩展名/参数兼容仍按 Q-015/LQ-005 验证。
 - 工程 `open`/`compare` 仅接受 v1；文档操作仅接受下节定义的 v2。未定义的操作/字段/版本一律拒绝，未来扩展须另行确认契约及共同夹具。
 - `open` 只接受一个文件，`compare` 只接受有序两个文件；比较按 `[fileA, "-diff", fileB]` 构造受限参数。
-- 文件路径以可编辑的工程归档根目录为基准，首段为 Web 已绑定工程目录名称，其后为扫描相对路径。规范化后按路径组件检查根边界，并拒绝不允许的 reparse point；仅字符串前缀比较不足以保证位于根目录。项目 ID 不替代路径检查或本机逐次确认。
+- 文件路径以可编辑的工程归档根目录为基准，首段为 Web 已绑定工程目录名称，其后为扫描相对路径。Launcher 以归档根目录句柄的最终路径为边界：拒绝根目录自身及根内路径段的 reparse point，允许用户配置根目录之外的祖先路径经过 junction/symlink；所有目标仍须经句柄校验落在根目录最终路径内。仅字符串前缀比较不足以保证位于根目录。项目 ID 不替代路径检查或本机逐次确认。
 - 仅接受经本机版本验证的工程扩展名；用户可管理 `.idax/.idsx/.idvx` 元数据不等于已验证三者的打开/对比能力。
 - URI 不携带二进制、令牌、命令、EXE 路径或任意回调 URL。编码只是传输，不是加密；不记录完整敏感 URI到分析服务。
 - 原始协议测试样例维护为 [Launcher URI v1 共享夹具](./fixtures/launcher-uri-v1.json)，Launcher 仓库保留同内容镜像 `iqan-archive-launcher/specs/fixtures/launcher-uri-v1.json`。变更协议时需同步两份夹具并验证 SHA-256 一致；夹具一致不替代 Web 请求生成与 Launcher 消费的集成验收。
 
-### 3.1 软件对比文档打开 v2
+### 3.1 软件对比文档打开 v3
 
 2026-11-06 用户确认首版只做文档列表/打开，普通 Word 打开且与工程共用归档根目录。新增规范 URI：
 
 ```text
-iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=Demo_software_changes_docs%2F%E8%AF%B4%E6%98%8E.docx
+iqanarchive://open-document?v=3&project=550e8400-e29b-41d4-a716-446655440000&location=local&file=Demo_software_changes_docs%2F%E8%AF%B4%E6%98%8E.docx
 ```
 
-- 操作名严格为 `open-document`，版本严格为 `2`，字段固定顺序 `v`、`project`、`file`，恰有一个文档路径；允许与工程相同的单个空根尾斜杠形式，其他 authority path 拒绝。
+- 新请求操作名严格为 `open-document`、版本严格为 `3`，字段顺序 `v`、`project`、`location`、`file`；`location` 仅为 `local` 或 `shared`。旧 `open-document` v2（无位置字段）仅作兼容并按 `shared` 解析。两种版本都恰有一个文档路径，允许与工程相同的单个空根尾斜杠形式，其他 authority path 拒绝。
 - ASCII、UUID v4、规范编码、长度和 Windows 相对路径规则完全复用第 3 节；仅允许 `.doc/.docx`（大小写不敏感），其他扩展名拒绝。v1 的工程操作仍不接收文档。
-- 文件字段为 `<项目名>_software_changes_docs` 文档子目录名加目录内相对路径，在本机共用的工程归档根目录内解析。Web 浏览器根目录授权与 Launcher 本机根目录配置相互独立，但需指向同一磁盘目录；Launcher 执行相同的边界、存在性、重解析点及确认后身份重验。
+- 文件字段为 `<项目名>_software_changes_docs` 文档子目录名加目录内相对路径。Launcher 根据 `location` 选择共享或本地配置根目录；Web 浏览器句柄与 Launcher 本机路径配置相互独立，但对应位置必须指向同一磁盘目录。Launcher 执行相同的边界、存在性、重解析点及确认后身份重验。
 - Word 路径由本机自动定位（有效已保存覆盖优先），检测 Windows 注册位置和常见 Office 目录；只有未识别到时才手动选择，自动定位无需保存覆盖。无法定位且没有有效覆盖时拒绝文档请求；网页不能选择 EXE、参数、根目录或关闭安全保护。参数仅 `[absoluteDocumentPath]`，不使用 Shell 文件关联。
 - 逐次本机确认、取消、成功创建进程后关闭、失败留窗、无可靠网页回传与原信任边界不变。普通打开允许用户在 Word 内编辑保存，不能承诺文档无宏/外链风险。
 - 两端镜像夹具保留文件名 `launcher-uri-v1.json` 以兼容现有工程测试入口，新增独立的 `documentValid`/`documentInvalid` 用例组，不改既有 v1 用例意义。

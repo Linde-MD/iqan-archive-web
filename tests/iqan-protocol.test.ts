@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCompareUri, buildDocumentOpenUri, buildOpenUri } from '../src/domain/iqan-protocol';
+import { buildCompareUri, buildDocumentOpenUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
 import fixture from '../specs/fixtures/launcher-uri-v1.json';
 
 const projectId = '550e8400-e29b-41d4-a716-446655440000';
@@ -10,6 +10,18 @@ describe('Launcher 工程 URI v1', () => {
     expect(buildDocumentOpenUri(projectId, 'documents', 'release.docx', 'local')).toBe(`iqanarchive://open-document?v=3&project=${projectId}&location=local&file=documents%2Frelease.docx`);
     expect(() => buildDocumentOpenUri(projectId, 'documents', 'file.exe')).toThrow();
     expect(() => buildDocumentOpenUri(projectId, 'documents', '../file.doc')).toThrow();
+  });
+  it('生成共享夹具定义的文档 v3 来源请求', () => {
+    for (const testCase of fixture.documentV3Valid) {
+      const filePath = testCase.files[0]!;
+      const separator = filePath.indexOf('/');
+      expect(buildDocumentOpenUri(
+        testCase.projectId,
+        filePath.slice(0, separator),
+        filePath.slice(separator + 1),
+        testCase.location.toLocaleLowerCase() as ArchiveLocation,
+      )).toBe(testCase.uri);
+    }
   });
   it('显式编码工程文件位置并保留 compare 两端各自位置', () => {
     expect(buildOpenUri(projectId, 'Demo_iqan_project_files', 'v1/model.idax', 'local'))

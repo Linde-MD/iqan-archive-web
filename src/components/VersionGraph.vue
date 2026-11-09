@@ -98,13 +98,14 @@ const isFullscreen = ref(false);
 const fullscreenPending = ref(false);
 const fullscreenToolsVisible = ref(true);
 const fullscreenSidebarVisible = ref(true);
-const comparisonDocumentsByNode = shallowRef(new Map<string, FileCandidate[]>());
+type ComparisonDocumentSource = { location: ArchiveLocation; file: FileCandidate };
+const comparisonDocumentsByNode = shallowRef(new Map<string, ComparisonDocumentSource[]>());
 const documentScanError = ref('');
-const documentChoice = shallowRef<{ nodeId: string; version: string; files: FileCandidate[] }>();
-const selectedDocumentPath = ref('');
+const documentChoice = shallowRef<{ nodeId: string; version: string; files: ComparisonDocumentSource[] }>();
+const selectedDocumentKey = ref('');
 const documentChoiceDialog = ref<HTMLDialogElement>();
 let documentScanController: AbortController | undefined;
-let documentRootSnapshot: DirectoryHandle | undefined;
+let documentRootSnapshots = new Map<ArchiveLocation, { root: DirectoryHandle; binding: DirectoryHandle }>();
 
 async function toggleFullscreen() {
   if (fullscreenPending.value) return;
@@ -223,6 +224,10 @@ function closeBranchFilter(event: Event) {
 }
 const activeBranchId = ref<string | null>(null);
 const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
+const menuOpenLocation = ref<ArchiveLocation>('local');
+const menuOpenLocations = shallowRef<{ nodeId: string; locations: ArchiveLocation[] } | null>(null);
+const menuOpenLocationBusy = ref(false);
+let menuOpenLocationController: AbortController | undefined;
 const menuReturnFocus = ref<HTMLElement | null>(null);
 const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'branch-manager' | 'relations' | 'tasks' | null>(null);
 const nodeSwitchDialog = ref<HTMLDialogElement>();
@@ -414,7 +419,7 @@ watch(documentChoice, async value => {
   await nextTick();
   if (value && documentChoiceDialog.value && !documentChoiceDialog.value.open) {
     documentChoiceDialog.value.showModal();
-    documentChoiceDialog.value.querySelector<HTMLSelectElement>('select')?.focus();
+    documentChoiceDialog.value.querySelector<HTMLInputElement>('input[type="radio"]')?.focus();
   } else if (!value && documentChoiceDialog.value?.open) documentChoiceDialog.value.close();
 });
 
@@ -423,23 +428,62 @@ async function refreshComparisonDocuments() {
   const controller = new AbortController();
   documentScanController = controller;
   comparisonDocumentsByNode.value = new Map();
+  documentRootSnapshots = new Map();
   documentScanError.value = '';
+  const candidatesByLocation = new Map<ArchiveLocation, FileCandidate[]>();
+  const failures: string[] = [];
   try {
-    const root = await props.repository.getArchiveRoot();
-    if (!root || !await checkPermission(root)) return;
     const graphAtScan = await props.repository.get(props.projectId);
-    const binding = await resolveProjectDirectory(root, graphAtScan.project.name, 'word');
-    if (!await checkPermission(binding)) return;
-    documentRootSnapshot = binding;
-    const candidates = await scanDirectory(binding, 'word', controller.signal, () => undefined);
-    const [latestGraph, latestRoot] = await Promise.all([
-      props.repository.get(props.projectId),
-      props.repository.getArchiveRoot(),
-    ]);
-    if (controller.signal.aborted || !latestRoot || !(await sameDirectory(root, latestRoot))) return;
-    const latestBinding = await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'word');
-    if (!(await sameDirectory(binding, latestBinding))) return;
-    comparisonDocumentsByNode.value = matchComparisonDocuments(latestGraph, candidates);
+    for (const location of ['local', 'shared'] as const) {
+      const root = await props.repository.getArchiveRoot(location);
+      if (!root) continue;
+      try {
+        if (!await checkPermission(root)) {
+          failures.push(`${location === 'local' ? '本地' : '共享'}根目录未授权。`);
+          continue;
+        }
+        const binding = await resolveProjectDirectory(root, graphAtScan.project.name, 'word');
+        if (!await checkPermission(binding)) {
+          failures.push(`${location === 'local' ? '本地' : '共享'}文档目录未授权。`);
+          continue;
+        }
+        const candidates = await scanDirectory(binding, 'word', controller.signal, () => undefined);
+        const [latestRoot, latestGraph] = await Promise.all([
+          props.repository.getArchiveRoot(location),
+          props.repository.get(props.projectId),
+        ]);
+        if (controller.signal.aborted) return;
+        if (!latestRoot || !(await sameDirectory(root, latestRoot))
+          || latestGraph.project.name !== graphAtScan.project.name
+          || !(await sameDirectory(binding, await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'word')))) {
+          failures.push(`${location === 'local' ? '本地' : '共享'}文档目录已改变，请重新扫描。`);
+          continue;
+        }
+        candidatesByLocation.set(location, candidates);
+        documentRootSnapshots.set(location, { root, binding });
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        if (!(cause instanceof DOMException && cause.name === 'NotFoundError'))
+          failures.push(fileOperationErrorMessage(cause));
+      }
+    }
+    if (controller.signal.aborted) return;
+    const latestGraph = await props.repository.get(props.projectId);
+    if (latestGraph.project.name !== graphAtScan.project.name) return;
+    const matchesByNode = new Map<string, ComparisonDocumentSource[]>();
+    for (const [location, candidates] of candidatesByLocation) {
+      for (const [nodeId, files] of matchComparisonDocuments(latestGraph, candidates)) {
+        const matches = matchesByNode.get(nodeId) ?? [];
+        matches.push(...files.map(file => ({ location, file })));
+        matchesByNode.set(nodeId, matches);
+      }
+    }
+    for (const matches of matchesByNode.values()) {
+      matches.sort((first, second) => Number(second.location === 'local') - Number(first.location === 'local')
+        || first.file.relativePath.localeCompare(second.file.relativePath));
+    }
+    comparisonDocumentsByNode.value = matchesByNode;
+    documentScanError.value = failures.join(' ');
   } catch (cause) {
     if (!controller.signal.aborted) documentScanError.value = fileOperationErrorMessage(cause);
   } finally {
@@ -457,14 +501,24 @@ async function openNodeDocuments(event: MouseEvent, node: VersionNode) {
     return;
   }
   if (available.length > 1) {
-    selectedDocumentPath.value = available[0]!.relativePath;
+    selectedDocumentKey.value = documentChoiceKey(available[0]!);
     documentChoice.value = { nodeId: node.id, version: node.version, files: available };
     return;
   }
-  await requestNodeDocument(node.id, available[0]!.relativePath);
+  await requestNodeDocument(node.id, available[0]!);
 }
 
-async function requestNodeDocument(nodeId: string, relativePath: string) {
+function documentChoiceKey(source: ComparisonDocumentSource): string {
+  return `${source.location}:${source.file.relativePath}`;
+}
+
+async function requestSelectedNodeDocument() {
+  const choice = documentChoice.value;
+  const source = choice?.files.find(file => documentChoiceKey(file) === selectedDocumentKey.value);
+  if (choice && source) await requestNodeDocument(choice.nodeId, source);
+}
+
+async function requestNodeDocument(nodeId: string, source: ComparisonDocumentSource) {
   if (saving.value) return;
   documentChoice.value = undefined;
   const activeGraph = graph.value;
@@ -477,34 +531,36 @@ async function requestNodeDocument(nodeId: string, relativePath: string) {
   status.value = '正在检查软件对比文档…';
   try {
     const [root, latestGraph] = await Promise.all([
-      props.repository.getArchiveRoot(),
+      props.repository.getArchiveRoot(source.location),
       props.repository.get(props.projectId),
     ]);
-    if (!root || !documentRootSnapshot) throw new Error('请先授权归档根目录并扫描软件对比文档。');
-    if (!await checkPermission(root)) throw new Error('归档根目录授权已失效，请重新授权。');
+    const snapshot = documentRootSnapshots.get(source.location);
+    if (!root || !snapshot) throw new Error(`请先授权${source.location === 'local' ? '本地' : '共享'}根目录并扫描软件对比文档。`);
+    if (!await checkPermission(root)) throw new Error(`${source.location === 'local' ? '本地' : '共享'}根目录授权已失效，请重新授权。`);
     const binding = await resolveProjectDirectory(root, latestGraph.project.name, 'word');
-    if (!(await sameDirectory(documentRootSnapshot, binding))) throw new Error('归档根目录或项目文档子目录已改变，请重新扫描。');
-    if (!await checkPermission(binding)) throw new Error('归档根目录授权已失效，请重新授权。');
+    if (!(await sameDirectory(snapshot.root, root)) || !(await sameDirectory(snapshot.binding, binding)))
+      throw new Error('文档来源或项目目录已改变，请重新扫描。');
+    if (!await checkPermission(binding)) throw new Error('文档目录授权已失效，请重新授权。');
     const latestNode = latestGraph.nodes.find(node => node.id === nodeId);
     if (!latestNode || latestNode.version !== originalNode.version || latestGraph.project.partNumber !== activeGraph.project.partNumber)
       throw new Error('项目零件号或版本信息已变化，请重新读取版本图。');
     const candidates = await scanDirectory(binding, 'word', new AbortController().signal, () => undefined);
     const matching = matchComparisonDocuments(latestGraph, candidates).get(nodeId) ?? [];
-    if (!matching.some(file => file.relativePath === relativePath))
-      throw new Error(`文档“${relativePath}”已不再对应版本“${latestNode.version}”，请重新扫描。`);
-    await locateFile(binding, relativePath);
+    if (!matching.some(file => file.relativePath === source.file.relativePath))
+      throw new Error(`文档“${source.file.relativePath}”已不再对应版本“${latestNode.version}”，请重新扫描。`);
+    await locateFile(binding, source.file.relativePath);
     const [finalGraph, finalRoot] = await Promise.all([
       props.repository.get(props.projectId),
-      props.repository.getArchiveRoot(),
+      props.repository.getArchiveRoot(source.location),
     ]);
     if (!finalRoot || !(await sameDirectory(root, finalRoot))
       || !(await sameDirectory(binding, await resolveProjectDirectory(finalRoot, finalGraph.project.name, 'word')))
       || finalGraph.project.partNumber !== latestGraph.project.partNumber
       || finalGraph.nodes.find(item => item.id === nodeId)?.version !== latestNode.version)
       throw new Error('检查期间目录或版本已变化，请重新扫描后再打开。');
-    const uri = buildDocumentOpenUri(props.projectId, binding.name, relativePath);
+    const uri = buildDocumentOpenUri(props.projectId, binding.name, source.file.relativePath, source.location);
     window.location.assign(uri);
-    status.value = '已请求本地启动器，请查看系统提示。网页无法确认 Word 是否已打开文档。';
+    status.value = `已请求本地启动器打开${source.location === 'local' ? '本地' : '共享'}文档，请查看系统提示。网页无法确认 Word 是否已打开文档。`;
   } catch (cause) {
     showError(cause);
   } finally {
@@ -771,8 +827,14 @@ watch(hideIsolated, () => {
   clearSelectionsForFilter();
 });
 watch(menu, value => {
-  if (value) void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
-});
+  if (!value) {
+    menuOpenLocationController?.abort();
+    menuOpenLocationController = undefined;
+    menuOpenLocationBusy.value = false;
+    return;
+  }
+  void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
+}, { flush: 'sync' });
 watch([panel, branchDeleteTarget, deletionPlan, nodeForm, branchForm], async ([nextPanel, nextBranchDelete, nextDeletion], [previousPanel, previousBranchDelete, previousDeletion]) => {
   if (nextPanel || nextBranchDelete || nextDeletion) fullscreenSidebarVisible.value = true;
   await nextTick();
@@ -925,6 +987,9 @@ function onGlobalKeyDown(event: KeyboardEvent) {
 }
 
 function closeMenu(restoreFocus = true) {
+  menuOpenLocationController?.abort();
+  menuOpenLocationController = undefined;
+  menuOpenLocationBusy.value = false;
   menu.value = null;
   const target = menuReturnFocus.value;
   menuReturnFocus.value = null;
@@ -938,7 +1003,8 @@ function onMenuOutsidePointerDown(event: PointerEvent) {
 }
 
 function onMenuKeyDown(event: KeyboardEvent) {
-  const menuItems = [...(menuElement.value?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+  const menuItems = [...(menuElement.value?.querySelectorAll<HTMLButtonElement>('[role="menuitem"], [role="menuitemcheckbox"]') ?? [])]
+    .filter(item => !item.disabled);
   if (!menuItems.length) return;
   const currentIndex = menuItems.indexOf(document.activeElement as HTMLButtonElement);
   let nextIndex: number | null = null;
@@ -1079,6 +1145,53 @@ function openNodeMenu(event: MouseEvent, nodeId: string) {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
+  menuOpenLocation.value = 'local';
+  menuOpenLocations.value = null;
+  void refreshMenuOpenLocations(nodeId);
+}
+
+async function refreshMenuOpenLocations(nodeId: string) {
+  menuOpenLocationController?.abort();
+  const controller = new AbortController();
+  menuOpenLocationController = controller;
+  menuOpenLocationBusy.value = true;
+  try {
+    const current = await props.repository.get(props.projectId);
+    const node = current.nodes.find(item => item.id === nodeId);
+    if (!node) return;
+    const locations: ArchiveLocation[] = [];
+    for (const location of ['local', 'shared'] as const) {
+      try {
+        const root = await props.repository.getArchiveRoot(location);
+        if (!root || !await checkPermission(root)) continue;
+        let directory: DirectoryHandle;
+        directory = await resolveProjectDirectory(root, current.project.name, 'engineering');
+        const files = await scanDirectory(directory, 'engineering', controller.signal, () => undefined);
+        const latestRoot = await props.repository.getArchiveRoot(location);
+        if (!latestRoot || !(await sameDirectory(root, latestRoot))) continue;
+        if ((matchScannedFiles(current, files).matches.get(nodeId)?.length ?? 0) > 0) locations.push(location);
+      } catch (cause) {
+        if (controller.signal.aborted) throw cause;
+      }
+    }
+    if (menu.value?.kind === 'node' && menu.value.id === nodeId && !controller.signal.aborted) {
+      menuOpenLocations.value = { nodeId, locations };
+      menuOpenLocation.value = locations.includes('local') ? 'local' : locations[0] ?? 'local';
+    }
+  } catch (cause) {
+    if (!controller.signal.aborted) showError(cause);
+  } finally {
+    if (menuOpenLocationController === controller) {
+      menuOpenLocationBusy.value = false;
+      menuOpenLocationController = undefined;
+    }
+  }
+}
+
+function toggleMenuOpenLocation() {
+  const locations = menuOpenLocations.value?.locations ?? [];
+  if (locations.length !== 2) return;
+  menuOpenLocation.value = menuOpenLocation.value === 'local' ? 'shared' : 'local';
 }
 
 function selectBranch(branchId: string) {
@@ -1545,10 +1658,10 @@ function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delet
   else if (action === 'merge' && count >= 2) openMerge();
 }
 
-function startIqanAction(action: 'open' | 'compare', nodeIds: readonly string[]) {
+function startIqanAction(action: 'open' | 'compare', nodeIds: readonly string[], location: ArchiveLocation = 'local') {
   if (saving.value || editorOpen.value) return;
   closeMenu(false);
-  iqanIntegration.value?.open(action, nodeIds);
+  iqanIntegration.value?.open(action, nodeIds, location);
 }
 
 function onIqanDialogClosed() {
@@ -1852,7 +1965,23 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除所选版本</button>
         </template>
         <template v-else-if="menu.kind === 'node'">
-          <button role="menuitem" :disabled="saving || editorOpen" @click="startIqanAction('open', [menu.id])"><AppIcon name="file" />在 IQANdesign 中打开</button>
+          <div class="graph-menu-open-row" role="none">
+            <button role="menuitem" :disabled="saving || editorOpen" @click="startIqanAction('open', [menu.id], menuOpenLocation)"><AppIcon name="file" />在 IQANdesign 中打开</button>
+            <button
+              v-if="menuOpenLocations?.nodeId === menu.id && menuOpenLocations.locations.length === 2"
+              type="button" role="menuitemcheckbox" class="graph-menu-source-toggle"
+              :aria-label="`打开${menuOpenLocation === 'local' ? '本地' : '共享'}工程文件，切换位置`"
+              :aria-checked="menuOpenLocation === 'local'"
+              :title="`当前优先打开${menuOpenLocation === 'local' ? '本地' : '共享'}文件；点击切换到${menuOpenLocation === 'local' ? '共享' : '本地'}`"
+              :disabled="saving || editorOpen"
+              @click="toggleMenuOpenLocation"
+            ><AppIcon :name="menuOpenLocation === 'local' ? 'computer' : 'cloud'" /></button>
+            <span
+              v-else class="graph-menu-source-indicator" role="img"
+              :aria-label="menuOpenLocationBusy ? '正在检查工程文件来源' : `${menuOpenLocation === 'local' ? '本地' : '共享'}文件优先`"
+              :title="menuOpenLocationBusy ? '正在检查工程文件来源' : `${menuOpenLocation === 'local' ? '本地' : '共享'}文件优先`"
+            ><AppIcon :name="menuOpenLocationBusy ? 'scan' : menuOpenLocation === 'local' ? 'computer' : 'cloud'" /></span>
+          </div>
           <button role="menuitem" disabled><AppIcon name="compare" />对比所选版本（需选中 2 个）</button>
           <button role="menuitem" :disabled="saving" @click="openNodeAdd([menu.id]); closeMenu(false)"><AppIcon name="plus" />新增子版本</button>
           <button role="menuitem" :disabled="saving" @click="openBranchAdd(menu.id)"><AppIcon name="branch" />创建分支</button>
@@ -1881,13 +2010,16 @@ function onIqanDialogClosed() {
         @cancel.prevent="documentChoice = undefined" @close="documentChoice = undefined"
         @keydown.escape.prevent.stop="documentChoice = undefined">
         <h3 id="document-choice-title">选择软件对比文档</h3>
-        <p>版本 {{ documentChoice?.version }} 有多份文档。</p>
-        <label for="version-document-choice">打开文档</label>
-        <select id="version-document-choice" v-if="documentChoice" v-model="selectedDocumentPath">
-          <option v-for="file in documentChoice.files" :key="file.relativePath" :value="file.relativePath">{{ file.relativePath }}</option>
-        </select>
+        <p>版本 {{ documentChoice?.version }} 有多个文档或来源，请选择要打开的文件。</p>
+        <div v-if="documentChoice" class="document-source-choice-list" role="radiogroup" aria-label="文档及来源">
+          <label v-for="source in documentChoice.files" :key="documentChoiceKey(source)" class="document-source-choice">
+            <input v-model="selectedDocumentKey" type="radio" name="document-source-choice" :value="documentChoiceKey(source)" />
+            <AppIcon :name="source.location === 'local' ? 'computer' : 'cloud'" />
+            <span><strong>{{ source.location === 'local' ? '本地' : '共享' }}</strong><small>{{ source.file.relativePath }}</small></span>
+          </label>
+        </div>
         <div class="actions">
-          <button type="button" :disabled="saving || !selectedDocumentPath" @click="documentChoice && requestNodeDocument(documentChoice.nodeId, selectedDocumentPath)">在 Word 中打开</button>
+          <button type="button" :disabled="saving || !selectedDocumentKey" @click="requestSelectedNodeDocument">在 Word 中打开</button>
           <button type="button" class="secondary" :disabled="saving" @click="documentChoice = undefined">取消</button>
         </div>
       </dialog>

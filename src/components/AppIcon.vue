@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'unrelease' | 'undo' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'unrelease' | 'undo' | 'cloud' | 'computer' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -31,6 +31,8 @@ const paths = {
   release: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z M8 12l3 3 5-6',
   unrelease: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z',
   undo: 'M9 14 4 9l5-5 M4 9h9a7 7 0 0 1 0 14h-2',
+  cloud: 'M7 18h10a4 4 0 0 0 .4-8A6 6 0 0 0 6 9a4.5 4.5 0 0 0 1 9Z',
+  computer: 'M3 4h18v13H3Z M8 21h8 M12 17v4',
 };
 </script>
 

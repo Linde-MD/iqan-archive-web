@@ -15,6 +15,24 @@
       "files": ["documents/说明 A.DOC"]
     }
   ],
+  "documentV3Valid": [
+    {
+      "name": "document-v3-local-source",
+      "uri": "iqanarchive://open-document?v=3&project=550e8400-e29b-41d4-a716-446655440000&location=local&file=Demo_software_changes_docs%2F%E8%AF%B4%E6%98%8E.docx",
+      "operation": "OpenDocument",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "location": "Local",
+      "files": ["Demo_software_changes_docs/说明.docx"]
+    },
+    {
+      "name": "document-v3-shared-source",
+      "uri": "iqanarchive://open-document?v=3&project=550e8400-e29b-41d4-a716-446655440000&location=shared&file=Demo_software_changes_docs%2Frelease.doc",
+      "operation": "OpenDocument",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "location": "Shared",
+      "files": ["Demo_software_changes_docs/release.doc"]
+    }
+  ],
   "documentInvalid": [
     { "name": "document-v1-forbidden", "uri": "iqanarchive://open-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
     { "name": "document-unknown-version", "uri": "iqanarchive://open-document?v=4&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
