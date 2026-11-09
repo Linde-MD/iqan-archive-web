@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
-import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, registerCandidates, type FileCandidate } from '../src/domain/filenames';
+import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -85,6 +85,11 @@ describe('文件名和版本身份', () => {
     expect(parseEngineeringName('001 vA-B.1.idsx').version).toBe('vA-B.1');
     expect(parseEngineeringName('001 V1.idvx').extension).toBe('.idvx');
     expect(normalizeVersion(' V1 \t 2026 ')).toBe('V1 2026');
+  });
+  it('替换工程相对路径的文件名时保留所有子目录且不重复项目目录', () => {
+    expect(replaceRelativeFileName('001 V1.idax', '001 V2.idax')).toBe('001 V2.idax');
+    expect(replaceRelativeFileName('nested/deeper/001 V1.idax', '001 V2.idax')).toBe('nested/deeper/001 V2.idax');
+    expect(() => replaceRelativeFileName('nested/001 V1.idax', '../001 V2.idax')).toThrow();
   });
   it.each(['001 V.idax', '001 v---.idax', '001 V1_2.idax', '001 R1.idax', 'abc V1.idax', '001 V1.idax.idsx', '001 V1.exe', '001 V中文.idax', '001 V1\n2026.idax'])('拒绝非法文件名：%s', name => {
     expect(() => parseEngineeringName(name)).toThrow();

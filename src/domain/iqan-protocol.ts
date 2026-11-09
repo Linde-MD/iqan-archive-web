@@ -78,6 +78,35 @@ export function buildDocumentOpenUri(projectId: string, directoryName: string, f
   return assertUriLength(`iqanarchive://open-document?v=3&project=${projectId}&location=${location}&file=${encodeRfc3986(path)}`);
 }
 
+export function buildEngineeringCopyUri(
+  projectId: string,
+  sourceLocation: ArchiveLocation,
+  sourceDirectoryName: string,
+  sourceRelativePath: string,
+  targetDirectoryName: string,
+  targetRelativePath: string,
+): string {
+  assertProjectId(projectId);
+  assertArchiveLocation(sourceLocation);
+  const source = archiveRelativePath(sourceDirectoryName, sourceRelativePath);
+  const target = archiveRelativePath(targetDirectoryName, targetRelativePath);
+  requireCondition(/\.(idax|idsx|idvx)$/i.test(sourceRelativePath), 'URI_COPY_EXTENSION', '仅支持复制 .idax/.idsx/.idvx 工程文件。');
+  requireCondition(pathExtension(targetRelativePath).toLowerCase() === pathExtension(sourceRelativePath).toLowerCase(), 'URI_COPY_EXTENSION', '复制目标必须保留源工程文件扩展名。');
+  requireCondition(
+    source.normalize('NFC').toLowerCase() !== target.normalize('NFC').toLowerCase()
+      || sourceLocation !== 'local',
+    'URI_COPY_SAME_FILE',
+    '复制源与本地目标不能是同一个文件。',
+  );
+  return assertUriLength(`iqanarchive://copy-engineering?v=1&project=${projectId}&sourceLocation=${sourceLocation}&sourceFile=${encodeRfc3986(source)}&targetLocation=local&targetFile=${encodeRfc3986(target)}`);
+}
+
+function pathExtension(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  const dot = name.lastIndexOf('.');
+  return dot < 0 ? '' : name.slice(dot);
+}
+
 export function buildCompareUri(projectId: string, directoryName: string, fileARelativePath: string, fileBRelativePath: string): string;
 export function buildCompareUri(
   projectId: string,

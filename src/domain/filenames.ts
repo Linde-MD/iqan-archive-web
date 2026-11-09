@@ -8,6 +8,12 @@ export function relativeParts(path: string): string[] {
   return parts;
 }
 
+export function replaceRelativeFileName(path: string, fileName: string): string {
+  const parts = relativeParts(path);
+  requireCondition(fileName && !/[\\/]/.test(fileName), 'FILE_NAME', '目标文件名须为单个路径段。');
+  return [...parts.slice(0, -1), fileName].join('/');
+}
+
 export interface ParsedEngineering {
   partNumber: string;
   version: string;

@@ -265,5 +265,33 @@
       "uri": "iqanarchive://open?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=project%2F中文.idax",
       "failure": "NonAscii"
     }
+  ],
+  "copyValid": [
+    {
+      "name": "copy-engineering-shared-to-local",
+      "uri": "iqanarchive://copy-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.1.idax",
+      "operation": "CopyEngineering",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "sourceLocation": "Shared",
+      "targetLocation": "Local",
+      "files": ["Demo_iqan_project_files/nested/99887766554 V1.0.idax", "Demo_iqan_project_files/nested/99887766554 V1.1.idax"]
+    }
+  ],
+  "copyInvalid": [
+    {
+      "name": "copy-engineering-target-must-be-local",
+      "uri": "iqanarchive://copy-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2F99887766554%20V1.0.idax&targetLocation=shared&targetFile=Demo_iqan_project_files%2F99887766554%20V1.1.idax",
+      "failure": "InvalidLocation"
+    },
+    {
+      "name": "copy-engineering-extension-mismatch",
+      "uri": "iqanarchive://copy-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2Fmodel.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fmodel.idsx",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "copy-engineering-parent-traversal",
+      "uri": "iqanarchive://copy-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2F..%2Fmodel.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fmodel.idax",
+      "failure": "InvalidPath"
+    }
   ]
 }

@@ -2,9 +2,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
 import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
-import { matchComparisonDocuments, matchScannedFiles, type FileCandidate } from '../domain/filenames';
-import { buildDocumentOpenUri } from '../domain/iqan-protocol';
-import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
+import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
+import { buildDocumentOpenUri, buildEngineeringCopyUri } from '../domain/iqan-protocol';
+import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -104,6 +104,11 @@ const documentScanError = ref('');
 const documentChoice = shallowRef<{ nodeId: string; version: string; files: ComparisonDocumentSource[] }>();
 const selectedDocumentKey = ref('');
 const documentChoiceDialog = ref<HTMLDialogElement>();
+type ChildCopyCandidate = { location: ArchiveLocation; source: FileCandidate; targetRelativePath: string };
+type ChildCopyPrompt = { nodeId: string; parentId: string; parentVersion: string; targetVersion: string; candidates: ChildCopyCandidate[] };
+const childCopyPrompt = shallowRef<ChildCopyPrompt>();
+const childCopyDialog = ref<HTMLDialogElement>();
+const selectedChildCopyKey = ref('');
 let documentScanController: AbortController | undefined;
 let documentRootSnapshots = new Map<ArchiveLocation, { root: DirectoryHandle; binding: DirectoryHandle }>();
 
@@ -422,6 +427,19 @@ watch(documentChoice, async value => {
     documentChoiceDialog.value.querySelector<HTMLInputElement>('input[type="radio"]')?.focus();
   } else if (!value && documentChoiceDialog.value?.open) documentChoiceDialog.value.close();
 });
+watch(childCopyPrompt, async value => {
+  await nextTick();
+  if (value && childCopyDialog.value && !childCopyDialog.value.open) {
+    childCopyDialog.value.showModal();
+    childCopyDialog.value.querySelector<HTMLInputElement>('input[type="radio"]')?.focus();
+  } else if (!value && childCopyDialog.value?.open) childCopyDialog.value.close();
+});
+
+function skipChildEngineeringCopy() {
+  childCopyPrompt.value = undefined;
+  selectedChildCopyKey.value = '';
+  status.value = '版本已新增，未创建本地工程文件副本。';
+}
 
 async function refreshComparisonDocuments() {
   documentScanController?.abort();
@@ -1376,14 +1394,37 @@ function removeDeletionParent(childId: string, parentId: string) {
 async function submitNode(): Promise<boolean> {
   const actionPanel = panel.value;
   if (actionPanel !== 'node-add' && actionPanel !== 'node-edit' && actionPanel !== 'merge') return false;
-  return operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
+  let copyPromptAfterSave: ChildCopyPrompt | undefined;
+  let copyNotice = '';
+  const saved = await operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
     const current = graph.value!;
     if (actionPanel === 'node-add') {
       const node = createNode(current, nodeForm.value);
+      let copyCandidates: ChildCopyCandidate[] = [];
+      if (nodeForm.value.parentIds.length === 1) {
+        status.value = '正在检查共享和本地工程目录…';
+        try {
+          const result = await findChildEngineeringCopies(current, nodeForm.value.parentIds[0]!, node.version);
+          copyCandidates = result.candidates;
+          copyNotice = result.notice ?? '';
+        } catch (cause) {
+          copyNotice = `无法确认是否可以创建本地工程副本：${fileOperationErrorMessage(cause)}`;
+        }
+      }
       graph.value = await props.repository.addNode(
         props.projectId, current.project.revision, node, nodeForm.value.parentIds, nodeForm.value.targetBranchId || null,
       );
-      status.value = '版本已新增。';
+      status.value = copyNotice || '版本已新增。';
+      if (copyCandidates.length) {
+        const parent = current.nodes.find(item => item.id === nodeForm.value.parentIds[0]);
+        if (parent) copyPromptAfterSave = {
+          nodeId: node.id,
+          parentId: parent.id,
+          parentVersion: parent.version,
+          targetVersion: node.version,
+          candidates: copyCandidates,
+        };
+      }
     } else if (actionPanel === 'node-edit') {
       const currentNode = selectedNode.value!;
       if (normalizeVersion(nodeForm.value.version) !== normalizeVersion(currentNode.version)) {
@@ -1422,6 +1463,103 @@ async function submitNode(): Promise<boolean> {
     panel.value = null;
     selectedNodeIds.value = [];
   });
+  if (saved && copyPromptAfterSave) {
+    childCopyPrompt.value = copyPromptAfterSave;
+    selectedChildCopyKey.value = copyPromptAfterSave.candidates.length === 1
+      ? childCopyKey(copyPromptAfterSave.candidates[0]!) : '';
+  }
+  return saved;
+}
+
+function childCopyKey(candidate: ChildCopyCandidate): string {
+  return `${candidate.location}:${candidate.source.relativePath}`;
+}
+
+async function findChildEngineeringCopies(
+  current: ProjectGraph,
+  parentId: string,
+  targetVersion: string,
+): Promise<{ candidates: ChildCopyCandidate[]; notice?: string }> {
+  const parent = current.nodes.find(node => node.id === parentId);
+  if (!parent) return { candidates: [] };
+  const [sharedRoot, localRoot] = await Promise.all([
+    props.repository.getArchiveRoot('shared'),
+    props.repository.getArchiveRoot('local'),
+  ]);
+  if (!sharedRoot || !localRoot)
+    return { candidates: [], notice: '未同时设置共享和本地根目录，未检查或创建工程副本。' };
+  if (!await checkPermission(sharedRoot) || !await checkPermission(localRoot, false, 'readwrite'))
+    return { candidates: [], notice: '共享或本地根目录未授权，无法确认目标文件是否已存在。' };
+
+  const normalizedTarget = normalizeVersion(targetVersion);
+  const candidates: ChildCopyCandidate[] = [];
+  for (const [location, root] of [['shared', sharedRoot], ['local', localRoot]] as const) {
+    let binding: DirectoryHandle;
+    try { binding = await resolveProjectDirectory(root, current.project.name, 'engineering'); }
+    catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'NotFoundError') continue;
+      throw cause;
+    }
+    const files = await scanDirectory(binding, 'engineering', new AbortController().signal, () => undefined);
+    const matches = matchScannedFiles(current, files);
+    if (matches.rows.some(row => row.version === normalizedTarget))
+      return { candidates: [], notice: `已在${location === 'shared' ? '共享' : '本地'}目录发现版本“${targetVersion}”的工程文件，不再提示创建副本。` };
+    const parentFiles = matches.matches.get(parent.id) ?? [];
+    for (const source of parentFiles) {
+      let parsedSource;
+      try { parsedSource = parseEngineeringName(source.fileName); }
+      catch { continue; }
+      const targetFileName = `${current.project.partNumber} ${normalizedTarget}${parsedSource.extension}`;
+      try {
+        if (parseEngineeringName(targetFileName).version !== normalizedTarget) continue;
+      } catch {
+        return { candidates: [], notice: `版本号“${targetVersion}”不能组成有效的工程文件名，版本已创建但未请求复制。` };
+      }
+      const targetRelativePath = replaceRelativeFileName(source.relativePath, targetFileName);
+      candidates.push({ location, source, targetRelativePath });
+    }
+  }
+  return { candidates };
+}
+
+async function copyParentEngineeringFile() {
+  const prompt = childCopyPrompt.value;
+  const selectedSource = prompt?.candidates.find(candidate => childCopyKey(candidate) === selectedChildCopyKey.value);
+  if (!prompt || !selectedSource || saving.value) return;
+  saving.value = true;
+  emit('busy', true);
+  error.value = '';
+  status.value = '';
+  try {
+    const current = await props.repository.get(props.projectId);
+    const child = current.nodes.find(node => node.id === prompt.nodeId);
+    const parent = current.nodes.find(node => node.id === prompt.parentId);
+    if (!child || !parent || child.version !== normalizeVersion(prompt.targetVersion) || parent.version !== prompt.parentVersion)
+      throw new Error('版本图已变化，未请求创建工程副本。请重新检查版本。');
+    const currentPlan = await findChildEngineeringCopies(current, parent.id, child.version);
+    if (currentPlan.notice) throw new Error(currentPlan.notice);
+    const currentSource = currentPlan.candidates.find(candidate => childCopyKey(candidate) === childCopyKey(selectedSource));
+    if (!currentSource) throw new Error('所选源文件已变化，未请求创建副本。请重新扫描后再试。');
+    const localRoot = await props.repository.getArchiveRoot('local');
+    if (!localRoot || !await checkPermission(localRoot, false, 'readwrite'))
+      throw new Error('本地根目录授权已失效，请重新授权后再复制。');
+    const uri = buildEngineeringCopyUri(
+      current.project.id,
+      currentSource.location,
+      projectDirectoryName(current.project.name, 'engineering'),
+      currentSource.source.relativePath,
+      projectDirectoryName(current.project.name, 'engineering'),
+      currentSource.targetRelativePath,
+    );
+    childCopyPrompt.value = undefined;
+    window.location.assign(uri);
+    status.value = '已请求 Launcher 创建本地工程副本，请在本机确认窗口中核对路径。网页无法确认复制是否完成。';
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+    emit('busy', false);
+  }
 }
 
 async function findEngineeringFiles(
@@ -2021,6 +2159,27 @@ function onIqanDialogClosed() {
         <div class="actions">
           <button type="button" :disabled="saving || !selectedDocumentKey" @click="requestSelectedNodeDocument">在 Word 中打开</button>
           <button type="button" class="secondary" :disabled="saving" @click="documentChoice = undefined">取消</button>
+        </div>
+      </dialog>
+      <dialog ref="childCopyDialog" class="branch-move-dialog document-choice-dialog" aria-labelledby="child-copy-title"
+        @cancel.prevent="skipChildEngineeringCopy" @keydown.escape.prevent.stop="skipChildEngineeringCopy">
+        <h3 id="child-copy-title">创建本地工程文件</h3>
+        <p>版本 {{ childCopyPrompt?.targetVersion }} 已新增。是否复制父版本 {{ childCopyPrompt?.parentVersion }} 的工程文件到本地？</p>
+        <p class="form-help">Launcher 会再次显示源和目标路径并要求本机确认；已有目标不会覆盖，缺少的本地项目/子目录会按目标路径创建。</p>
+        <div v-if="childCopyPrompt" class="document-source-choice-list" role="radiogroup" aria-label="选择复制源工程文件">
+          <label v-for="candidate in childCopyPrompt.candidates" :key="childCopyKey(candidate)" class="document-source-choice">
+            <input v-model="selectedChildCopyKey" type="radio" name="child-copy-source" :value="childCopyKey(candidate)" />
+            <AppIcon :name="candidate.location === 'local' ? 'computer' : 'cloud'" />
+            <span>
+              <strong>{{ candidate.location === 'local' ? '本地源文件' : '共享源文件' }}</strong>
+              <small>{{ candidate.source.relativePath }}</small>
+              <small>目标：{{ projectDirectoryName(graph!.project.name, 'engineering') }}/{{ candidate.targetRelativePath }}</small>
+            </span>
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" :disabled="saving || !selectedChildCopyKey" @click="copyParentEngineeringFile">请求 Launcher 创建副本</button>
+          <button type="button" class="secondary" :disabled="saving" @click="skipChildEngineeringCopy">仅创建版本</button>
         </div>
       </dialog>
       <button
