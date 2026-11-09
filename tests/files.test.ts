@@ -311,12 +311,12 @@ describe('项目事务及v3迁移', () => {
     const next = new ArchiveDatabase(name); databases.push(next);
     return { db, next, nodes, project: graph.project };
   }
-  it('v1升级到v5保留原图和版本身份', async () => {
+  it('v1升级到v6保留原图和版本身份', async () => {
     const { next, nodes, project } = await oldDatabase(false);
     const graph = await new ArchiveRepository(next).get(project.id);
     expect(graph.nodes).toEqual(nodes);
     expect(await next.directoryBindings.count()).toBe(0);
-    expect(next.backendDB().version).toBe(50);
+    expect(next.backendDB().version).toBe(60);
   });
   it('v1规范化碰撞拒绝升级且回滚，旧数据库可恢复', async () => {
     const { db, next, nodes } = await oldDatabase(true);
@@ -336,7 +336,7 @@ describe('项目事务及v3迁移', () => {
     await repository.db.open();
     expect(await repository.get(graph.project.id)).toEqual(graph);
   });
-  it('v2升级到v5移除文件表、保留旧绑定并初始化全局根目录表', async () => {
+  it('v2升级到v6移除文件表、保留旧绑定并初始化全局根目录表', async () => {
     const name = `v2-${crypto.randomUUID()}`;
     const old = new Dexie(name); databases.push(old);
     old.version(2).stores({ projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId', branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]', files: 'id, projectId, nodeId', directoryBindings: '[projectId+role], projectId' });
@@ -359,12 +359,28 @@ describe('项目事务及v3迁移', () => {
     expect(migrated.nodes).toEqual(graph.nodes);
     expect(migrated.edges).toEqual(graph.edges);
     expect(migrated.branches).toEqual(graph.branches.map((branch, order) => ({ ...branch, order })));
-    expect(next.backendDB().version).toBe(50);
+    expect(next.backendDB().version).toBe(60);
     expect(next.tables.map(table => table.name)).toContain('archiveRoots');
     expect(next.tables.map(table => table.name)).not.toContain('files');
     expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
     const changed = await repository.setPartNumber(graph.project.id, 0, '002');
     expect(changed.nodes).toEqual(graph.nodes);
     expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');
+  });
+  it('v5旧单根句柄迁移为shared，local保持未设置', async () => {
+    const name = `v5-root-${crypto.randomUUID()}`;
+    const old = new Dexie(name); databases.push(old);
+    old.version(5).stores({
+      projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId',
+      branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId', archiveRoots: 'id',
+    });
+    await old.table('archiveRoots').add({ id: 'root', handle: { name: 'LegacyArchive', kind: 'directory' } });
+    old.close();
+    const current = new ArchiveDatabase(name); databases.push(current);
+    const repository = new ArchiveRepository(current);
+    expect((await repository.getArchiveRoot('shared'))?.name).toBe('LegacyArchive');
+    expect(await repository.getArchiveRoot('local')).toBeUndefined();
+    expect(await current.archiveRoots.get('root')).toBeUndefined();
   });
 });

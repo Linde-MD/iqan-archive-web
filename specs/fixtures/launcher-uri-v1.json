@@ -17,7 +17,7 @@
   ],
   "documentInvalid": [
     { "name": "document-v1-forbidden", "uri": "iqanarchive://open-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
-    { "name": "document-unknown-version", "uri": "iqanarchive://open-document?v=3&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
+    { "name": "document-unknown-version", "uri": "iqanarchive://open-document?v=4&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx", "failure": "UnsupportedVersion" },
     { "name": "document-extra-field", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.docx&exe=Word", "failure": "InvalidSyntax" },
     { "name": "document-engineering-extension", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2Frelease.idax", "failure": "InvalidPath" },
     { "name": "document-parent-traversal", "uri": "iqanarchive://open-document?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=documents%2F..%2Frelease.docx", "failure": "InvalidPath" },
@@ -109,7 +109,7 @@
     },
     {
       "name": "unknown-version",
-      "uri": "iqanarchive://open?v=2&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
+      "uri": "iqanarchive://open?v=3&project=550e8400-e29b-41d4-a716-446655440000&file=1479_iqan_project_files%2Fv1%2Fmodel.idax",
       "failure": "UnsupportedVersion"
     },
     {

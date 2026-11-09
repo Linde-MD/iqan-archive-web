@@ -2,6 +2,7 @@ import { requireCondition } from './model';
 
 const projectIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const reservedDeviceNamePattern = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i;
+export type ArchiveLocation = 'shared' | 'local';
 
 function assertSafePath(path: string): void {
   requireCondition(path.length > 0 && !path.includes('\\'), 'URI_PATH', '协议文件路径必须是非空的正斜线相对路径。');
@@ -53,37 +54,61 @@ function assertProjectId(projectId: string): void {
   requireCondition(projectIdPattern.test(projectId), 'URI_PROJECT', '项目 ID 必须是小写 UUID v4。');
 }
 
+function assertArchiveLocation(location: ArchiveLocation): void {
+  requireCondition(location === 'shared' || location === 'local', 'URI_LOCATION', '归档位置必须是 shared 或 local。');
+}
+
 function assertUriLength(uri: string): string {
   requireCondition(uri.length <= 16_384, 'URI_LENGTH', '协议请求超过 16,384 个字符。');
   return uri;
 }
 
-export function buildOpenUri(projectId: string, directoryName: string, fileRelativePath: string): string {
+export function buildOpenUri(projectId: string, directoryName: string, fileRelativePath: string, location: ArchiveLocation = 'shared'): string {
   assertProjectId(projectId);
+  assertArchiveLocation(location);
   const path = archiveRelativePath(directoryName, fileRelativePath);
-  return assertUriLength(`iqanarchive://open?v=1&project=${projectId}&file=${encodeRfc3986(path)}`);
+  return assertUriLength(`iqanarchive://open?v=2&project=${projectId}&location=${location}&file=${encodeRfc3986(path)}`);
 }
 
-export function buildDocumentOpenUri(projectId: string, directoryName: string, fileRelativePath: string): string {
+export function buildDocumentOpenUri(projectId: string, directoryName: string, fileRelativePath: string, location: ArchiveLocation = 'shared'): string {
   assertProjectId(projectId);
+  assertArchiveLocation(location);
   const path = archiveRelativePath(directoryName, fileRelativePath);
   requireCondition(/\.(doc|docx)$/i.test(fileRelativePath), 'URI_DOCUMENT', '仅支持打开 .doc/.docx 软件对比文档。');
-  return assertUriLength(`iqanarchive://open-document?v=2&project=${projectId}&file=${encodeRfc3986(path)}`);
+  return assertUriLength(`iqanarchive://open-document?v=3&project=${projectId}&location=${location}&file=${encodeRfc3986(path)}`);
 }
 
+export function buildCompareUri(projectId: string, directoryName: string, fileARelativePath: string, fileBRelativePath: string): string;
 export function buildCompareUri(
   projectId: string,
-  directoryName: string,
+  directoryNameA: string,
   fileARelativePath: string,
+  directoryNameB: string,
   fileBRelativePath: string,
+  locationA?: ArchiveLocation,
+  locationB?: ArchiveLocation,
+): string;
+export function buildCompareUri(
+  projectId: string,
+  directoryNameA: string,
+  fileARelativePath: string,
+  directoryNameBOrFileB: string,
+  fileBOrLocationA?: string,
+  locationA: ArchiveLocation = 'shared',
+  locationB: ArchiveLocation = 'shared',
 ): string {
+  const sameDirectory = fileBOrLocationA === undefined;
+  const directoryNameB = sameDirectory ? directoryNameA : directoryNameBOrFileB;
+  const fileBRelativePath = sameDirectory ? directoryNameBOrFileB : fileBOrLocationA!;
   assertProjectId(projectId);
-  const fileA = archiveRelativePath(directoryName, fileARelativePath);
-  const fileB = archiveRelativePath(directoryName, fileBRelativePath);
+  assertArchiveLocation(locationA);
+  assertArchiveLocation(locationB);
+  const fileA = archiveRelativePath(directoryNameA, fileARelativePath);
+  const fileB = archiveRelativePath(directoryNameB, fileBRelativePath);
   requireCondition(
     fileA.normalize('NFC').toLowerCase() !== fileB.normalize('NFC').toLowerCase(),
     'URI_SAME_FILE',
     '两个版本选择了同一个工程文件，无法对比。',
   );
-  return assertUriLength(`iqanarchive://compare?v=1&project=${projectId}&fileA=${encodeRfc3986(fileA)}&fileB=${encodeRfc3986(fileB)}`);
+  return assertUriLength(`iqanarchive://compare?v=2&project=${projectId}&locationA=${locationA}&fileA=${encodeRfc3986(fileA)}&locationB=${locationB}&fileB=${encodeRfc3986(fileB)}`);
 }

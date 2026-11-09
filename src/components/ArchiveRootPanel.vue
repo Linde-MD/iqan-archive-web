@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref, shallowRef } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
-import { checkPermission, chooseDirectory, type DirectoryHandle } from '../files/directories';
+import { checkPermission, chooseDirectory, type ArchiveRoots, type DirectoryHandle } from '../files/directories';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; disabled: boolean }>();
-const emit = defineEmits<{ root: [handle: DirectoryHandle | undefined]; busy: [value: boolean]; error: [cause: unknown] }>();
-const root = shallowRef<DirectoryHandle>();
-const permission = ref('未授权');
+const emit = defineEmits<{ roots: [roots: ArchiveRoots]; busy: [value: boolean]; error: [cause: unknown] }>();
+const roots = shallowRef<ArchiveRoots>({});
+const permission = ref<Record<'shared' | 'local', string>>({ shared: '未授权', local: '未授权' });
 const busy = ref(false);
 const message = ref('');
 
@@ -22,43 +22,55 @@ async function operation(action: () => Promise<void>) {
 
 async function restore() {
   await operation(async () => {
-    root.value = await props.repository.getArchiveRoot();
-    emit('root', root.value);
-    if (!root.value) { permission.value = '未授权'; return; }
-    permission.value = await checkPermission(root.value, false, 'readwrite') ? '读写已授权' : '需要读写授权';
+    const [shared, local] = await Promise.all([
+      props.repository.getArchiveRoot('shared'), props.repository.getArchiveRoot('local'),
+    ]);
+    roots.value = {
+      ...(shared ? { shared } : {}),
+      ...(local ? { local } : {}),
+    };
+    emit('roots', roots.value);
+    for (const location of ['shared', 'local'] as const) {
+      permission.value[location] = roots.value[location]
+        ? await checkPermission(roots.value[location]!, false, 'readwrite') ? '读写已授权' : '需要读写授权'
+        : '未授权';
+    }
   });
 }
 
-async function chooseRoot() {
+async function chooseRoot(location: 'shared' | 'local') {
   await operation(async () => {
     const selected = await chooseDirectory('readwrite');
-    if (!selected) { message.value = '已取消选择，原根目录未改变。'; return; }
-    if (!await checkPermission(selected, false, 'readwrite')) throw new Error('根目录未获读写授权，原设置未改变。');
-    await props.repository.setArchiveRoot(selected);
-    root.value = selected;
-    permission.value = '读写已授权';
-    emit('root', selected);
-    message.value = '根目录已保存；项目子目录将按项目名称自动定位。';
+    if (!selected) { message.value = '已取消选择，原设置未改变。'; return; }
+    if (!await checkPermission(selected, false, 'readwrite')) throw new Error('目录未获读写授权，原设置未改变。');
+    await props.repository.setArchiveRoot(selected, location);
+    roots.value = { ...roots.value, [location]: selected };
+    permission.value[location] = '读写已授权';
+    emit('roots', roots.value);
+    message.value = `${location === 'shared' ? '共享' : '本地'}归档根目录已保存。`;
   });
 }
 
-async function authorize() {
+async function authorize(location: 'shared' | 'local') {
   await operation(async () => {
-    if (!root.value) throw new Error('请先选择归档根目录。');
-    const granted = await checkPermission(root.value, true, 'readwrite');
-    permission.value = granted ? '读写已授权' : '需要读写授权';
+    const root = roots.value[location];
+    if (!root) throw new Error(`请先选择${location === 'shared' ? '共享' : '本地'}归档根目录。`);
+    const granted = await checkPermission(root, true, 'readwrite');
+    permission.value[location] = granted ? '读写已授权' : '需要读写授权';
     if (!granted) throw new Error('根目录读写权限被拒绝，请重新授权或重新选择。');
-    emit('root', root.value);
+    emit('roots', roots.value);
   });
 }
 
-async function unbind() {
+async function unbind(location: 'shared' | 'local') {
   await operation(async () => {
-    await props.repository.db.archiveRoots.delete('root');
-    root.value = undefined;
-    permission.value = '未授权';
-    emit('root', undefined);
-    message.value = '已解除统一根目录授权；磁盘文件和项目数据未删除。';
+    await props.repository.db.archiveRoots.delete(location);
+    const next = { ...roots.value };
+    delete next[location];
+    roots.value = next;
+    permission.value[location] = '未授权';
+    emit('roots', next);
+    message.value = `已解除${location === 'shared' ? '共享' : '本地'}根目录授权；磁盘文件和项目数据未删除。`;
   });
 }
 
@@ -67,19 +79,20 @@ onMounted(restore);
 
 <template>
   <section class="panel archive-root-panel" aria-labelledby="archive-root-title" :aria-busy="busy">
-    <div class="section-heading">
-      <div><p class="eyebrow">LOCAL DIRECTORY</p><h2 id="archive-root-title">归档根目录</h2></div>
-      <span class="permission-badge">{{ permission }}</span>
-    </div>
-    <div class="archive-root-value">
-      <AppIcon name="folder" />
-      <strong>{{ root?.name ?? '尚未选择目录' }}</strong>
-    </div>
-    <p v-if="!root" class="form-help">选择一次后，各项目按名称自动定位工程和文档子目录。JSON 备份读写此根目录；子目录只扫描读取。</p>
-    <div class="actions">
-      <button type="button" class="secondary" :disabled="disabled || busy" @click="chooseRoot"><AppIcon name="folder" />{{ root ? '更换根目录' : '选择根目录' }}</button>
-      <button type="button" class="secondary" :disabled="disabled || busy || !root" @click="authorize"><AppIcon name="shield" />重新授权</button>
-      <button type="button" class="secondary" :disabled="disabled || busy || !root" @click="unbind"><AppIcon name="unlink" />解除授权</button>
+    <div class="section-heading"><h2 id="archive-root-title">归档目录</h2><span class="archive-root-note">JSON · 本地根目录</span></div>
+    <div class="archive-root-grid">
+      <div v-for="location in ['shared', 'local'] as const" :key="location" class="archive-root-entry">
+        <div class="section-heading">
+          <h3>{{ location === 'shared' ? '共享根目录' : '本地根目录' }}</h3>
+          <span class="permission-badge">{{ permission[location] }}</span>
+        </div>
+        <div class="archive-root-value"><AppIcon name="folder" /><strong>{{ roots[location]?.name ?? '尚未选择目录' }}</strong></div>
+        <div class="actions">
+          <button type="button" class="secondary" :aria-label="`${roots[location] ? '更换' : '选择'}${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy" @click="chooseRoot(location)"><AppIcon name="folder" />{{ roots[location] ? '更换' : '选择' }}</button>
+          <button type="button" class="secondary" :aria-label="`重新授权${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy || !roots[location]" @click="authorize(location)"><AppIcon name="shield" />授权</button>
+          <button type="button" class="secondary" :aria-label="`解除${location === 'shared' ? '共享' : '本地'}根目录授权`" :disabled="disabled || busy || !roots[location]" @click="unbind(location)"><AppIcon name="unlink" />移除</button>
+        </div>
+      </div>
     </div>
     <p role="status">{{ busy ? '正在处理归档根目录…' : message }}</p>
   </section>

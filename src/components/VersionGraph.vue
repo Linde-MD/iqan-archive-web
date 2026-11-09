@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
-import { orderedBranches, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
-import { matchComparisonDocuments, type FileCandidate } from '../domain/filenames';
+import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
+import { matchComparisonDocuments, matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri } from '../domain/iqan-protocol';
-import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -1272,6 +1272,25 @@ async function submitNode(): Promise<boolean> {
       );
       status.value = '版本已新增。';
     } else if (actionPanel === 'node-edit') {
+      const currentNode = selectedNode.value!;
+      if (normalizeVersion(nodeForm.value.version) !== normalizeVersion(currentNode.version)) {
+        const associations = await findEngineeringFiles(current, currentNode);
+        const found = (['shared', 'local'] as const).flatMap(location => [
+          ...associations.files[location].engineering.map(file => ({ location, category: '工程文件', file })),
+          ...associations.files[location].documents.map(file => ({ location, category: '软件对比文档', file })),
+        ]);
+        if (found.length || associations.unavailable.length) {
+          const fileLines = found.map(({ location, category, file }) =>
+            `${location === 'shared' ? '共享' : '本地'}${category}：${file.relativePath}`);
+          const unavailableLine = associations.unavailable.length
+            ? `\n无法检查：${associations.unavailable.map(item => `${item.location === 'shared' ? '共享' : '本地'}${item.role ? item.role === 'engineering' ? '工程' : '文档' : ''}`).join('、')}目录。`
+            : '';
+          const message = found.length
+            ? `版本“${currentNode.version}”${found.length > 1 ? `有 ${found.length} 个` : '有'}关联工程文件：\n${fileLines.join('\n')}\n\n请手动将文件名改为匹配新版本“${nodeForm.value.version.trim()}”。保存不会重命名或移动文件。${unavailableLine}\n仍要保存版本号吗？`
+            : `版本号将从“${currentNode.version}”改为“${nodeForm.value.version.trim()}”。${unavailableLine}\n请确认磁盘文件名已人工检查。仍要保存吗？`;
+          if (!window.confirm(message)) return;
+        }
+      }
       graph.value = await props.repository.saveNode(props.projectId, current.project.revision, selectedNode.value!.id, {
         version: nodeForm.value.version,
         description: nodeForm.value.description,
@@ -1290,6 +1309,49 @@ async function submitNode(): Promise<boolean> {
     panel.value = null;
     selectedNodeIds.value = [];
   });
+}
+
+async function findEngineeringFiles(
+  current: ProjectGraph,
+  node: VersionNode,
+): Promise<{
+  files: Record<ArchiveLocation, { engineering: FileCandidate[]; documents: FileCandidate[] }>;
+  unavailable: { location: ArchiveLocation; role?: DirectoryRole }[];
+}> {
+  const files: Record<ArchiveLocation, { engineering: FileCandidate[]; documents: FileCandidate[] }> = {
+    shared: { engineering: [], documents: [] },
+    local: { engineering: [], documents: [] },
+  };
+  const unavailable: { location: ArchiveLocation; role?: DirectoryRole }[] = [];
+  for (const location of ['shared', 'local'] as const) {
+    const root = await props.repository.getArchiveRoot(location);
+    if (!root) continue;
+    try {
+      if (!await checkPermission(root)) { unavailable.push({ location }); continue; }
+      for (const role of ['engineering', 'word'] as const) {
+        let directory: DirectoryHandle;
+        try {
+          directory = await resolveProjectDirectory(root, current.project.name, role);
+        } catch (cause) {
+          if (cause instanceof DOMException && cause.name === 'NotFoundError') continue;
+          throw cause;
+        }
+        try {
+          const candidates = await scanDirectory(directory, role, new AbortController().signal, () => undefined);
+          const latestRoot = await props.repository.getArchiveRoot(location);
+          if (!latestRoot || !await sameDirectory(root, latestRoot)) { unavailable.push({ location, role }); continue; }
+          files[location][role === 'engineering' ? 'engineering' : 'documents'] = role === 'engineering'
+            ? matchScannedFiles(current, candidates).matches.get(node.id) ?? []
+            : matchComparisonDocuments(current, candidates).get(node.id) ?? [];
+        } catch {
+          unavailable.push({ location, role });
+        }
+      }
+    } catch {
+      unavailable.push({ location });
+    }
+  }
+  return { files, unavailable };
 }
 
 function createNode(current: ProjectGraph, form: typeof nodeForm.value): VersionNode {

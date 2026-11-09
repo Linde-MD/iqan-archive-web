@@ -1,11 +1,12 @@
-import { requireCondition } from '../domain/model';
+import { requireCondition, type ArchiveLocation } from '../domain/model';
 import { relativeParts, type FileCandidate } from '../domain/filenames';
 
 export type DirectoryRole = 'engineering' | 'word';
 export interface ArchiveRootBinding {
-  id: 'root';
+  id: ArchiveLocation;
   handle: DirectoryHandle;
 }
+export type ArchiveRoots = Partial<Record<ArchiveLocation, DirectoryHandle>>;
 export interface DirectoryHandle {
   readonly kind: 'directory';
   readonly name: string;

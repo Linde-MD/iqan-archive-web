@@ -1,3 +1,5 @@
+export type ArchiveLocation = 'shared' | 'local';
+
 export interface Project {
   id: string;
   name: string;

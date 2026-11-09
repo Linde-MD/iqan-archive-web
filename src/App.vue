@@ -10,7 +10,7 @@ import VersionGraph from './components/VersionGraph.vue';
 import ComparisonDocuments from './components/ComparisonDocuments.vue';
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
-import { checkPermission, sameDirectory, type DirectoryHandle, type FileHandle } from './files/directories';
+import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { listJsonBackups, writeJsonBackup } from './files/archive-json';
 
 const db = new ArchiveDatabase();
@@ -36,7 +36,7 @@ const projectsCollapsed = ref(false);
 const filesPanelBusy = ref(false);
 const documentsBusy = ref(false);
 const rootBusy = ref(false);
-const archiveRoot = shallowRef<DirectoryHandle>();
+const archiveRoots = shallowRef<ArchiveRoots>({});
 const archiveRootRevision = ref(0);
 const filesBusy = computed(() => filesPanelBusy.value || documentsBusy.value || rootBusy.value);
 const graphBusy = ref(false);
@@ -170,7 +170,7 @@ async function exportProject() {
   if (!activeProjectId.value) return;
   saving.value = true; error.value = ''; status.value = '';
   try {
-    const root = archiveRoot.value;
+    const root = archiveRoots.value.local;
     if (!root || !await checkPermission(root, false, 'readwrite')) throw new Error('请先授权归档根目录的读写权限。');
     const snapshot = await repository.snapshot(activeProjectId.value);
     const fileName = await writeJsonBackup(root, snapshot.graph.project.name, serializeProjectSnapshot(snapshot));
@@ -185,7 +185,7 @@ async function exportProject() {
 async function chooseImportFromRoot() {
   error.value = ''; status.value = '';
   try {
-    const root = archiveRoot.value;
+    const root = archiveRoots.value.local;
     if (!root) throw new Error('请先选择归档根目录。');
     if (!await checkPermission(root, false, 'readwrite')) throw new Error('归档根目录读写授权已失效，请重新授权。');
     const files = await listJsonBackups(root);
@@ -204,8 +204,8 @@ async function readImportFileFromRoot() {
   importPreview.value = null;
   saving.value = true; error.value = ''; status.value = '';
   try {
-    const rootAtRead = archiveRoot.value;
-    const currentRoot = await repository.getArchiveRoot();
+    const rootAtRead = archiveRoots.value.local;
+    const currentRoot = await repository.getArchiveRoot('local');
     if (!rootAtRead || !currentRoot || !(await sameDirectory(rootAtRead, currentRoot)))
       throw new Error('归档根目录已更改，请重新选择 JSON 备份。');
     if (!await checkPermission(rootAtRead, false, 'readwrite')) throw new Error('归档根目录读写授权已失效，请重新授权。');
@@ -275,15 +275,6 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
   </header>
 
   <main id="workspace">
-    <section class="intro" aria-labelledby="page-title">
-      <div>
-        <p class="eyebrow">ENGINEERING WORKSPACE</p>
-        <h1 id="page-title">工程版本工作台<span class="title-accent">.</span></h1>
-        <p class="lead">为 IQAN 工程建立清晰的项目边界。配置留在本机，原始文件留在原目录。</p>
-      </div>
-      <span class="stage">SPEC-02 · 项目与版本图</span>
-    </section>
-
     <Transition name="surface">
       <div v-if="error" class="error" role="alert">
         <h2 ref="errorHeading" tabindex="-1">操作未完成</h2>
@@ -304,13 +295,12 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
     </button>
     <section v-if="activeProject || !loading" class="panel project-backup" aria-labelledby="backup-title">
       <div class="section-heading">
-        <div><p class="eyebrow">PROJECT CONFIGURATION</p><h2 id="backup-title">{{ activeProject ? `配置备份 · ${activeProject.name}` : '导入项目配置' }}</h2></div>
+        <div><h2 id="backup-title">{{ activeProject ? `项目备份 · ${activeProject.name}` : '项目备份' }}</h2><p class="backup-scope">只包含图与任务配置，不含文件或目录授权。</p></div>
         <div class="backup-actions">
-          <button v-if="activeProject" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoot" @click="exportProject"><AppIcon name="download" />导出 JSON</button>
-          <button ref="importButton" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoot" @click="chooseImportFromRoot"><AppIcon name="upload" />导入恢复</button>
+          <button v-if="activeProject" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.local" @click="exportProject"><AppIcon name="download" />导出 JSON</button>
+          <button ref="importButton" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.local" @click="chooseImportFromRoot"><AppIcon name="upload" />导入恢复</button>
         </div>
       </div>
-      <p class="form-help">仅包含项目元数据、版本图、分支、任务和放行状态；不包含工程/软件对比文档、路径或目录授权。</p>
       <div v-if="importPreview" class="import-preview" aria-labelledby="import-preview-title">
         <h3 id="import-preview-title" tabindex="-1">导入预览</h3>
         <p><strong>{{ importPreview.graph.project.name }}</strong> · 零件号 {{ importPreview.graph.project.partNumber }}</p>
@@ -324,7 +314,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         </div>
       </div>
     </section>
-    <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @root="archiveRoot = $event; archiveRootRevision++" @busy="rootBusy = $event" @error="showError" />
+    <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="archiveRoots = $event; archiveRootRevision++" @busy="rootBusy = $event" @error="showError" />
     <dialog ref="importPicker" class="branch-move-dialog" aria-labelledby="import-picker-title" @close="importFiles = []; importFileName = ''">
       <h3 id="import-picker-title">从归档根目录导入</h3>
       <p>选择保存在归档根目录中的项目 JSON 备份。</p>
@@ -358,8 +348,8 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
               <div class="project-title-line">
                 <h3>{{ project.name }}</h3>
                 <span class="project-state">已保存</span>
-                <button class="project-part-number" :disabled="saving || filesBusy || graphBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
               </div>
+              <button class="project-part-number" :disabled="saving || filesBusy || graphBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
             </div>
             <div class="project-actions">
               <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
@@ -400,7 +390,6 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         <template v-else>
         <p class="eyebrow">NEW PROJECT</p>
         <h2 id="create-title">建立项目</h2>
-        <p class="form-help">相同零件号可以用于不同项目，内部身份独立保存。</p>
         <form @submit.prevent="addProject">
           <label for="project-name">项目名称 <span>必填</span></label>
           <input id="project-name" v-model="name" name="projectName" required :disabled="saving" :aria-invalid="nameError" :aria-describedby="nameError ? 'name-error' : undefined" placeholder="例如：转向控制系统" />
@@ -414,16 +403,16 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </section>
     </div>
 
-    <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :root-handle="archiveRoot" @busy="filesPanelBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" @busy="graphBusy = $event" @documents="view = 'documents'" />
-    <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :root-handle="archiveRoot" @busy="documentsBusy = $event" @graph="view = 'graph'" />
+    <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" @busy="graphBusy = $event" @documents="view = 'documents'" />
+    <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="view = 'graph'" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">
       <div class="notice-mark" aria-hidden="true">i</div>
       <div>
-        <h2 id="storage-title">本地存储，不等于永久备份</h2>
-        <p>项目配置保存在当前站点的浏览器 IndexedDB 中，不上传云端。清除浏览器数据可能导致配置丢失；同一来源下不同仓库路径不是安全隔离，迁移域名或浏览器前请先导出 JSON。可在项目工作区导出和恢复 JSON；工程和软件对比文档原文件不存入数据库，恢复后须重新授权目录。</p>
+        <h2 id="storage-title">配置保存在当前浏览器</h2>
+        <p>清除浏览器数据可能丢失配置；迁移前请导出 JSON。</p>
       </div>
     </section>
     <footer><span>IQAN Archive</span><span>静态前端 · 无需登录 · 不依赖启动器</span></footer>

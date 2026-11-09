@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import { createProject, normalizeVersion, orderedBranches, requireCondition, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
+import { createProject, normalizeVersion, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
 import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
@@ -65,6 +65,17 @@ export class ArchiveDatabase extends Dexie {
     this.version(5).stores({
       tasks: 'id, projectId, &[projectId+externalTaskId]',
       archiveRoots: 'id',
+    });
+    this.version(6).stores({
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+      archiveRoots: 'id',
+    }).upgrade(async transaction => {
+      const roots = transaction.table<ArchiveRootBinding>('archiveRoots');
+      const legacyRoot = await roots.get('root');
+      if (legacyRoot) {
+        await roots.put({ ...legacyRoot, id: 'shared' });
+        await roots.delete('root');
+      }
     });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
@@ -206,14 +217,14 @@ export class ArchiveRepository {
     });
   }
 
-  async setArchiveRoot(handle: DirectoryHandle): Promise<void> {
+  async setArchiveRoot(handle: DirectoryHandle, location: ArchiveLocation = 'shared'): Promise<void> {
     await this.db.transaction('rw', [this.db.archiveRoots], async () => {
-      await this.db.archiveRoots.put({ id: 'root', handle });
+      await this.db.archiveRoots.put({ id: location, handle });
     });
   }
 
-  async getArchiveRoot(): Promise<DirectoryHandle | undefined> {
-    return (await this.db.archiveRoots.get('root'))?.handle;
+  async getArchiveRoot(location: ArchiveLocation = 'shared'): Promise<DirectoryHandle | undefined> {
+    return (await this.db.archiveRoots.get(location))?.handle;
   }
 
   async release(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {

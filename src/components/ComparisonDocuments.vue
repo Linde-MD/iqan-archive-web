@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
+import type { ArchiveLocation } from '../domain/model';
 import type { FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri } from '../domain/iqan-protocol';
-import { checkPermission, fileOperationErrorMessage, locateFile, sameDirectory, type DirectoryHandle } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, sameDirectory, type ArchiveRoots, type DirectoryHandle } from '../files/directories';
 import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; rootHandle?: DirectoryHandle | undefined }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; archiveRoots: ArchiveRoots }>();
 const emit = defineEmits<{ busy: [value: boolean]; graph: [] }>();
 const directory = ref<InstanceType<typeof DirectoryPanel>>();
 const files = shallowRef<FileCandidate[]>([]);
 const scannedRoot = shallowRef<DirectoryHandle>();
+const scannedLocation = ref<ArchiveLocation>('local');
 const scanned = ref(false);
 const query = ref('');
 const scanning = ref(false);
@@ -28,9 +30,10 @@ const visibleFiles = computed(() => {
   return files.value.filter(file => file.relativePath.toLocaleLowerCase().includes(search));
 });
 
-function receiveFiles(value: FileCandidate[]) {
+function receiveFiles(location: ArchiveLocation, value: FileCandidate[]) {
   files.value = value;
   scannedRoot.value = directory.value?.getHandle();
+  scannedLocation.value = location;
   scanned.value = true;
 }
 function invalidate() {
@@ -90,7 +93,7 @@ async function openDocument(file: FileCandidate) {
     await locateFile(binding, file.relativePath);
     const latest = directory.value?.getHandle();
     if (!latest || !await sameDirectory(binding, latest)) throw new Error('文件检查期间归档根目录或项目已改变，请重新扫描。');
-    const uri = buildDocumentOpenUri(props.projectId, binding.name, file.relativePath);
+    const uri = buildDocumentOpenUri(props.projectId, binding.name, file.relativePath, scannedLocation.value);
     if (disposed) return;
     window.location.assign(uri);
     status.value = '已请求本地启动器，请查看系统提示。网页无法确认 Word 是否已打开文档。';
@@ -111,7 +114,7 @@ onUnmounted(() => { disposed = true; window.removeEventListener('pointerdown', o
       <div><p class="eyebrow">COMPARISON DOCUMENTS</p><h2 id="document-title">软件对比文档</h2></div>
       <button class="secondary" :disabled="busy" @click="emit('graph')"><AppIcon name="branch" />版本图</button>
     </div>
-    <DirectoryPanel ref="directory" :project-name="projectName" :root-handle="rootHandle" role="word" :disabled="opening" auto-scan
+    <DirectoryPanel ref="directory" :project-name="projectName" :archive-roots="archiveRoots" role="word" :disabled="opening" auto-scan
       @results="receiveFiles" @invalidate="invalidate" @busy="scanningChanged" @error="error = fileOperationErrorMessage($event)" />
     <div class="document-filters">
       <label for="document-search">搜索文档</label>

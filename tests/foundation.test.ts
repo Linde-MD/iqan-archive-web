@@ -327,7 +327,7 @@ describe('Dexie 原子持久化', () => {
 
   it('未知未来 schema 不被 v5 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(6).stores({ projects: 'id' });
+    future.db.version(7).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();

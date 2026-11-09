@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import { liveQuery } from 'dexie';
-import type { ProjectGraph } from '../domain/model';
+import type { ArchiveLocation, ProjectGraph } from '../domain/model';
 import { orderedVersionNodes, type VersionOrder } from '../domain/version-order';
 import type { ArchiveRepository } from '../storage/database';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { fileOperationErrorMessage, locateFile, type DirectoryRole } from '../files/directories';
-import type { DirectoryHandle } from '../files/directories';
+import type { ArchiveRoots, DirectoryHandle } from '../files/directories';
 import DirectoryPanel from './DirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; rootHandle?: DirectoryHandle | undefined }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; archiveRoots: ArchiveRoots }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const emit = defineEmits<{ busy: [value: boolean] }>();
 const graph = shallowRef<ProjectGraph>();
@@ -19,6 +19,8 @@ const candidates = shallowRef<FileCandidate[]>([]);
 const comparisonDocuments = shallowRef<FileCandidate[]>([]);
 const scanned = ref(false);
 const comparisonDocumentsScanned = ref(false);
+const engineeringLocation = ref<ArchiveLocation>('local');
+const documentsLocation = ref<ArchiveLocation>('local');
 const selected = ref<string[]>([]);
 const busyRoles = ref(new Set<DirectoryRole>());
 const saving = ref(false);
@@ -88,10 +90,20 @@ async function register() {
 async function locate(path: string) {
   await operation(async () => {
     const root = engineering.value?.getHandle();
-    if (!root) throw new Error('请先选择统一归档根目录并确认项目工程子目录存在。');
+    if (!root) throw new Error(`请先设置${engineeringLocation.value === 'local' ? '本地' : '共享'}工程目录并扫描。`);
     await locateFile(root, path);
     status.value = `文件存在且可读取：${path}。未启动本机程序。`;
   });
+}
+function receiveEngineeringFiles(location: ArchiveLocation, files: FileCandidate[]) {
+  engineeringLocation.value = location;
+  candidates.value = files;
+  scanned.value = true;
+}
+function receiveComparisonDocuments(location: ArchiveLocation, files: FileCandidate[]) {
+  documentsLocation.value = location;
+  comparisonDocuments.value = files;
+  comparisonDocumentsScanned.value = true;
 }
 onMounted(() => {
   subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
@@ -112,17 +124,15 @@ onUnmounted(() => subscription?.unsubscribe());
     <p role="status">{{ status }}</p>
     <template v-if="graph">
       <div class="workspace-meta"><strong>{{ graph.project.name }}</strong><span>零件号 <code>{{ graph.project.partNumber }}</code></span><span class="count">{{ graph.nodes.length }} 个版本 · {{ scanned ? rows.filter(row => row.nodeId !== null).length : '尚未扫描' }}{{ scanned ? ' 个关联文件' : '' }}</span></div>
-      <details class="workspace-details"><summary>项目标识与扫描规则</summary><p class="project-id">稳定项目 ID：<code>{{ graph.project.id }}</code></p><p>从统一归档根目录分别扫描“{{ projectName }}_iqan_project_files”和“{{ projectName }}_software_changes_docs”，只读递归扫描，每次最多枚举 5000 个条目。文件名日期文本属于完整版本号；磁盘修改时间不决定身份。按当前零件号与完整版本自动关联，扫描结果只留在本次会话，配置快照不包含本地文件信息。不支持目录 API 时仍可查看版本图。</p></details>
       <div class="directory-grid">
-        <DirectoryPanel ref="engineering" :project-name="projectName" :root-handle="rootHandle" role="engineering" :disabled="busy" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="candidates = $event; scanned = true" />
-        <DirectoryPanel :project-name="projectName" :root-handle="rootHandle" role="word" :disabled="busy" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="comparisonDocuments = $event; comparisonDocumentsScanned = true" />
+        <DirectoryPanel ref="engineering" :project-name="projectName" :archive-roots="archiveRoots" role="engineering" :disabled="busy" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="receiveEngineeringFiles" />
+        <DirectoryPanel :project-name="projectName" :archive-roots="archiveRoots" role="word" :disabled="busy" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="receiveComparisonDocuments" />
       </div>
 
-      <h3>工程扫描预览</h3>
+      <div class="file-section-heading"><h3>工程扫描预览</h3><span v-if="scanned" class="source-tag">{{ engineeringLocation === 'local' ? '本地' : '共享' }}</span></div>
       <p v-if="!scanned">尚未扫描工程子目录。</p>
       <p v-else-if="!rows.length">本次未找到 .idax、.idsx、.idvx 文件。</p>
       <template v-else>
-        <p class="form-help">已有版本自动关联，无需登记。仅没有对应版本的合法文件可选；登记只创建版本，不保存文件路径，不推断父边或推进分支。</p>
         <div class="selection-toolbar">
           <div class="actions">
             <button class="tool-button" :disabled="busy || !eligibleRows.length || allSelected" aria-label="全选可登记项" title="选择所有可登记创建版本的文件" @click="selectAll"><AppIcon name="check" /><span class="tool-caption">全选</span></button>
@@ -142,27 +152,35 @@ onUnmounted(() => subscription?.unsubscribe());
       </template>
 
       <p v-if="scanned && graph.nodes.length" class="form-help" role="status">{{ association?.missing.length ? `本次扫描：${association.missing.length} 个版本缺少源文件（不影响版本图配置）。` : '本次扫描：所有版本均已找到匹配源文件。' }}</p>
-      <h3 class="subheading">版本与自动关联文件</h3>
-      <button class="tool-button" :disabled="busy" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span></button>
+      <div class="file-section-heading subheading"><h3>版本与自动关联文件</h3><button class="tool-button" :disabled="busy" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span></button></div>
       <p v-if="!graph.nodes.length">尚无版本节点。可在版本图创建，或从扫描文件登记创建。</p>
+      <p v-else-if="!scanned" class="form-help">选择共享或本地目录并扫描后，显示版本文件。</p>
       <div class="version-files-scroll" tabindex="0" role="region" aria-label="版本与自动关联文件，可滚动">
       <ul class="version-list">
         <li v-for="node in versionRows" :key="node.id">
-          <strong>{{ node.version }}</strong> · {{ node.releasedAt ? '已放行' : '未放行' }}
-          <span v-if="!scanned" class="form-help"> · 尚未扫描源文件</span>
-          <span v-else-if="!node.files.length" class="form-help"> · 本次扫描未找到源文件</span>
-          <ul><li v-for="file in node.files" :key="file.relativePath">
-            <span>{{ file.relativePath }}</span>
-            <button class="secondary icon-button" :disabled="busy" :aria-label="`检查文件 ${file.fileName}`" :title="`检查文件 ${file.fileName}`" @click="locate(file.relativePath)"><AppIcon name="scan" /></button>
-          </li></ul>
+          <div class="version-file-heading"><code>{{ node.version }}</code><span :class="['release-label', { released: node.releasedAt }]">{{ node.releasedAt ? '已放行' : '未放行' }}</span></div>
+          <ul class="source-file-list">
+            <li v-for="file in node.files" :key="file.relativePath" class="source-file-row">
+              <AppIcon name="file" />
+              <span class="source-file-path">{{ file.relativePath }}</span>
+              <span class="source-tag">{{ engineeringLocation === 'local' ? '本地' : '共享' }}</span>
+              <button class="secondary icon-button" :disabled="busy" :aria-label="`检查文件 ${file.fileName}`" :title="`检查文件 ${file.fileName}`" @click="locate(file.relativePath)"><AppIcon name="scan" /></button>
+            </li>
+            <li v-if="scanned && !node.files.length" class="source-file-empty">本次扫描未找到匹配文件</li>
+          </ul>
         </li>
       </ul>
       </div>
 
-      <h3 class="subheading">软件对比文档</h3>
-      <p>用于存放软件版本对比说明。首版支持 .doc/.docx 格式，按项目列出，不关联版本。通过本机 Word 打开原文件将在 Launcher 集成后提供，当前不能直接打开。</p>
+      <div class="file-section-heading subheading"><h3>软件对比文档</h3><span v-if="comparisonDocumentsScanned" class="source-tag">{{ documentsLocation === 'local' ? '本地' : '共享' }}</span></div>
       <p v-if="!comparisonDocumentsScanned">尚未扫描软件对比文档目录。</p><p v-else-if="!comparisonDocuments.length">未找到支持的 .doc/.docx 软件对比文档。</p>
-      <ul class="comparison-document-list"><li v-for="file in comparisonDocuments" :key="file.relativePath">{{ file.relativePath }}</li></ul>
+      <ul v-if="comparisonDocuments.length" class="source-file-list comparison-document-list">
+        <li v-for="file in comparisonDocuments" :key="file.relativePath" class="source-file-row">
+          <AppIcon name="documents" />
+          <span class="source-file-path">{{ file.relativePath }}</span>
+          <span class="source-tag">{{ documentsLocation === 'local' ? '本地' : '共享' }}</span>
+        </li>
+      </ul>
     </template>
   </section>
 </template>
