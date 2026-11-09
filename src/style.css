@@ -422,7 +422,8 @@ tbody tr.row-selected { background: #1a3557; }
 .git-graph-main-cell.has-version-slot > .git-node-accessories { grid-column: 3; grid-row: 1; }
 .git-version-file-actions { display: flex; align-items: center; gap: 4px; width: 60px; }
 .git-document-slot-empty { display: block; width: 28px; height: 28px; }
-.git-engineering-state { position: relative; display: grid; flex: 0 0 28px; place-items: center; width: 28px; height: 28px; border: 1px solid #455b75; border-radius: 6px; background: #14243a; color: #a7bfd9; }
+.git-engineering-state { position: relative; display: grid; flex: 0 0 28px; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0; border: 1px solid #455b75; border-radius: 6px; background: #14243a; color: #a7bfd9; cursor: pointer; }
+.git-engineering-state:hover, .git-engineering-state:focus-visible { border-color: #b7d8ff; background: #1b3552; outline: 2px solid #7db8ff; outline-offset: 2px; }
 .git-engineering-state > .app-icon { width: 18px; height: 18px; }
 .git-engineering-state.state-local, .git-engineering-state.state-shared { border-color: #527aa1; color: #b7d9ff; }
 .git-engineering-state.state-both { border-color: #478b7d; color: #a4ead2; }
@@ -493,9 +494,16 @@ tbody tr.row-selected { background: #1a3557; }
 .git-row-orphan { background: #151426; }
 .git-row-orphan:hover { background: #28233d; }
 .git-graph-empty { grid-column: 1 / -1; margin: 18px 24px; color: var(--muted); font-size: 13px; }
-.graph-menu { position: absolute; z-index: 6; background: #172338; border: 1px solid #52647e; border-radius: 8px; box-shadow: 0 12px 32px #020617aa; padding: 6px; width: max-content; min-width: 180px; max-width: min(248px, calc(100vw - 24px)); }
+.graph-menu { position: absolute; z-index: 6; background: #172338; border: 1px solid #52647e; border-radius: 8px; box-shadow: 0 12px 32px #020617aa; padding: 6px; width: max-content; min-width: 180px; max-width: min(300px, calc(100vw - 24px)); max-height: min(65vh, 480px); overflow: auto; overscroll-behavior: contain; }
 .graph-menu button { display: flex; width: 100%; justify-content: flex-start; min-height: 40px; background: transparent; color: var(--ink); border-radius: 6px; }
 .graph-menu button:hover { background: #253650; }
+.graph-menu-file-action { display: grid !important; grid-template-columns: 20px minmax(0, 1fr); align-items: center !important; gap: 8px; min-height: 52px !important; padding: 6px 9px !important; text-align: left; white-space: normal; }
+.graph-menu-file-action > .app-icon { width: 18px; height: 18px; color: #b8d7f6; }
+.graph-menu-file-action > span { display: grid; gap: 2px; min-width: 0; }
+.graph-menu-file-action strong { color: #edf4ff; font-size: 11px; font-weight: 600; }
+.graph-menu-file-action small { overflow-wrap: anywhere; color: #bac9dc; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 10px; line-height: 1.35; }
+.graph-menu-file-danger > .app-icon { color: #f0a3a3; }
+.graph-menu-file-danger:hover { background: #482d3a !important; }
 .graph-menu-open-row { display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 2px; }
 .graph-menu-open-row > [role="menuitem"] { min-width: 0; padding-right: 10px; padding-left: 10px; white-space: nowrap; }
 .graph-menu-open-row .graph-menu-source-toggle { width: 40px; min-width: 40px; min-height: 40px; padding: 0; justify-content: center; border: 1px solid #405571; background: #111d2e; color: #b8c9dd; }

@@ -39,6 +39,23 @@ describe('Launcher 工程 URI v1', () => {
       )).toBe(testCase.uri);
     }
   });
+  it('生成本地上传到共享目录的工程副本 v2 请求', () => {
+    for (const testCase of fixture.copyV2Valid) {
+      const sourceFile = testCase.files[0]!;
+      const targetFile = testCase.files[1]!;
+      const sourceSeparator = sourceFile.indexOf('/');
+      const targetSeparator = targetFile.indexOf('/');
+      expect(buildEngineeringCopyUri(
+        testCase.projectId,
+        testCase.sourceLocation.toLocaleLowerCase() as ArchiveLocation,
+        sourceFile.slice(0, sourceSeparator),
+        sourceFile.slice(sourceSeparator + 1),
+        targetFile.slice(0, targetSeparator),
+        targetFile.slice(targetSeparator + 1),
+        testCase.targetLocation.toLocaleLowerCase() as ArchiveLocation,
+      )).toBe(testCase.uri);
+    }
+  });
   it('显式编码工程文件位置并保留 compare 两端各自位置', () => {
     expect(buildOpenUri(projectId, 'Demo_iqan_project_files', 'v1/model.idax', 'local'))
       .toBe(`iqanarchive://open?v=2&project=${projectId}&location=local&file=Demo_iqan_project_files%2Fv1%2Fmodel.idax`);
@@ -51,6 +68,12 @@ describe('Launcher 工程 URI v1', () => {
       .toBe(`iqanarchive://copy-engineering?v=1&project=${projectId}&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.1.idax`);
     expect(() => buildEngineeringCopyUri(projectId, 'local', 'Demo_iqan_project_files', '../model.idax', 'Demo_iqan_project_files', 'model.idax')).toThrow();
     expect(() => buildEngineeringCopyUri(projectId, 'local', 'Demo_iqan_project_files', 'model.idax', 'Demo_iqan_project_files', 'model.idsx')).toThrow('扩展名');
+  });
+  it('工程副本 v2 支持本地源上传到共享目录', () => {
+    expect(buildEngineeringCopyUri(projectId, 'local', 'Demo_iqan_project_files', 'nested/99887766554 V1.0.idax', 'Demo_iqan_project_files', 'nested/99887766554 V1.0.idax', 'shared'))
+      .toBe(`iqanarchive://copy-engineering?v=2&project=${projectId}&sourceLocation=local&sourceFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax&targetLocation=shared&targetFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax`);
+    expect(() => buildEngineeringCopyUri(projectId, 'local', 'Demo_iqan_project_files', 'model.idax', 'Demo_iqan_project_files', 'model.idax', 'local'))
+      .toThrow('同一个文件');
   });
 
   it.each([

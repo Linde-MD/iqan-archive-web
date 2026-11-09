@@ -14,6 +14,7 @@ export interface DirectoryHandle {
   values(): AsyncIterable<DirectoryHandle | FileHandle>;
   getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<DirectoryHandle>;
   getFileHandle(name: string, options?: { create?: boolean }): Promise<FileHandle>;
+  removeEntry?(name: string, options?: { recursive?: boolean }): Promise<void>;
   queryPermission(options: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
   requestPermission(options: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
 }
@@ -133,4 +134,16 @@ export async function locateFile(root: DirectoryHandle, path: string): Promise<F
     }
     throw cause;
   }
+}
+
+export async function removeArchiveFile(root: DirectoryHandle, path: string): Promise<void> {
+  const parts = relativeParts(path);
+  requireCondition(await checkPermission(root, false, 'readwrite'), 'DIRECTORY_PERMISSION', '归档根目录没有读写授权，无法删除文件。');
+  let directory = root;
+  for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
+  const removeEntry = directory.removeEntry;
+  requireCondition(removeEntry, 'DIRECTORY_REMOVE_UNSUPPORTED', '当前浏览器不支持从授权目录中删除文件。');
+  const file = await directory.getFileHandle(parts.at(-1)!);
+  await file.getFile();
+  await removeEntry.call(directory, parts.at(-1)!);
 }

@@ -5,7 +5,7 @@ import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFile
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
-import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
 import { listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
 
 const databases: Dexie[] = [];
@@ -35,6 +35,11 @@ function directory(name: string, entries: (DirectoryHandle | FileHandle)[], perm
       const found = entries.find(item => item.kind === 'file' && item.name === child);
       if (!found || found.kind !== 'file') throw new DOMException('文件缺失', 'NotFoundError');
       return found;
+    },
+    async removeEntry(child) {
+      const index = entries.findIndex(item => item.kind === 'file' && item.name === child);
+      if (index < 0) throw new DOMException('文件缺失', 'NotFoundError');
+      entries.splice(index, 1);
     },
   };
 }
@@ -76,6 +81,18 @@ describe('文件名和版本身份', () => {
     expect(engineeringFileAvailability(new Set(['local', 'shared']), scanned)).toBe('both');
     expect(engineeringFileAvailability(new Set(), scanned)).toBe('none');
     expect(engineeringFileAvailability(new Set(['local']), new Set(['local']))).toBe('unknown');
+  });
+  it('删除已授权根目录内的指定工程文件并拒绝越界或无读写权限', async () => {
+    const target = file('001 V1.idax');
+    const nested = directory('nested', [target]);
+    const root = directory('archive', [nested]);
+    await removeArchiveFile(root, 'nested/001 V1.idax');
+    const remaining: (DirectoryHandle | FileHandle)[] = [];
+    for await (const entry of nested.values()) remaining.push(entry);
+    expect(remaining).toEqual([]);
+    await expect(removeArchiveFile(root, '../outside.idax')).rejects.toThrow('安全的相对路径');
+    const readOnlyRoot = directory('read-only', [file('001 V1.idax')], 'denied');
+    await expect(removeArchiveFile(readOnlyRoot, '001 V1.idax')).rejects.toThrow('读写授权');
   });
   it('按项目名推导统一根目录下的工程和文档子目录，并拒绝非法 Windows 名称', async () => {
     expect(projectDirectoryName('项目 A', 'engineering')).toBe('项目 A_iqan_project_files');

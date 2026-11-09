@@ -293,5 +293,33 @@
       "uri": "iqanarchive://copy-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2F..%2Fmodel.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fmodel.idax",
       "failure": "InvalidPath"
     }
+  ],
+  "copyV2Valid": [
+    {
+      "name": "copy-engineering-v2-local-to-shared",
+      "uri": "iqanarchive://copy-engineering?v=2&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=local&sourceFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax&targetLocation=shared&targetFile=Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax",
+      "operation": "CopyEngineering",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "sourceLocation": "Local",
+      "targetLocation": "Shared",
+      "files": ["Demo_iqan_project_files/nested/99887766554 V1.0.idax", "Demo_iqan_project_files/nested/99887766554 V1.0.idax"]
+    }
+  ],
+  "copyV2Invalid": [
+    {
+      "name": "copy-engineering-v1-shared-target-forbidden",
+      "uri": "iqanarchive://copy-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=local&sourceFile=Demo_iqan_project_files%2Fmodel.idax&targetLocation=shared&targetFile=Demo_iqan_project_files%2Fmodel.idax",
+      "failure": "InvalidLocation"
+    },
+    {
+      "name": "copy-engineering-v2-self-copy-forbidden",
+      "uri": "iqanarchive://copy-engineering?v=2&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2Fmodel.idax&targetLocation=shared&targetFile=Demo_iqan_project_files%2Fmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "copy-engineering-v2-local-target-forbidden",
+      "uri": "iqanarchive://copy-engineering?v=2&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2Fmodel.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fcopy.idax",
+      "failure": "InvalidLocation"
+    }
   ]
 }

@@ -85,20 +85,23 @@ export function buildEngineeringCopyUri(
   sourceRelativePath: string,
   targetDirectoryName: string,
   targetRelativePath: string,
+  targetLocation: ArchiveLocation = 'local',
 ): string {
   assertProjectId(projectId);
   assertArchiveLocation(sourceLocation);
+  assertArchiveLocation(targetLocation);
   const source = archiveRelativePath(sourceDirectoryName, sourceRelativePath);
   const target = archiveRelativePath(targetDirectoryName, targetRelativePath);
   requireCondition(/\.(idax|idsx|idvx)$/i.test(sourceRelativePath), 'URI_COPY_EXTENSION', '仅支持复制 .idax/.idsx/.idvx 工程文件。');
   requireCondition(pathExtension(targetRelativePath).toLowerCase() === pathExtension(sourceRelativePath).toLowerCase(), 'URI_COPY_EXTENSION', '复制目标必须保留源工程文件扩展名。');
   requireCondition(
     source.normalize('NFC').toLowerCase() !== target.normalize('NFC').toLowerCase()
-      || sourceLocation !== 'local',
+      || sourceLocation !== targetLocation,
     'URI_COPY_SAME_FILE',
-    '复制源与本地目标不能是同一个文件。',
+    '复制源与目标不能是同一个文件。',
   );
-  return assertUriLength(`iqanarchive://copy-engineering?v=1&project=${projectId}&sourceLocation=${sourceLocation}&sourceFile=${encodeRfc3986(source)}&targetLocation=local&targetFile=${encodeRfc3986(target)}`);
+  const version = targetLocation === 'shared' ? '2' : '1';
+  return assertUriLength(`iqanarchive://copy-engineering?v=${version}&project=${projectId}&sourceLocation=${sourceLocation}&sourceFile=${encodeRfc3986(source)}&targetLocation=${targetLocation}&targetFile=${encodeRfc3986(target)}`);
 }
 
 function pathExtension(path: string): string {

@@ -4,7 +4,7 @@ import { liveQuery } from 'dexie';
 import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri, buildEngineeringCopyUri } from '../domain/iqan-protocol';
-import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
+import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -110,6 +110,7 @@ const childCopyPrompt = shallowRef<ChildCopyPrompt>();
 const childCopyDialog = ref<HTMLDialogElement>();
 const selectedChildCopyKey = ref('');
 const engineeringFileLocationsByNode = shallowRef(new Map<string, Set<ArchiveLocation>>());
+const engineeringFileCandidatesByNode = shallowRef(new Map<string, Record<ArchiveLocation, FileCandidate[]>>());
 const engineeringScannedLocations = shallowRef(new Set<ArchiveLocation>());
 const engineeringScanIssues = shallowRef(new Map<ArchiveLocation, string>());
 let documentScanController: AbortController | undefined;
@@ -233,7 +234,7 @@ function closeBranchFilter(event: Event) {
   }
 }
 const activeBranchId = ref<string | null>(null);
-const menu = ref<{ kind: 'node' | 'branch'; id: string; x: number; y: number } | null>(null);
+const menu = ref<{ kind: 'node' | 'branch' | 'engineering-file'; id: string; x: number; y: number } | null>(null);
 const menuOpenLocation = ref<ArchiveLocation>('local');
 const menuOpenLocations = shallowRef<{ nodeId: string; locations: ArchiveLocation[] } | null>(null);
 const menuOpenLocationBusy = ref(false);
@@ -534,11 +535,58 @@ function engineeringFileStateForNode(nodeId: string) {
   return { kind, label: labels[kind] } as const;
 }
 
+function engineeringFilesForNode(nodeId: string): Record<ArchiveLocation, FileCandidate[]> {
+  return engineeringFileCandidatesByNode.value.get(nodeId) ?? { local: [], shared: [] };
+}
+
+async function scanEngineeringSourcesForNode(current: ProjectGraph, nodeId: string): Promise<{
+  files: Record<ArchiveLocation, FileCandidate[]>;
+  roots: Map<ArchiveLocation, DirectoryHandle>;
+  directories: Map<ArchiveLocation, DirectoryHandle>;
+}> {
+  const files: Record<ArchiveLocation, FileCandidate[]> = { local: [], shared: [] };
+  const roots = new Map<ArchiveLocation, DirectoryHandle>();
+  const directories = new Map<ArchiveLocation, DirectoryHandle>();
+  for (const location of ['local', 'shared'] as const) {
+    const root = await props.repository.getArchiveRoot(location);
+    if (!root) throw new Error(`${archiveLocationLabel(location)}根目录未设置，无法安全操作工程文件。`);
+    if (!await checkPermission(root)) throw new Error(`${archiveLocationLabel(location)}根目录未授权，请重新授权后再试。`);
+    roots.set(location, root);
+    let binding: DirectoryHandle;
+    try {
+      binding = await resolveProjectDirectory(root, current.project.name, 'engineering');
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'NotFoundError') continue;
+      throw cause;
+    }
+    if (!await checkPermission(binding)) throw new Error(`${archiveLocationLabel(location)}工程目录未授权，请重新授权后再试。`);
+    const candidates = await scanDirectory(binding, 'engineering', new AbortController().signal, () => undefined);
+    const [latestRoot, latestGraph] = await Promise.all([
+      props.repository.getArchiveRoot(location),
+      props.repository.get(props.projectId),
+    ]);
+    if (!latestRoot || !(await sameDirectory(root, latestRoot)))
+      throw new Error(`${archiveLocationLabel(location)}根目录授权已变化，请重新打开图标菜单后再试。`);
+    if (latestGraph.project.revision !== current.project.revision || latestGraph.project.name !== current.project.name)
+      throw new Error('版本图已变化，请重新读取后再操作工程文件。');
+    const latestBinding = await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'engineering');
+    if (!(await sameDirectory(binding, latestBinding)))
+      throw new Error(`${archiveLocationLabel(location)}工程目录授权已变化，请重新打开图标菜单后再试。`);
+    directories.set(location, binding);
+    files[location] = matchScannedFiles(current, candidates).matches.get(nodeId) ?? [];
+  }
+  const latestGraph = await props.repository.get(props.projectId);
+  if (latestGraph.project.revision !== current.project.revision || latestGraph.project.name !== current.project.name)
+    throw new Error('版本图已变化，请重新读取后再操作工程文件。');
+  return { files, roots, directories };
+}
+
 async function refreshEngineeringFileStates() {
   engineeringScanController?.abort();
   const controller = new AbortController();
   engineeringScanController = controller;
   engineeringFileLocationsByNode.value = new Map();
+  engineeringFileCandidatesByNode.value = new Map();
   engineeringScannedLocations.value = new Set();
   engineeringScanIssues.value = new Map();
   let graphAtScan: ProjectGraph;
@@ -551,6 +599,7 @@ async function refreshEngineeringFileStates() {
     return;
   }
   const filesByNode = new Map<string, Set<ArchiveLocation>>();
+  const candidatesByNode = new Map<string, Record<ArchiveLocation, FileCandidate[]>>();
   const scannedLocations = new Set<ArchiveLocation>();
   const issues = new Map<ArchiveLocation, string>();
 
@@ -613,6 +662,9 @@ async function refreshEngineeringFileStates() {
         const foundAt = filesByNode.get(nodeId) ?? new Set<ArchiveLocation>();
         foundAt.add(location);
         filesByNode.set(nodeId, foundAt);
+        const files = candidatesByNode.get(nodeId) ?? { local: [], shared: [] };
+        files[location] = matches;
+        candidatesByNode.set(nodeId, files);
       }
     } catch (cause) {
       if (controller.signal.aborted) return;
@@ -633,6 +685,7 @@ async function refreshEngineeringFileStates() {
   if (latestGraph.project.revision !== graphAtScan.project.revision
     || latestGraph.project.name !== graphAtScan.project.name) return;
   engineeringFileLocationsByNode.value = filesByNode;
+  engineeringFileCandidatesByNode.value = candidatesByNode;
   engineeringScannedLocations.value = scannedLocations;
   engineeringScanIssues.value = issues;
 }
@@ -1302,6 +1355,134 @@ function openNodeMenu(event: MouseEvent, nodeId: string) {
   menuOpenLocation.value = 'local';
   menuOpenLocations.value = null;
   void refreshMenuOpenLocations(nodeId);
+}
+
+function openEngineeringFileMenu(event: MouseEvent, node: VersionNode) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (saving.value || editorOpen.value) return;
+  closeMenu(false);
+  menuReturnFocus.value = event.currentTarget as HTMLElement;
+  activeBranchId.value = null;
+  const rect = graphScroller.value!.getBoundingClientRect();
+  menu.value = {
+    kind: 'engineering-file',
+    id: node.id,
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+  void refreshEngineeringFileStates();
+}
+
+async function copyEngineeringFileForNode(
+  nodeId: string,
+  sourceLocation: ArchiveLocation,
+  targetLocation: ArchiveLocation,
+  selectedFile: FileCandidate,
+) {
+  if (saving.value) return;
+  closeMenu(false);
+  saving.value = true;
+  emit('busy', true);
+  error.value = '';
+  status.value = '';
+  try {
+    const current = await props.repository.get(props.projectId);
+    const node = current.nodes.find(item => item.id === nodeId);
+    if (!node) throw new Error('版本已不存在，请重新读取版本图。');
+    const scan = await scanEngineeringSourcesForNode(current, nodeId);
+    const sourceFile = scan.files[sourceLocation].find(file => file.relativePath === selectedFile.relativePath);
+    if (!sourceFile) throw new Error('所选源文件已变化，请重新扫描后再操作。');
+    if (scan.files[targetLocation].length)
+      throw new Error(`${archiveLocationLabel(targetLocation)}目录已存在此版本工程文件，不会覆盖。`);
+    const sourceDirectory = scan.directories.get(sourceLocation);
+    const sourceRoot = scan.roots.get(sourceLocation);
+    const targetRoot = scan.roots.get(targetLocation);
+    if (!sourceDirectory || !sourceRoot || !targetRoot)
+      throw new Error('源文件或目标根目录不可用，请检查归档目录授权。');
+    if (!await checkPermission(targetRoot, false, 'readwrite'))
+      throw new Error(`${archiveLocationLabel(targetLocation)}根目录没有读写授权，请重新授权后再试。`);
+    await locateFile(sourceDirectory, sourceFile.relativePath);
+    const latestGraph = await props.repository.get(props.projectId);
+    const latestNode = latestGraph.nodes.find(item => item.id === nodeId);
+    if (latestGraph.project.revision !== current.project.revision || latestNode?.version !== node.version)
+      throw new Error('版本图已变化，请重新读取后再操作工程文件。');
+    const uri = buildEngineeringCopyUri(
+      current.project.id,
+      sourceLocation,
+      projectDirectoryName(current.project.name, 'engineering'),
+      sourceFile.relativePath,
+      projectDirectoryName(current.project.name, 'engineering'),
+      sourceFile.relativePath,
+      targetLocation,
+    );
+    window.location.assign(uri);
+    status.value = `已请求 Launcher 将${archiveLocationLabel(sourceLocation)}文件复制到${archiveLocationLabel(targetLocation)}目录，请在本机确认路径。网页无法确认复制是否完成。`;
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+    emit('busy', false);
+  }
+}
+
+async function deleteLocalEngineeringFile(nodeId: string, selectedFile: FileCandidate) {
+  if (saving.value) return;
+  closeMenu(false);
+  saving.value = true;
+  emit('busy', true);
+  error.value = '';
+  status.value = '';
+  try {
+    const current = await props.repository.get(props.projectId);
+    const node = current.nodes.find(item => item.id === nodeId);
+    if (!node) throw new Error('版本已不存在，请重新读取版本图。');
+    const initialScan = await scanEngineeringSourcesForNode(current, nodeId);
+    if (!initialScan.files.local.some(file => file.relativePath === selectedFile.relativePath))
+      throw new Error('所选本地工程文件已变化，请重新打开文件状态菜单。');
+    if (await sameDirectory(initialScan.roots.get('local')!, initialScan.roots.get('shared')!))
+      throw new Error('共享与本地归档根目录指向同一位置，无法单独删除本地副本。');
+    const initialSharedCopyExists = initialScan.files.shared.length > 0;
+    const locationWarning = initialSharedCopyExists
+      ? '共享目录仍有此版本工程文件。'
+      : '共享目录当前没有此版本工程文件。';
+    if (!window.confirm(`确定删除本地工程文件？\n${selectedFile.relativePath}\n${locationWarning}`)) return;
+
+    let confirmedLocalOnly = false;
+    let latestGraph = await props.repository.get(props.projectId);
+    if (latestGraph.project.revision !== current.project.revision)
+      throw new Error('版本图已变化，请重新读取后再删除文件。');
+    let scan = await scanEngineeringSourcesForNode(latestGraph, nodeId);
+    if (!scan.files.local.some(file => file.relativePath === selectedFile.relativePath))
+      throw new Error('确认期间本地工程文件已变化，未删除。');
+    if (!scan.files.shared.length) {
+      if (!window.confirm(`该版本目前只有本地工程文件：\n${selectedFile.relativePath}\n删除后共享目录没有该版本副本，仍要继续吗？`)) return;
+      confirmedLocalOnly = true;
+    }
+
+    latestGraph = await props.repository.get(props.projectId);
+    if (latestGraph.project.revision !== current.project.revision)
+      throw new Error('版本图已变化，请重新读取后再删除文件。');
+    scan = await scanEngineeringSourcesForNode(latestGraph, nodeId);
+    if (!scan.files.local.some(file => file.relativePath === selectedFile.relativePath))
+      throw new Error('删除前本地工程文件已变化，未删除。');
+    if (await sameDirectory(scan.roots.get('local')!, scan.roots.get('shared')!))
+      throw new Error('共享与本地归档根目录指向同一位置，无法单独删除本地副本。');
+    if (!scan.files.shared.length && !confirmedLocalOnly
+      && !window.confirm(`共享目录没有该版本副本。删除“${selectedFile.relativePath}”后将只剩本地其他候选文件；仍要继续吗？`)) return;
+    const localRoot = scan.roots.get('local');
+    const localDirectory = scan.directories.get('local');
+    if (!localRoot || !localDirectory || !await checkPermission(localRoot, false, 'readwrite'))
+      throw new Error('本地根目录没有读写授权，请重新授权后再试。');
+    await removeArchiveFile(localDirectory, selectedFile.relativePath);
+    status.value = `已删除本地工程文件：${selectedFile.relativePath}`;
+    void refreshEngineeringFileStates();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+    emit('busy', false);
+  }
 }
 
 async function refreshMenuOpenLocations(nodeId: string) {
@@ -2114,12 +2295,16 @@ function onIqanDialogClosed() {
                 <div class="git-graph-lanes" aria-hidden="true"></div>
                 <div class="git-graph-main-cell" :class="{ 'has-version-slot': showFileIcons && row.kind === 'version' && !row.isolated }">
                   <div v-if="showFileIcons && row.kind === 'version' && !row.isolated" class="git-version-file-actions">
-                    <span
+                    <button
+                      type="button"
                       class="git-engineering-state"
                       :class="`state-${engineeringFileStateForNode(row.node.id).kind}`"
-                      role="img"
-                      :aria-label="engineeringFileStateForNode(row.node.id).label"
-                      :title="engineeringFileStateForNode(row.node.id).label"
+                      :aria-label="`版本 ${row.node.version}：${engineeringFileStateForNode(row.node.id).label}，打开工程文件操作菜单`"
+                      :aria-haspopup="'menu'"
+                      :aria-expanded="menu?.kind === 'engineering-file' && menu.id === row.node.id"
+                      :title="`${engineeringFileStateForNode(row.node.id).label}；点击管理工程文件`"
+                      @pointerdown.stop @click.stop="openEngineeringFileMenu($event, row.node)"
+                      @contextmenu="openEngineeringFileMenu($event, row.node)"
                     >
                       <AppIcon v-if="engineeringFileStateForNode(row.node.id).kind === 'unknown'" name="scan" />
                       <AppIcon v-else-if="engineeringFileStateForNode(row.node.id).kind === 'local'" name="computer" />
@@ -2132,7 +2317,7 @@ function onIqanDialogClosed() {
                         <AppIcon name="file" />
                         <span class="git-engineering-no-file-mark" aria-hidden="true"></span>
                       </template>
-                    </span>
+                    </button>
                     <button
                       v-if="(comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
                       type="button" class="git-document-action git-document-slot"
@@ -2223,12 +2408,16 @@ function onIqanDialogClosed() {
                 </div>
                 <div v-if="!hideIsolated" class="git-graph-orphan-cell" :class="{ 'has-version-slot': showFileIcons && row.kind === 'version' && row.isolated }">
                   <div v-if="showFileIcons && row.kind === 'version' && row.isolated" class="git-version-file-actions">
-                    <span
+                    <button
+                      type="button"
                       class="git-engineering-state"
                       :class="`state-${engineeringFileStateForNode(row.node.id).kind}`"
-                      role="img"
-                      :aria-label="engineeringFileStateForNode(row.node.id).label"
-                      :title="engineeringFileStateForNode(row.node.id).label"
+                      :aria-label="`未关联版本 ${row.node.version}：${engineeringFileStateForNode(row.node.id).label}，打开工程文件操作菜单`"
+                      :aria-haspopup="'menu'"
+                      :aria-expanded="menu?.kind === 'engineering-file' && menu.id === row.node.id"
+                      :title="`${engineeringFileStateForNode(row.node.id).label}；点击管理工程文件`"
+                      @pointerdown.stop @click.stop="openEngineeringFileMenu($event, row.node)"
+                      @contextmenu="openEngineeringFileMenu($event, row.node)"
                     >
                       <AppIcon v-if="engineeringFileStateForNode(row.node.id).kind === 'unknown'" name="scan" />
                       <AppIcon v-else-if="engineeringFileStateForNode(row.node.id).kind === 'local'" name="computer" />
@@ -2241,7 +2430,7 @@ function onIqanDialogClosed() {
                         <AppIcon name="file" />
                         <span class="git-engineering-no-file-mark" aria-hidden="true"></span>
                       </template>
-                    </span>
+                    </button>
                     <button
                       v-if="(comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
                       type="button" class="git-document-action git-document-slot"
@@ -2291,7 +2480,7 @@ function onIqanDialogClosed() {
         </div>
       </div>
 
-      <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : '分支操作'" @keydown="onMenuKeyDown">
+      <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : '工程文件操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
           <button role="menuitem" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" />对比所选版本（已选 {{ selectedNodeIds.length }} 个）</button>
           <button role="menuitem" :disabled="saving" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
@@ -2325,7 +2514,31 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除</button>
         </template>
-        <template v-else>
+        <template v-else-if="menu.kind === 'engineering-file'">
+          <template v-if="engineeringFileStateForNode(menu.id).kind === 'unknown'">
+            <button role="menuitem" :disabled="saving" @click="refreshEngineeringFileStates"><AppIcon name="refresh" />重新扫描工程目录</button>
+          </template>
+          <template v-else-if="engineeringFileStateForNode(menu.id).kind === 'local'">
+            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`upload:${file.relativePath}`" role="menuitem" class="graph-menu-file-action" :disabled="saving" :title="`上传 ${file.relativePath} 到共享目录`" @click="copyEngineeringFileForNode(menu.id, 'local', 'shared', file)">
+              <AppIcon name="upload" /><span><strong>上传到共享</strong><small>{{ file.relativePath }}</small></span>
+            </button>
+            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`delete:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除本地文件 ${file.relativePath}`" @click="deleteLocalEngineeringFile(menu.id, file)">
+              <AppIcon name="trash" /><span><strong>删除本地文件</strong><small>{{ file.relativePath }}</small></span>
+            </button>
+          </template>
+          <template v-else-if="engineeringFileStateForNode(menu.id).kind === 'shared'">
+            <button v-for="file in engineeringFilesForNode(menu.id).shared" :key="`download:${file.relativePath}`" role="menuitem" class="graph-menu-file-action" :disabled="saving" :title="`下载 ${file.relativePath} 到本地目录`" @click="copyEngineeringFileForNode(menu.id, 'shared', 'local', file)">
+              <AppIcon name="download" /><span><strong>下载到本地</strong><small>{{ file.relativePath }}</small></span>
+            </button>
+          </template>
+          <template v-else-if="engineeringFileStateForNode(menu.id).kind === 'both'">
+            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`delete:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除本地文件 ${file.relativePath}`" @click="deleteLocalEngineeringFile(menu.id, file)">
+              <AppIcon name="trash" /><span><strong>删除本地文件</strong><small>{{ file.relativePath }}</small></span>
+            </button>
+          </template>
+          <button v-else role="menuitem" :disabled="saving" @click="refreshEngineeringFileStates"><AppIcon name="refresh" />重新扫描工程目录</button>
+        </template>
+        <template v-else-if="menu.kind === 'branch'">
           <button role="menuitem" :disabled="saving" @click="openBranchAdd(selectedBranch!.headId); closeMenu(false)"><AppIcon name="branch" />创建分支</button>
           <button role="menuitem" :disabled="saving" @click="openBranchEdit(); closeMenu(false)"><AppIcon name="edit" />编辑分支</button>
           <button role="menuitem" :disabled="saving" @click="releaseBranch(); closeMenu(false)"><AppIcon name="release" />放行分支</button>
