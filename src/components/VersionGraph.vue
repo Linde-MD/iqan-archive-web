@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
 import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
-import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
+import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri, buildEngineeringCopyUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
@@ -109,8 +109,12 @@ type ChildCopyPrompt = { nodeId: string; parentId: string; parentVersion: string
 const childCopyPrompt = shallowRef<ChildCopyPrompt>();
 const childCopyDialog = ref<HTMLDialogElement>();
 const selectedChildCopyKey = ref('');
+const engineeringFileLocationsByNode = shallowRef(new Map<string, Set<ArchiveLocation>>());
+const engineeringScannedLocations = shallowRef(new Set<ArchiveLocation>());
+const engineeringScanIssues = shallowRef(new Map<ArchiveLocation, string>());
 let documentScanController: AbortController | undefined;
 let documentRootSnapshots = new Map<ArchiveLocation, { root: DirectoryHandle; binding: DirectoryHandle }>();
+let engineeringScanController: AbortController | undefined;
 
 async function toggleFullscreen() {
   if (fullscreenPending.value) return;
@@ -207,6 +211,7 @@ watch(selectedNodeIds, ids => {
 }, { flush: 'sync' });
 const branchFilter = ref<string[] | null>(null);
 const hideIsolated = ref(false);
+const showFileIcons = ref(true);
 const branchFilterDetails = ref<HTMLDetailsElement>();
 const branchQuery = ref('');
 const filteredBranches = computed(() => (graph.value?.branches ?? [])
@@ -509,6 +514,129 @@ async function refreshComparisonDocuments() {
   }
 }
 
+const archiveLocationLabel = (location: ArchiveLocation) => location === 'local' ? '本地' : '共享';
+
+function engineeringFileStateForNode(nodeId: string) {
+  const locations = engineeringFileLocationsByNode.value.get(nodeId) ?? new Set<ArchiveLocation>();
+  const kind = engineeringFileAvailability(locations, engineeringScannedLocations.value);
+  if (kind === 'unknown') {
+    const missingScans = (['local', 'shared'] as const).filter(location => !engineeringScannedLocations.value.has(location));
+    const reasons = missingScans.map(location =>
+      `${archiveLocationLabel(location)}${engineeringScanIssues.value.get(location) ? `：${engineeringScanIssues.value.get(location)}` : '尚未扫描'}`);
+    return { kind: 'unknown', label: `工程文件状态未知，${reasons.join('；')}` } as const;
+  }
+  const labels = {
+    local: '仅本地目录有工程文件',
+    shared: '仅共享目录有工程文件',
+    both: '本地和共享目录都有工程文件',
+    none: '本地和共享目录都没有工程文件',
+  } satisfies Record<Exclude<typeof kind, 'unknown'>, string>;
+  return { kind, label: labels[kind] } as const;
+}
+
+async function refreshEngineeringFileStates() {
+  engineeringScanController?.abort();
+  const controller = new AbortController();
+  engineeringScanController = controller;
+  engineeringFileLocationsByNode.value = new Map();
+  engineeringScannedLocations.value = new Set();
+  engineeringScanIssues.value = new Map();
+  let graphAtScan: ProjectGraph;
+  try {
+    graphAtScan = await props.repository.get(props.projectId);
+  } catch (cause) {
+    if (controller.signal.aborted) return;
+    const message = fileOperationErrorMessage(cause);
+    engineeringScanIssues.value = new Map([['local', message], ['shared', message]]);
+    return;
+  }
+  const filesByNode = new Map<string, Set<ArchiveLocation>>();
+  const scannedLocations = new Set<ArchiveLocation>();
+  const issues = new Map<ArchiveLocation, string>();
+
+  for (const location of ['local', 'shared'] as const) {
+    if (controller.signal.aborted) return;
+    try {
+      const root = await props.repository.getArchiveRoot(location);
+      if (!root) {
+        issues.set(location, '根目录未设置');
+        continue;
+      }
+      if (!await checkPermission(root)) {
+        issues.set(location, '根目录未授权');
+        continue;
+      }
+      let binding: DirectoryHandle;
+      try {
+        binding = await resolveProjectDirectory(root, graphAtScan.project.name, 'engineering');
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'NotFoundError') {
+          const [latestRoot, latestGraph] = await Promise.all([
+            props.repository.getArchiveRoot(location),
+            props.repository.get(props.projectId),
+          ]);
+          if (!latestRoot || !(await sameDirectory(root, latestRoot))) {
+            issues.set(location, '根目录授权已变化');
+            continue;
+          }
+          if (latestGraph.project.revision !== graphAtScan.project.revision
+            || latestGraph.project.name !== graphAtScan.project.name) return;
+          scannedLocations.add(location);
+          continue;
+        }
+        throw cause;
+      }
+      if (!await checkPermission(binding)) {
+        issues.set(location, '工程目录未授权');
+        continue;
+      }
+      const candidates = await scanDirectory(binding, 'engineering', controller.signal, () => undefined);
+      const [latestRoot, latestGraph] = await Promise.all([
+        props.repository.getArchiveRoot(location),
+        props.repository.get(props.projectId),
+      ]);
+      if (controller.signal.aborted) return;
+      if (!latestRoot || !(await sameDirectory(root, latestRoot))) {
+        issues.set(location, '根目录授权已变化');
+        continue;
+      }
+      if (latestGraph.project.revision !== graphAtScan.project.revision
+        || latestGraph.project.name !== graphAtScan.project.name) return;
+      const latestBinding = await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'engineering');
+      if (!(await sameDirectory(binding, latestBinding))) {
+        issues.set(location, '工程目录授权已变化');
+        continue;
+      }
+      scannedLocations.add(location);
+      for (const [nodeId, matches] of matchScannedFiles(graphAtScan, candidates).matches) {
+        if (!matches.length) continue;
+        const foundAt = filesByNode.get(nodeId) ?? new Set<ArchiveLocation>();
+        foundAt.add(location);
+        filesByNode.set(nodeId, foundAt);
+      }
+    } catch (cause) {
+      if (controller.signal.aborted) return;
+      issues.set(location, fileOperationErrorMessage(cause));
+    }
+  }
+
+  if (controller.signal.aborted) return;
+  let latestGraph: ProjectGraph;
+  try {
+    latestGraph = await props.repository.get(props.projectId);
+  } catch (cause) {
+    if (controller.signal.aborted) return;
+    const message = fileOperationErrorMessage(cause);
+    engineeringScanIssues.value = new Map([['local', message], ['shared', message]]);
+    return;
+  }
+  if (latestGraph.project.revision !== graphAtScan.project.revision
+    || latestGraph.project.name !== graphAtScan.project.name) return;
+  engineeringFileLocationsByNode.value = filesByNode;
+  engineeringScannedLocations.value = scannedLocations;
+  engineeringScanIssues.value = issues;
+}
+
 async function openNodeDocuments(event: MouseEvent, node: VersionNode) {
   event.preventDefault();
   event.stopPropagation();
@@ -711,7 +839,13 @@ const subscription = liveQuery(() => props.repository.get(props.projectId)).subs
   },
   error: cause => showError(cause),
 });
-onUnmounted(() => subscription.unsubscribe());
+watch([() => props.projectId, () => graph.value?.project.revision], ([, revision]) => {
+  if (revision !== undefined) void refreshEngineeringFileStates();
+});
+onUnmounted(() => {
+  subscription.unsubscribe();
+  engineeringScanController?.abort();
+});
 
 const taskBaseLayout = computed(() => graph.value
   ? layoutGitGraph(graph.value, versionOrder.value, branchFilter.value, hideIsolated.value)
@@ -1041,6 +1175,7 @@ onMounted(() => {
   window.addEventListener('resize', hideVersionHint);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onGlobalKeyDown);
+  window.addEventListener('focus', refreshEngineeringFileStates);
   window.addEventListener('pointerdown', closeBranchFilter);
   window.addEventListener('pointerdown', onMenuOutsidePointerDown, true);
   window.addEventListener('resize', updateSidebarHeight);
@@ -1056,6 +1191,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', hideVersionHint);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onGlobalKeyDown);
+  window.removeEventListener('focus', refreshEngineeringFileStates);
   window.removeEventListener('pointerdown', closeBranchFilter);
   window.removeEventListener('pointerdown', onMenuOutsidePointerDown, true);
   window.removeEventListener('resize', updateSidebarHeight);
@@ -1861,6 +1997,10 @@ function onIqanDialogClosed() {
           <input v-model="hideIsolated" type="checkbox" role="switch" :disabled="saving || editorOpen" />
           <span>隐藏未关联版本</span>
         </label>
+        <label class="graph-isolated-toggle graph-file-icons-toggle" title="统一显示或隐藏工程文件位置和软件对比文档图标">
+          <input v-model="showFileIcons" type="checkbox" role="switch" :disabled="saving || editorOpen" />
+          <span>显示文件图标</span>
+        </label>
         <div class="graph-mode-toggle" role="group" aria-label="版本图浏览模式">
           <button type="button" class="secondary" :aria-pressed="graphMode === 'all'" :disabled="saving" @click="setGraphMode('all')">全部版本</button>
           <button type="button" class="secondary" :aria-pressed="graphMode === 'tasks'" :disabled="saving" @click="setGraphMode('tasks')">按任务聚合</button>
@@ -1940,7 +2080,20 @@ function onIqanDialogClosed() {
                 :cy="GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2"
                 r="6"
                 class="git-graph-commit"
-                :style="{ stroke: selectedNodeIds.includes(row.node.id) ? '#0b1321' : nodeColor(row.node), fill: selectedNodeIds.includes(row.node.id) ? nodeColor(row.node) : undefined }"
+                :class="{ 'is-released': row.kind === 'version' && !!row.node.releasedAt }"
+                :style="{ stroke: nodeColor(row.node), fill: row.kind === 'version' && row.node.releasedAt ? nodeColor(row.node) : undefined }"
+              />
+              <path
+                v-for="row in graphLayout.rows.filter(row => !row.isolated && row.kind === 'version' && row.node.releasedAt)"
+                :key="`release-check-outline:${row.key}`"
+                :d="`M${GIT_GRAPH.laneStart + row.laneIndex * GIT_GRAPH.laneGap - 2.5} ${GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2} l1.8 1.8 3.8-4`"
+                class="git-graph-release-check-outline"
+              />
+              <path
+                v-for="row in graphLayout.rows.filter(row => !row.isolated && row.kind === 'version' && row.node.releasedAt)"
+                :key="`release-check:${row.key}`"
+                :d="`M${GIT_GRAPH.laneStart + row.laneIndex * GIT_GRAPH.laneGap - 2.5} ${GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2} l1.8 1.8 3.8-4`"
+                class="git-graph-release-check"
               />
             </svg>
             <div class="git-graph-rows">
@@ -1959,14 +2112,35 @@ function onIqanDialogClosed() {
                 :style="{ gridTemplateColumns: graphColumns }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
-                <div class="git-graph-main-cell" :class="{ 'has-version-slot': row.kind === 'version' && !row.isolated }">
-                  <button
-                    v-if="row.kind === 'version' && !row.isolated && (comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
-                    type="button" class="git-document-action git-document-slot"
-                    :aria-label="`打开版本 ${row.node.version} 的软件对比文档${comparisonDocumentsByNode.get(row.node.id)!.length > 1 ? `，${comparisonDocumentsByNode.get(row.node.id)!.length} 份` : ''}`"
-                    :title="`打开软件对比文档（${comparisonDocumentsByNode.get(row.node.id)!.length} 份）`"
-                    @pointerdown.stop @click="openNodeDocuments($event, row.node)"><AppIcon name="documents" /></button>
-                  <span v-else-if="row.kind === 'version' && !row.isolated" class="git-document-slot-empty" aria-hidden="true"></span>
+                <div class="git-graph-main-cell" :class="{ 'has-version-slot': showFileIcons && row.kind === 'version' && !row.isolated }">
+                  <div v-if="showFileIcons && row.kind === 'version' && !row.isolated" class="git-version-file-actions">
+                    <span
+                      class="git-engineering-state"
+                      :class="`state-${engineeringFileStateForNode(row.node.id).kind}`"
+                      role="img"
+                      :aria-label="engineeringFileStateForNode(row.node.id).label"
+                      :title="engineeringFileStateForNode(row.node.id).label"
+                    >
+                      <AppIcon v-if="engineeringFileStateForNode(row.node.id).kind === 'unknown'" name="scan" />
+                      <AppIcon v-else-if="engineeringFileStateForNode(row.node.id).kind === 'local'" name="computer" />
+                      <AppIcon v-else-if="engineeringFileStateForNode(row.node.id).kind === 'shared'" name="cloud" />
+                      <template v-else-if="engineeringFileStateForNode(row.node.id).kind === 'both'">
+                        <AppIcon class="git-engineering-cloud" name="cloud" />
+                        <AppIcon class="git-engineering-computer" name="computer" />
+                      </template>
+                      <template v-else>
+                        <AppIcon name="file" />
+                        <span class="git-engineering-no-file-mark" aria-hidden="true"></span>
+                      </template>
+                    </span>
+                    <button
+                      v-if="(comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
+                      type="button" class="git-document-action git-document-slot"
+                      :aria-label="`打开版本 ${row.node.version} 的软件对比文档${comparisonDocumentsByNode.get(row.node.id)!.length > 1 ? `，${comparisonDocumentsByNode.get(row.node.id)!.length} 份` : ''}`"
+                      :title="`打开软件对比文档（${comparisonDocumentsByNode.get(row.node.id)!.length} 份）`"
+                      @pointerdown.stop @click="openNodeDocuments($event, row.node)"><AppIcon name="documents" /></button>
+                    <span v-else class="git-document-slot-empty" aria-hidden="true"></span>
+                  </div>
                   <button
                     v-if="row.kind === 'task-summary' && row.taskRun"
                     type="button"
@@ -2023,9 +2197,10 @@ function onIqanDialogClosed() {
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
-                    <AppIcon class="git-release-icon" :name="row.node.releasedAt ? 'release' : 'unrelease'" />
-                    <span class="git-commit-version">{{ row.node.version }}</span>
-                    <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
+                    <span class="git-commit-content">
+                      <span class="git-commit-version">{{ row.node.version }}</span>
+                      <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
+                    </span>
                   </button>
                   <div v-if="row.kind !== 'task-header' && !row.isolated && row.branchHeads.length" class="git-node-accessories">
                   <span v-if="row.branchHeads.length" class="git-branch-labels">
@@ -2046,14 +2221,35 @@ function onIqanDialogClosed() {
                   </span>
                   </div>
                 </div>
-                <div v-if="!hideIsolated" class="git-graph-orphan-cell" :class="{ 'has-version-slot': row.kind === 'version' && row.isolated }">
-                  <button
-                    v-if="row.kind === 'version' && row.isolated && (comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
-                    type="button" class="git-document-action git-orphan-document-action"
-                    :aria-label="`打开未关联版本 ${row.node.version} 的软件对比文档`"
-                    :title="`打开软件对比文档（${comparisonDocumentsByNode.get(row.node.id)!.length} 份）`"
-                    @pointerdown.stop @click="openNodeDocuments($event, row.node)"><AppIcon name="documents" /></button>
-                  <span v-else-if="row.kind === 'version' && row.isolated" class="git-document-slot-empty" aria-hidden="true"></span>
+                <div v-if="!hideIsolated" class="git-graph-orphan-cell" :class="{ 'has-version-slot': showFileIcons && row.kind === 'version' && row.isolated }">
+                  <div v-if="showFileIcons && row.kind === 'version' && row.isolated" class="git-version-file-actions">
+                    <span
+                      class="git-engineering-state"
+                      :class="`state-${engineeringFileStateForNode(row.node.id).kind}`"
+                      role="img"
+                      :aria-label="engineeringFileStateForNode(row.node.id).label"
+                      :title="engineeringFileStateForNode(row.node.id).label"
+                    >
+                      <AppIcon v-if="engineeringFileStateForNode(row.node.id).kind === 'unknown'" name="scan" />
+                      <AppIcon v-else-if="engineeringFileStateForNode(row.node.id).kind === 'local'" name="computer" />
+                      <AppIcon v-else-if="engineeringFileStateForNode(row.node.id).kind === 'shared'" name="cloud" />
+                      <template v-else-if="engineeringFileStateForNode(row.node.id).kind === 'both'">
+                        <AppIcon class="git-engineering-cloud" name="cloud" />
+                        <AppIcon class="git-engineering-computer" name="computer" />
+                      </template>
+                      <template v-else>
+                        <AppIcon name="file" />
+                        <span class="git-engineering-no-file-mark" aria-hidden="true"></span>
+                      </template>
+                    </span>
+                    <button
+                      v-if="(comparisonDocumentsByNode.get(row.node.id)?.length ?? 0) > 0"
+                      type="button" class="git-document-action git-document-slot"
+                      :aria-label="`打开未关联版本 ${row.node.version} 的软件对比文档`"
+                      :title="`打开软件对比文档（${comparisonDocumentsByNode.get(row.node.id)!.length} 份）`"
+                      @pointerdown.stop @click="openNodeDocuments($event, row.node)"><AppIcon name="documents" /></button>
+                    <span v-else class="git-document-slot-empty" aria-hidden="true"></span>
+                  </div>
                   <button
                     v-if="row.kind === 'version' && row.isolated"
                     class="git-row-commit git-row-orphan"
@@ -2069,9 +2265,10 @@ function onIqanDialogClosed() {
                     @mousedown.shift.prevent
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
-                    <AppIcon class="git-release-icon" :name="row.node.releasedAt ? 'release' : 'unrelease'" />
-                    <span class="git-commit-version">{{ row.node.version }}</span>
-                    <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
+                    <span class="git-commit-content">
+                      <span class="git-commit-version">{{ row.node.version }}</span>
+                      <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
+                    </span>
                   </button>
                   <span v-if="row.isolated && row.branchHeads.length" class="git-branch-labels">
                     <button

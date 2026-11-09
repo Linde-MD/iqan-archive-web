@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
-import { matchComparisonDocuments, matchScannedFiles, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
+import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -69,6 +69,14 @@ function writableDirectory(name: string, initial: Record<string, string> = {}, p
 }
 
 describe('文件名和版本身份', () => {
+  it('只有两侧目录都扫描成功后才返回四种确定文件状态', () => {
+    const scanned = new Set(['local', 'shared'] as const);
+    expect(engineeringFileAvailability(new Set(['local']), scanned)).toBe('local');
+    expect(engineeringFileAvailability(new Set(['shared']), scanned)).toBe('shared');
+    expect(engineeringFileAvailability(new Set(['local', 'shared']), scanned)).toBe('both');
+    expect(engineeringFileAvailability(new Set(), scanned)).toBe('none');
+    expect(engineeringFileAvailability(new Set(['local']), new Set(['local']))).toBe('unknown');
+  });
   it('按项目名推导统一根目录下的工程和文档子目录，并拒绝非法 Windows 名称', async () => {
     expect(projectDirectoryName('项目 A', 'engineering')).toBe('项目 A_iqan_project_files');
     expect(projectDirectoryName('项目 A', 'word')).toBe('项目 A_software_changes_docs');

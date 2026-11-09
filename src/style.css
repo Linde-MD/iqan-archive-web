@@ -376,7 +376,10 @@ tbody tr.row-selected { background: #1a3557; }
 .task-manager-list p { margin: 4px 0; white-space: pre-wrap; }
 .git-graph-lines { position: absolute; z-index: 3; top: 0; left: 0; overflow: visible; pointer-events: none; }
 .git-graph-edge { fill: none; stroke-width: 2.5; opacity: .88; }
-.git-graph-commit { fill: #0b1321; stroke-width: 3; }
+.git-graph-commit { fill: #0b1321; stroke-width: 2.5; }
+.git-graph-commit.is-released { stroke-width: 2.5; }
+.git-graph-release-check-outline { fill: none; stroke: #0b1321; stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; }
+.git-graph-release-check { fill: none; stroke: #f4fff9; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
 .git-graph-rows { position: relative; z-index: 2; }
 .git-graph-row {
   min-width: 0; width: 100%; height: var(--graph-row-height); min-height: var(--graph-row-height); border-bottom: 1px solid #24344a;
@@ -413,24 +416,36 @@ tbody tr.row-selected { background: #1a3557; }
 .git-graph-row.isolated:hover { background: #25213c; }
 .git-graph-lanes { align-self: stretch; min-width: 0; }
 .git-graph-main-cell { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 8px; min-width: 0; }
-.git-graph-main-cell.has-version-slot { grid-template-columns: 28px minmax(0, 1fr) max-content; }
-.git-graph-main-cell.has-version-slot > .git-document-slot,
-.git-graph-main-cell.has-version-slot > .git-document-slot-empty { grid-column: 1; grid-row: 1; }
+.git-graph-main-cell.has-version-slot { grid-template-columns: 60px minmax(0, 1fr) max-content; }
+.git-graph-main-cell.has-version-slot > .git-version-file-actions { grid-column: 1; grid-row: 1; }
 .git-graph-main-cell.has-version-slot > .git-row-commit { grid-column: 2; grid-row: 1; }
 .git-graph-main-cell.has-version-slot > .git-node-accessories { grid-column: 3; grid-row: 1; }
+.git-version-file-actions { display: flex; align-items: center; gap: 4px; width: 60px; }
 .git-document-slot-empty { display: block; width: 28px; height: 28px; }
+.git-engineering-state { position: relative; display: grid; flex: 0 0 28px; place-items: center; width: 28px; height: 28px; border: 1px solid #455b75; border-radius: 6px; background: #14243a; color: #a7bfd9; }
+.git-engineering-state > .app-icon { width: 18px; height: 18px; }
+.git-engineering-state.state-local, .git-engineering-state.state-shared { border-color: #527aa1; color: #b7d9ff; }
+.git-engineering-state.state-both { border-color: #478b7d; color: #a4ead2; }
+.git-engineering-state.state-none { border-color: #566276; color: #bac5d4; }
+.git-engineering-state.state-unknown { border-color: #8b7447; color: #f0d293; }
+.git-engineering-state > .git-engineering-cloud { width: 18px; height: 18px; }
+.git-engineering-state > .git-engineering-computer { position: absolute; right: 0; bottom: 0; width: 11px; height: 11px; border: 1px solid #14243a; border-radius: 2px; background: #14243a; }
+.git-engineering-state.state-none > .app-icon { opacity: .8; }
+.git-engineering-no-file-mark { position: absolute; width: 20px; height: 1.5px; background: currentColor; transform: rotate(-48deg); }
 .git-node-accessories { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .git-document-action { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 4px; border: 1px solid #58769a; border-radius: 6px; background: #14243a; color: #a9d0ff; cursor: pointer; }
 .git-document-action:hover, .git-document-action:focus-visible { border-color: #8bc3ff; background: #1c3858; color: #eaf4ff; outline: 2px solid #77baff; outline-offset: 2px; }
 .git-document-action .app-icon { width: 18px; height: 18px; }
 .git-orphan-document-action { margin-left: 4px; }
-.git-graph-orphan-cell.has-version-slot { display: grid; grid-template-columns: 28px minmax(0, 1fr) max-content; }
-.git-graph-orphan-cell.has-version-slot > .git-orphan-document-action,
-.git-graph-orphan-cell.has-version-slot > .git-document-slot-empty { grid-column: 1; grid-row: 1; margin: 0; }
+.git-graph-orphan-cell { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; min-width: 0; }
+.git-graph-orphan-cell.has-version-slot { display: grid; grid-template-columns: 60px minmax(0, 1fr) max-content; }
+.git-graph-orphan-cell.has-version-slot > .git-version-file-actions { grid-column: 1; grid-row: 1; }
+.git-graph-orphan-cell:not(.has-version-slot) > .git-row-commit { grid-column: 1; grid-row: 1; }
+.git-graph-orphan-cell:not(.has-version-slot) > .git-branch-labels { grid-column: 2; grid-row: 1; }
 .git-graph-orphan-cell.has-version-slot > .git-row-commit { grid-column: 2; grid-row: 1; }
 .git-graph-orphan-cell.has-version-slot > .git-branch-labels { grid-column: 3; grid-row: 1; }
 .git-row-commit {
-  display: grid; grid-template-columns: 24px fit-content(280px) minmax(0, 1fr); align-items: center; justify-content: start;
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; justify-content: start;
   gap: 8px; width: 100%; min-width: 0; min-height: 54px; padding: 6px 12px;
   border: 0; border-radius: 0; background: transparent; color: var(--ink); text-align: left;
   font-size: 12px; font-weight: 400;
@@ -449,6 +464,7 @@ tbody tr.row-selected { background: #1a3557; }
 .git-row-commit[aria-pressed="true"], .git-row-commit.selected { background: #1b4269; }
 .git-row-commit.is-released .git-release-icon { color: #8cf0c4; }
 .git-release-icon { width: 19px; height: 19px; color: #9eb0ca; }
+.git-commit-content { display: grid; align-content: center; gap: 2px; min-width: 0; line-height: 1.3; }
 .git-commit-version { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #f5f8ff; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .git-commit-description { min-width: 0; overflow: hidden; color: #c0cde0; text-overflow: ellipsis; white-space: nowrap; }
 .version-info-hint {

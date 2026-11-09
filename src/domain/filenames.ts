@@ -1,5 +1,20 @@
-import { DomainError, normalizeVersion, requireCondition, type ProjectGraph } from './model';
+import { DomainError, normalizeVersion, requireCondition, type ArchiveLocation, type ProjectGraph } from './model';
 import { validateGraph, validateTransition } from './graph';
+
+export type EngineeringFileAvailability = 'local' | 'shared' | 'both' | 'none' | 'unknown';
+
+export function engineeringFileAvailability(
+  locations: ReadonlySet<ArchiveLocation>,
+  scannedLocations: ReadonlySet<ArchiveLocation>,
+): EngineeringFileAvailability {
+  if (!scannedLocations.has('local') || !scannedLocations.has('shared')) return 'unknown';
+  const hasLocal = locations.has('local');
+  const hasShared = locations.has('shared');
+  if (hasLocal && hasShared) return 'both';
+  if (hasLocal) return 'local';
+  if (hasShared) return 'shared';
+  return 'none';
+}
 
 export function relativeParts(path: string): string[] {
   requireCondition(path && !/^[\\/]|^[a-z]:|[\u0000:]/i.test(path), 'FILE_PATH', '文件必须使用目录内安全的相对路径。');
