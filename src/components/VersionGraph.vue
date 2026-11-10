@@ -2624,7 +2624,7 @@ function onIqanDialogClosed() {
                       <span>{{ row.taskRun.task.name }}</span>
                     </span>
                     <span class="task-summary-details">
-                      已展开 {{ row.taskRun.nodeIds.length }} 个连续版本 · 点击收起
+                      已展开 {{ row.taskRun.nodeIds.length }} 个连续版本 · {{ taskRunReleaseLabel(row.taskRun) }} · 点击收起
                     </span>
                   </button>
                   <button

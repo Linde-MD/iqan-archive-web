@@ -109,7 +109,7 @@ describe('Git Graph 投影', () => {
   it('共享主干上不相交的独占分支段复用轨道列', () => {
     const graph = createProject('主干分支段复用', '1479');
     const projectId = graph.project.id;
-    graph.nodes = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8'].map(id => ({
+    graph.nodes = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9'].map(id => ({
       id, projectId, version: id, description: '', taskId: null, releasedAt: null,
     }));
     graph.edges = [
@@ -120,9 +120,10 @@ describe('Git Graph 投影', () => {
       { id: 't3', projectId, parentId: 'V5', childId: 'V6' },
       { id: 'b1', projectId, parentId: 'V6', childId: 'V7' },
       { id: 'b2', projectId, parentId: 'V7', childId: 'V8' },
+      { id: 'main-next', projectId, parentId: 'V6', childId: 'V9' },
     ];
     graph.branches = [
-      { id: 'main', projectId, name: 'main', description: '', color: '#64748b', headId: 'V6', order: 0 },
+      { id: 'main', projectId, name: 'main', description: '', color: '#64748b', headId: 'V9', order: 0 },
       { id: 'branch-a', projectId, name: 'branch-a', description: '', color: '#2563eb', headId: 'V3', order: 1 },
       { id: 'branch-b', projectId, name: 'branch-b', description: '', color: '#16a34a', headId: 'V8', order: 2 },
     ];
@@ -156,6 +157,40 @@ describe('Git Graph 投影', () => {
     expect(layout.rows.find(row => row.node.id === 'V2')?.laneIndex).toBe(0);
     expect(layout.rows.find(row => row.node.id === 'V4')?.laneIndex).toBe(layout.rows.find(row => row.node.id === 'V2')?.laneIndex);
     expect(layout.rows.find(row => row.node.id === 'V6')?.laneIndex).not.toBe(layout.rows.find(row => row.node.id === 'V2')?.laneIndex);
+  });
+
+  it('同一线性父子路径上的分支头仍显示在同一列', () => {
+    const graph = createProject('线性分支头', '1479');
+    const projectId = graph.project.id;
+    graph.nodes = ['parent', 'child'].map(id => ({
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+    }));
+    graph.edges = [{ id: 'edge', projectId, parentId: 'parent', childId: 'child' }];
+    graph.branches = [
+      { id: 'older', projectId, name: 'older', description: '', color: '#2563eb', headId: 'parent', order: 0 },
+      { id: 'newer', projectId, name: 'newer', description: '', color: '#16a34a', headId: 'child', order: 1 },
+    ];
+
+    const layout = layoutGitGraph(graph, 'oldest');
+    expect(layout.rows.find(row => row.node.id === 'parent')?.laneIndex)
+      .toBe(layout.rows.find(row => row.node.id === 'child')?.laneIndex);
+  });
+
+  it('无 Branch 记录的独立树主干可复用不重叠的分支列', () => {
+    const graph = createProject('无分支树列复用', '1479');
+    const projectId = graph.project.id;
+    graph.nodes = ['V1', 'V2', 'V3', 'V4'].map(id => ({
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+    }));
+    graph.edges = [
+      { id: 'main', projectId, parentId: 'V1', childId: 'V2' },
+      { id: 'orphan-tree', projectId, parentId: 'V3', childId: 'V4' },
+    ];
+    graph.branches = [{ id: 'main', projectId, name: 'main', description: '', color: '#2563eb', headId: 'V2' }];
+
+    const layout = layoutGitGraph(graph, 'oldest');
+    expect(layout.rows.find(row => row.node.id === 'V2')?.laneIndex)
+      .toBe(layout.rows.find(row => row.node.id === 'V4')?.laneIndex);
   });
 
   it('分支历史共享节点时不复用列', () => {
@@ -221,6 +256,29 @@ describe('Git Graph 投影', () => {
     const childA = layout.rows.find(row => row.node.id === 'child-a')!;
     const childB = layout.rows.find(row => row.node.id === 'child-b')!;
     const childANext = layout.rows.find(row => row.node.id === 'child-a-next')!;
+    expect(childA.laneIndex).not.toBe(childB.laneIndex);
+    expect(childANext.laneIndex).toBe(childA.laneIndex);
+  });
+
+  it('即使只创建整合分支，实际树中的同父子路径仍分列', () => {
+    const graph = createProject('实际树分叉', '1479');
+    const projectId = graph.project.id;
+    graph.nodes = ['parent', 'child-a', 'child-a-next', 'child-b', 'merge'].map(id => ({
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+    }));
+    graph.edges = [
+      { id: 'a', projectId, parentId: 'parent', childId: 'child-a' },
+      { id: 'a-next', projectId, parentId: 'child-a', childId: 'child-a-next' },
+      { id: 'b', projectId, parentId: 'parent', childId: 'child-b' },
+      { id: 'merge-a', projectId, parentId: 'child-a-next', childId: 'merge' },
+      { id: 'merge-b', projectId, parentId: 'child-b', childId: 'merge' },
+    ];
+    graph.branches = [{ id: 'integration', projectId, name: 'integration', description: '', color: '#64748b', headId: 'merge' }];
+
+    const layout = layoutGitGraph(graph, 'oldest');
+    const childA = layout.rows.find(row => row.node.id === 'child-a')!;
+    const childANext = layout.rows.find(row => row.node.id === 'child-a-next')!;
+    const childB = layout.rows.find(row => row.node.id === 'child-b')!;
     expect(childA.laneIndex).not.toBe(childB.laneIndex);
     expect(childANext.laneIndex).toBe(childA.laneIndex);
   });

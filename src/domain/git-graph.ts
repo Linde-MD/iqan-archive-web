@@ -87,6 +87,30 @@ function branchTrackHistory(
   return trackRows;
 }
 
+function shareLinearTrack(
+  first: Branch,
+  second: Branch,
+  parents: Map<string, string[]>,
+  children: Map<string, string[]>,
+): boolean {
+  if (first.headId === second.headId) return true;
+  const firstHistory = branchHistory(first, parents);
+  const secondHistory = branchHistory(second, parents);
+  const ancestorHead = firstHistory.has(second.headId) ? second.headId
+    : secondHistory.has(first.headId) ? first.headId : null;
+  if (!ancestorHead) return false;
+  const descendantHead = ancestorHead === first.headId ? second.headId : first.headId;
+  let current = descendantHead;
+  while (current !== ancestorHead) {
+    const nodeParents = parents.get(current) ?? [];
+    if (nodeParents.length !== 1) return false;
+    const parentId = nodeParents[0]!;
+    if ((children.get(parentId) ?? []).length !== 1) return false;
+    current = parentId;
+  }
+  return true;
+}
+
 function orderedNodes(graph: ProjectGraph, order: VersionOrder): VersionNode[] {
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   const adjacent = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
@@ -176,18 +200,44 @@ export function layoutGitGraph(
       end: Math.max(...rowIndexes),
     }];
   }).sort((left, right) => left.start - right.start || left.branchOrder - right.branchOrder);
+  const assignedToLinearGroup = new Set<string>();
+  const linearGroups = branchTracks.flatMap(branch => {
+    if (assignedToLinearGroup.has(branch.id)) return [];
+    const group = branchTracks.filter(candidate => shareLinearTrack(branch, candidate, parents, children));
+    for (const member of group) assignedToLinearGroup.add(member.id);
+    return [group];
+  });
+  const intervalByBranchId = new Map(branchIntervals.map(interval => [interval.branch.id, interval]));
+  const groupedBranchIntervals = linearGroups.flatMap(group => {
+    const intervals = group.flatMap(branch => {
+      const interval = intervalByBranchId.get(branch.id);
+      return interval ? [interval] : [];
+    });
+    if (!intervals.length) return [];
+    const orderedGroup = [...group].sort((left, right) =>
+      branchTracks.findIndex(branch => branch.id === left.id) - branchTracks.findIndex(branch => branch.id === right.id));
+    return [{
+      branch: orderedGroup[0]!,
+      branchIds: orderedGroup.map(branch => branch.id),
+      branchOrder: Math.min(...intervals.map(interval => interval.branchOrder)),
+      start: Math.min(...intervals.map(interval => interval.start)),
+      end: Math.max(...intervals.map(interval => interval.end)),
+    }];
+  }).sort((left, right) => left.start - right.start || left.branchOrder - right.branchOrder);
   const backboneBranch = branchTracks.find(branch => allRows.some(node => {
     const nodeBranches = memberships.get(node.id) ?? [];
     return nodeBranches.length > 1 && nodeBranches.some(item => item.id === branch.id);
   }));
-  const backboneInterval = branchIntervals.find(interval => interval.branch.id === backboneBranch?.id);
+  const backboneInterval = groupedBranchIntervals.find(interval => interval.branchIds.includes(backboneBranch?.id ?? ''));
   const firstReusableLane = backboneInterval ? 1 : 0;
   const trackEnds: number[] = backboneInterval ? [backboneInterval.end] : [];
   const trackPriorities: number[] = backboneInterval ? [backboneInterval.branchOrder] : [];
   const provisionalBranchLanes = new Map<string, number>();
-  if (backboneInterval) provisionalBranchLanes.set(backboneInterval.branch.id, 0);
-  for (const interval of branchIntervals) {
-    if (interval.branch.id === backboneInterval?.branch.id) continue;
+  if (backboneInterval) {
+    for (const branchId of backboneInterval.branchIds) provisionalBranchLanes.set(branchId, 0);
+  }
+  for (const interval of groupedBranchIntervals) {
+    if (interval === backboneInterval) continue;
     let laneIndex = -1;
     for (let candidate = firstReusableLane; candidate < trackEnds.length; candidate++) {
       if (trackEnds[candidate]! < interval.start) {
@@ -198,7 +248,7 @@ export function layoutGitGraph(
     if (laneIndex < 0) laneIndex = Math.max(firstReusableLane, trackEnds.length);
     trackEnds[laneIndex] = interval.end;
     trackPriorities[laneIndex] = Math.min(trackPriorities[laneIndex] ?? interval.branchOrder, interval.branchOrder);
-    provisionalBranchLanes.set(interval.branch.id, laneIndex);
+    for (const branchId of interval.branchIds) provisionalBranchLanes.set(branchId, laneIndex);
   }
   const secondaryLaneOrder = trackPriorities
     .map((priority, laneIndex) => ({ priority, laneIndex }))
@@ -212,6 +262,12 @@ export function layoutGitGraph(
   for (const [branchId, laneIndex] of provisionalBranchLanes)
     branchLaneById.set(branchId, laneRemap.get(laneIndex)!);
   const branchLaneCount = firstReusableLane + secondaryLaneOrder.length;
+  const laneEnds = Array.from({ length: branchLaneCount }, () => Number.NEGATIVE_INFINITY);
+  if (backboneInterval) laneEnds[0] = backboneInterval.end;
+  for (const provisionalLane of secondaryLaneOrder) {
+    const lane = laneRemap.get(provisionalLane)!;
+    laneEnds[lane] = trackEnds[provisionalLane]!;
+  }
   const unbranchedLanes = new Map<string, number>();
   let nextUnbranchedLane = branchLaneCount;
   for (const node of allRows) {
@@ -232,7 +288,73 @@ export function layoutGitGraph(
       unbranchedLanes.set(node.id, nextUnbranchedLane++);
     }
   }
-  const isolatedLane = Math.max(branchLaneCount + 1, nextUnbranchedLane);
+
+  const unbranchedIntervals = new Map<number, { start: number; end: number }>();
+  for (const node of allRows) {
+    const lane = unbranchedLanes.get(node.id);
+    if (lane === undefined) continue;
+    const rowIndex = rowIndexById.get(node.id)!;
+    const interval = unbranchedIntervals.get(lane);
+    unbranchedIntervals.set(lane, interval
+      ? { start: Math.min(interval.start, rowIndex), end: Math.max(interval.end, rowIndex) }
+      : { start: rowIndex, end: rowIndex });
+  }
+  const unbranchedLaneRemap = new Map<number, number>();
+  for (const [oldLane, interval] of [...unbranchedIntervals].sort((left, right) => left[1].start - right[1].start)) {
+    let lane = laneEnds.findIndex(end => end < interval.start);
+    if (lane < 0) lane = laneEnds.length;
+    laneEnds[lane] = interval.end;
+    unbranchedLaneRemap.set(oldLane, lane);
+  }
+  for (const [nodeId, oldLane] of unbranchedLanes)
+    unbranchedLanes.set(nodeId, unbranchedLaneRemap.get(oldLane)!);
+  nextUnbranchedLane = laneEnds.length;
+
+  const topologyLanes = new Map<string, number>();
+  const baseLaneForNode = (node: VersionNode): number => {
+    const nodeBranches = memberships.get(node.id) ?? [];
+    const headBranch = branchTracks.find(branch => branch.headId === node.id && branchLaneById.has(branch.id));
+    const membershipBranch = nodeBranches.find(branch => branchLaneById.has(branch.id));
+    return headBranch ? branchLaneById.get(headBranch.id)!
+      : membershipBranch ? branchLaneById.get(membershipBranch.id)!
+        : unbranchedLanes.get(node.id) ?? branchLaneCount;
+  };
+  let nextForkLane = Math.max(branchLaneCount + 1, nextUnbranchedLane);
+  const forkLaneEnds = new Map<number, number>();
+  for (const parent of allRows) {
+    const forkChildren = (children.get(parent.id) ?? []).filter(id => visible.has(id));
+    if (forkChildren.length < 2) continue;
+    const occupiedAtFork = new Set<number>();
+    for (const childId of forkChildren) {
+      const path: string[] = [];
+      let currentId = childId;
+      while (true) {
+        path.push(currentId);
+        const nextChildren = (children.get(currentId) ?? []).filter(id => visible.has(id));
+        if (nextChildren.length !== 1) break;
+        const nextId = nextChildren[0]!;
+        if ((parents.get(nextId) ?? []).filter(id => visible.has(id)).length !== 1) break;
+        currentId = nextId;
+      }
+      const pathRows = path.flatMap(id => rowIndexById.has(id) ? [rowIndexById.get(id)!] : []);
+      const pathStart = Math.min(...pathRows);
+      const pathEnd = Math.max(...pathRows);
+      const childNode = graph.nodes.find(node => node.id === childId)!;
+      const childLane = baseLaneForNode(childNode);
+      let lane = childLane;
+      if (occupiedAtFork.has(lane)) {
+        lane = [...forkLaneEnds].find(([, end]) => end < pathStart)?.[0] ?? nextForkLane++;
+        forkLaneEnds.set(lane, pathEnd);
+      } else if (lane >= nextForkLane) {
+        forkLaneEnds.set(lane, Math.max(forkLaneEnds.get(lane) ?? -1, pathEnd));
+        nextForkLane = Math.max(nextForkLane, lane + 1);
+      }
+      occupiedAtFork.add(lane);
+      for (const id of path) topologyLanes.set(id, lane);
+    }
+  }
+
+  const isolatedLane = nextForkLane;
   const trackCount = isolatedLane + 1;
   const rows = allRows.map((node, rowIndex): GitGraphRow => {
     const isolated = !incident.has(node.id);
@@ -246,9 +368,9 @@ export function layoutGitGraph(
       node,
       rowIndex,
       laneIndex: isolated ? isolatedLane
-        : headTrack >= 0 ? headTrack
+        : topologyLanes.get(node.id) ?? (headTrack >= 0 ? headTrack
           : membershipTrack >= 0 ? membershipTrack
-            : unbranchedLanes.get(node.id) ?? branchLaneCount,
+            : unbranchedLanes.get(node.id) ?? branchLaneCount),
       isolated,
       branchHeads,
     };
