@@ -7,7 +7,7 @@ import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
 import { JSON_BACKUP_LOCATION, listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
-import { scanDocumentDirectories, scanDocumentDirectory } from '../src/files/document-directories';
+import { deleteLocalDocumentCopy, scanDocumentDirectories, scanDocumentDirectory, scanDocumentLocalDeletion } from '../src/files/document-directories';
 
 const databases: Dexie[] = [];
 afterEach(async () => { for (const db of databases.splice(0)) await db.delete(); });
@@ -270,6 +270,23 @@ describe('只读目录扫描与定位', () => {
     const results = await scanDocumentDirectories(repository, graph.project.id, new AbortController().signal);
     expect(results.find(result => result.location === 'shared')).toMatchObject({ status: 'success', count: 1 });
     expect(results.find(result => result.location === 'local')).toMatchObject({ status: 'missing', scan: { missingDirectory: true, files: [] } });
+  });
+
+  it('仅在共享副本仍存在时删除本地文档副本', async () => {
+    const graph = createProject('项目 A', '001');
+    const localDocument = file('说明.docx');
+    const sharedBinding = directory('项目 A_software_changes_docs', [file('说明.docx')]);
+    const localBinding = directory('项目 A_software_changes_docs', [localDocument]);
+    const sharedRoot = directory('shared', [sharedBinding]);
+    const localRoot = directory('local', [localBinding]);
+    const repository = {
+      async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? sharedRoot : localRoot; },
+      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
+    } as unknown as ArchiveRepository;
+    const scan = await scanDocumentLocalDeletion(repository, graph.project.id, '说明.docx', new AbortController().signal);
+    await deleteLocalDocumentCopy(scan, '说明.docx');
+    expect(await scan.local.binding!.getFileHandle('说明.docx').then(() => true, () => false)).toBe(false);
+    expect((await scan.shared.binding.getFileHandle('说明.docx')).name).toBe('说明.docx');
   });
 
   it('将文件或目录不存在的浏览器错误转换为中文原因和恢复建议', () => {

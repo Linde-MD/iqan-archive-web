@@ -5,12 +5,13 @@ import type { ArchiveLocation } from '../domain/model';
 import { mergeDocumentCandidates, type MergedDocumentCandidate } from '../domain/filenames';
 import { buildDocumentCopyUri, buildDocumentOpenUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, sameDirectory, type ArchiveRoots } from '../files/directories';
-import { scanDocumentDirectory, type DocumentDirectoryScan } from '../files/document-directories';
+import { deleteLocalDocumentCopy, scanDocumentDirectory, scanDocumentLocalDeletion, type DocumentDirectoryScan } from '../files/document-directories';
 import DocumentDirectoryPanel, { type DocumentLocationStates } from './DocumentDirectoryPanel.vue';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; archiveRoots: ArchiveRoots }>();
 const emit = defineEmits<{ busy: [value: boolean]; graph: [] }>();
+const directoryPanel = ref<InstanceType<typeof DocumentDirectoryPanel>>();
 const sourceStates = shallowRef<DocumentLocationStates>({
   shared: { status: 'idle', message: '尚未扫描', count: 0 },
   local: { status: 'idle', message: '尚未扫描', count: 0 },
@@ -20,10 +21,11 @@ const query = ref('');
 const scanning = ref(false);
 const opening = ref(false);
 const copying = ref(false);
+const deleting = ref(false);
 const error = ref('');
 const status = ref('');
 let disposed = false;
-const busy = computed(() => scanning.value || opening.value || copying.value);
+const busy = computed(() => scanning.value || opening.value || copying.value || deleting.value);
 const files = computed(() => mergeDocumentCandidates({
   shared: sourceStates.value.shared.scan?.files ?? [],
   local: sourceStates.value.local.scan?.files ?? [],
@@ -150,6 +152,50 @@ async function copyDocument(file: MergedDocumentCandidate) {
   }
 }
 
+async function deleteLocalDocument(file: MergedDocumentCandidate) {
+  if (busy.value || file.locations.length !== 2) return;
+  const displayedLocal = sourceStates.value.local.scan;
+  const displayedShared = sourceStates.value.shared.scan;
+  if (!displayedLocal?.binding || !displayedShared?.binding) {
+    error.value = '共享和本地文档目录均须扫描成功后才能删除本地副本。';
+    return;
+  }
+
+  deleting.value = true;
+  emit('busy', true);
+  error.value = '';
+  status.value = '';
+  let shouldRescan = false;
+  try {
+    const displayedShared = sourceStates.value.shared.scan;
+    const displayedLocal = sourceStates.value.local.scan;
+    const initial = await scanDocumentLocalDeletion(props.repository, props.projectId, file.relativePath, new AbortController().signal);
+    if (!displayedShared?.binding || !displayedLocal?.binding
+      || !(await sameDirectory(displayedShared.root, initial.shared.root))
+      || !(await sameDirectory(displayedShared.binding, initial.shared.binding))
+      || !(await sameDirectory(displayedLocal.root, initial.local.root))
+      || !(await sameDirectory(displayedLocal.binding, initial.local.binding)))
+      throw new Error('文档扫描来源已改变，请重新扫描后再删除。');
+    if (!window.confirm(`确定删除本地文档副本？\n${file.relativePath}\n共享副本会保留。`)) return;
+
+    const latest = await scanDocumentLocalDeletion(props.repository, props.projectId, file.relativePath, new AbortController().signal);
+    for (const location of ['shared', 'local'] as const) {
+      if (!(await sameDirectory(initial[location].root, latest[location].root))
+        || !(await sameDirectory(initial[location].binding!, latest[location].binding!)))
+        throw new Error(`${location === 'local' ? '本地' : '共享'}文档目录在确认期间发生变化，未删除。`);
+    }
+    await deleteLocalDocumentCopy(latest, file.relativePath);
+    status.value = `已删除本地文档副本：${file.relativePath}`;
+    shouldRescan = true;
+  } catch (cause) {
+    if (!disposed) { error.value = fileOperationErrorMessage(cause); status.value = ''; }
+  } finally {
+    deleting.value = false;
+    if (!disposed) emit('busy', busy.value);
+  }
+  if (shouldRescan && !disposed) await directoryPanel.value?.scanBoth();
+}
+
 function directoryBusy(value: boolean) {
   scanning.value = value;
   emit('busy', busy.value);
@@ -163,8 +209,8 @@ onUnmounted(() => { disposed = true; });
       <div><p class="eyebrow">COMPARISON DOCUMENTS</p><h2 id="document-title">软件对比文档</h2></div>
       <button class="secondary" :disabled="busy" @click="emit('graph')"><AppIcon name="branch" />版本图</button>
     </div>
-    <DocumentDirectoryPanel :repository="repository" :project-id="projectId" :project-name="projectName" :archive-roots="archiveRoots"
-      :disabled="opening || copying" @results="receiveScans" @busy="directoryBusy" />
+    <DocumentDirectoryPanel ref="directoryPanel" :repository="repository" :project-id="projectId" :project-name="projectName" :archive-roots="archiveRoots"
+      :disabled="opening || copying || deleting" @results="receiveScans" @busy="directoryBusy" />
     <div class="document-filters">
       <label for="document-search">搜索文档</label>
       <input id="document-search" v-model="query" type="search" placeholder="文件名或相对路径" />
@@ -175,7 +221,8 @@ onUnmounted(() => { disposed = true; });
     <p v-if="scanning && !files.length" class="form-help">正在扫描共享和本地软件对比文档目录…</p>
     <p v-else-if="!scanAttempted" class="form-help">选择“扫描两侧”同时读取共享和本地目录；扫描失败会按来源分别显示。</p>
     <p v-else-if="!visibleFiles.length" class="form-help">{{ files.length ? '没有匹配的文档。' : '两个目录当前没有可显示的文档结果。' }}</p>
-    <ul v-else class="document-list" aria-label="软件对比文档列表">
+    <div v-if="visibleFiles.length" class="document-list-heading" aria-hidden="true"><span></span><span>文档</span><span>来源与操作</span></div>
+    <ul v-if="visibleFiles.length" class="document-list" aria-label="软件对比文档列表">
       <li v-for="file in visibleFiles" :key="file.relativePath" tabindex="0" :aria-label="file.relativePath"
         @keydown="onRowKeyDown($event, file)">
         <AppIcon name="file" />
@@ -189,6 +236,9 @@ onUnmounted(() => { disposed = true; });
           <button v-if="file.locations.length === 1" class="secondary" :disabled="busy || !scanComplete" :aria-label="`${file.locations[0] === 'local' ? '上传到共享' : '下载到本地'} ${file.relativePath}`" @click="copyDocument(file)">
             <AppIcon :name="file.locations[0] === 'local' ? 'cloud' : 'computer'" />{{ file.locations[0] === 'local' ? '上传到共享' : '下载到本地' }}
           </button>
+          <button v-if="file.locations.length === 2" type="button" class="danger document-delete" :disabled="busy || !scanComplete" :aria-label="`删除本地文档副本 ${file.relativePath}`" :title="`删除本地副本；共享副本保留：${file.relativePath}`" @click="deleteLocalDocument(file)">
+            <AppIcon name="trash" />删除本地
+          </button>
           <button class="secondary" :disabled="busy" :aria-label="`在 Word 中打开 ${file.relativePath}`" @click="openDocument(file)"><AppIcon name="arrow" />打开</button>
         </div>
       </li>
@@ -201,17 +251,26 @@ onUnmounted(() => { disposed = true; });
 .document-filters input { flex: 1 1 240px; min-width: 0; }
 .document-filters label { margin: 0; }
 .document-filters span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.document-list-heading { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(390px, 430px); gap: 14px; padding: 8px 4px; border-bottom: 1px solid var(--border-strong); color: var(--muted); font-size: 10px; font-weight: 700; }
 .document-list { list-style: none; padding: 0; margin: 0; }
-.document-list li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
+.document-list li { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(390px, 430px); align-items: center; gap: 14px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
 .document-file { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .document-file span { color: var(--muted); font-family: var(--font-mono, monospace); font-size: 13px; }
-.document-row-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
+.document-row-actions { display: grid; grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) 82px; align-items: center; gap: 6px; }
+.document-row-actions > button { width: 100%; min-width: 0; padding-inline: 8px; white-space: nowrap; }
+.document-delete { border-color: #9c3d4a; background: #48232f; }
+.document-delete:hover { border-color: #ff7b88; background: #632a39; }
 .document-source-segmented { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: #101a2a; }
-.document-source-segmented button { min-height: 44px; padding: 6px 9px; gap: 5px; background: transparent; color: var(--muted); font-size: 11px; }
+.document-source-segmented button { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 6px 5px; gap: 5px; background: transparent; color: var(--muted); font-size: 11px; }
 .document-source-segmented button[aria-pressed="true"] { border-color: #75b7ff; background: #173254; color: #fff; }
 .document-source-segmented button:hover { border-color: var(--accent); color: #fff; }
 .document-source-segmented .app-icon { width: 16px; height: 16px; }
-.document-source-tag { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: #cce2ff; font-size: 11px; white-space: nowrap; }
+.document-source-tag { display: inline-flex; justify-content: center; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: #cce2ff; font-size: 11px; white-space: nowrap; }
 .document-source-tag .app-icon { width: 16px; height: 16px; }
-@media (max-width: 540px) { .document-list li { grid-template-columns: 20px minmax(0, 1fr); } .document-row-actions { grid-column: 2; justify-self: start; flex-wrap: wrap; } }
+@media (max-width: 900px) {
+  .document-list-heading { display: none; }
+  .document-list li { grid-template-columns: 20px minmax(0, 1fr); gap: 10px; }
+  .document-row-actions { grid-column: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-self: stretch; }
+  .document-source-segmented, .document-source-tag { grid-column: 1 / -1; }
+}
 </style>

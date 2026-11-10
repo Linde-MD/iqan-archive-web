@@ -134,6 +134,8 @@ function cancelScan() {
   controller?.abort();
 }
 
+defineExpose({ scanBoth });
+
 watch(() => [props.archiveRoots.shared, props.archiveRoots.local, props.projectName] as const, () => {
   controller?.abort();
   states.value = { shared: emptyState(), local: emptyState() };
