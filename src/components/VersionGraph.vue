@@ -954,8 +954,13 @@ function taskRunVersions(run: TaskRun): string[] {
     return version ? [version] : [];
   });
 }
-function taskRunReleasedCount(run: TaskRun): number {
-  return run.nodeIds.filter(id => nodeById.value.get(id)?.releasedAt).length;
+function taskRunReleaseLabel(run: TaskRun): string {
+  if (run.releaseState === 'all') return '全部版本已放行';
+  if (run.releaseState === 'partial') return `部分放行 ${run.releasedCount}/${run.nodeIds.length}`;
+  return '未放行';
+}
+function taskRunReleaseIcon(run: TaskRun): 'file' | 'release' | 'release-partial' {
+  return run.releaseState === 'all' ? 'release' : run.releaseState === 'partial' ? 'release-partial' : 'file';
 }
 const parentIdsOf = computed(() => {
   const parents = new Map((graph.value?.nodes ?? []).map(node => [node.id, [] as string[]]));
@@ -2510,17 +2515,20 @@ function onIqanDialogClosed() {
                 :cy="GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2"
                 r="6"
                 class="git-graph-commit"
-                :class="{ 'is-released': row.kind === 'version' && !!row.node.releasedAt }"
-                :style="{ stroke: nodeColor(row.node), fill: row.kind === 'version' && row.node.releasedAt ? nodeColor(row.node) : undefined }"
+                :class="{
+                  'is-released': row.kind === 'version' ? !!row.node.releasedAt : row.kind === 'task-summary' && row.taskRun?.releaseState === 'all',
+                  'is-partially-released': row.kind === 'task-summary' && row.taskRun?.releaseState === 'partial',
+                }"
+                :style="{ stroke: nodeColor(row.node), fill: row.kind === 'version' && row.node.releasedAt || row.kind === 'task-summary' && row.taskRun?.releaseState === 'all' ? nodeColor(row.node) : undefined }"
               />
               <path
-                v-for="row in graphLayout.rows.filter(row => !row.isolated && row.kind === 'version' && row.node.releasedAt)"
+                v-for="row in graphLayout.rows.filter(row => !row.isolated && (row.kind === 'version' ? row.node.releasedAt : row.kind === 'task-summary' && row.taskRun?.releaseState === 'all'))"
                 :key="`release-check-outline:${row.key}`"
                 :d="`M${GIT_GRAPH.laneStart + row.laneIndex * GIT_GRAPH.laneGap - 2.5} ${GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2} l1.8 1.8 3.8-4`"
                 class="git-graph-release-check-outline"
               />
               <path
-                v-for="row in graphLayout.rows.filter(row => !row.isolated && row.kind === 'version' && row.node.releasedAt)"
+                v-for="row in graphLayout.rows.filter(row => !row.isolated && (row.kind === 'version' ? row.node.releasedAt : row.kind === 'task-summary' && row.taskRun?.releaseState === 'all'))"
                 :key="`release-check:${row.key}`"
                 :d="`M${GIT_GRAPH.laneStart + row.laneIndex * GIT_GRAPH.laneGap - 2.5} ${GIT_GRAPH.headerHeight + row.rowIndex * GIT_GRAPH.rowHeight + GIT_GRAPH.rowHeight / 2} l1.8 1.8 3.8-4`"
                 class="git-graph-release-check"
@@ -2534,6 +2542,7 @@ function onIqanDialogClosed() {
                 :class="[
                   { selected: row.kind === 'version' && selectedNodeIds.includes(row.node.id), isolated: row.isolated, 'branch-drop-target': row.kind === 'version' && dropTargetId === row.node.id },
                   row.taskRun && row.groupPosition ? `task-run-${row.groupPosition}` : '',
+                  row.taskRun && row.kind !== 'version' ? `task-release-${row.taskRun.releaseState}` : '',
                   `git-graph-row-${row.kind}`,
                 ]"
                 @dragover="row.kind === 'version' && onBranchDragOver($event, row.node.id)"
@@ -2581,18 +2590,19 @@ function onIqanDialogClosed() {
                     class="git-row-commit git-task-summary"
                     :data-task-run-id="row.taskRun.id"
                     :aria-expanded="false"
-                    :aria-label="`${row.taskRun.task.externalTaskId ? `任务编号 ${row.taskRun.task.externalTaskId}，` : ''}${row.taskRun.task.name}，${row.taskRun.nodeIds.length} 个连续版本：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
+                    :class="{ 'is-released': row.taskRun.releaseState === 'all', 'is-partially-released': row.taskRun.releaseState === 'partial' }"
+                    :aria-label="`${row.taskRun.task.externalTaskId ? `任务编号 ${row.taskRun.task.externalTaskId}，` : ''}${row.taskRun.task.name}，${row.taskRun.nodeIds.length} 个连续版本，${taskRunReleaseLabel(row.taskRun)}：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
                     :disabled="saving"
                     @click="toggleTaskRun(row.taskRun)"
                   >
-                    <AppIcon class="git-release-icon" name="file" />
+                    <AppIcon class="git-release-icon" :name="taskRunReleaseIcon(row.taskRun)" />
                     <span class="task-summary-heading">
                       <code v-if="row.taskRun.task.externalTaskId" class="task-reference-id">{{ row.taskRun.task.externalTaskId }}</code>
                       <span>{{ row.taskRun.task.name }}</span>
                     </span>
                     <span class="task-summary-details">
                       {{ row.taskRun.nodeIds.length }} 个连续版本
-                      · 已放行 {{ taskRunReleasedCount(row.taskRun) }} 个
+                      · {{ taskRunReleaseLabel(row.taskRun) }}
                       · {{ taskRunVersions(row.taskRun).join('、') }}
                       · 点击展开
                     </span>
@@ -2603,11 +2613,12 @@ function onIqanDialogClosed() {
                     class="git-row-commit git-task-expanded-toggle"
                     :data-task-run-id="row.taskRun.id"
                     :aria-expanded="true"
-                    :aria-label="`${row.taskRun.task.name}，已展开 ${row.taskRun.nodeIds.length} 个连续版本，点击收起`"
+                    :class="{ 'is-released': row.taskRun.releaseState === 'all', 'is-partially-released': row.taskRun.releaseState === 'partial' }"
+                    :aria-label="`${row.taskRun.task.name}，已展开 ${row.taskRun.nodeIds.length} 个连续版本，${taskRunReleaseLabel(row.taskRun)}，点击收起`"
                     :disabled="saving"
                     @click="toggleTaskRun(row.taskRun)"
                   >
-                    <AppIcon class="git-release-icon" name="file" />
+                    <AppIcon class="git-release-icon" :name="taskRunReleaseIcon(row.taskRun)" />
                     <span class="task-summary-heading">
                       <code v-if="row.taskRun.task.externalTaskId" class="task-reference-id">{{ row.taskRun.task.externalTaskId }}</code>
                       <span>{{ row.taskRun.task.name }}</span>

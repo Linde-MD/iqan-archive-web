@@ -6,7 +6,11 @@ export interface TaskRun {
   task: Task;
   branch: Branch;
   nodeIds: string[];
+  releasedCount: number;
+  releaseState: 'none' | 'partial' | 'all';
 }
+
+type PendingTaskRun = Omit<TaskRun, 'releasedCount' | 'releaseState'>;
 
 export interface TaskViewRow extends GitGraphRow {
   key: string;
@@ -23,8 +27,8 @@ export interface TaskViewLayout extends Omit<GitGraphLayout, 'rows' | 'edges' | 
 
 export function taskViewRuns(graph: ProjectGraph, layout: GitGraphLayout): TaskRun[] {
   const taskById = new Map(graph.tasks.map(task => [task.id, task]));
-  const runs: TaskRun[] = [];
-  let current: TaskRun | undefined;
+  const runs: PendingTaskRun[] = [];
+  let current: PendingTaskRun | undefined;
 
   for (const row of layout.rows) {
     const task = row.node.taskId ? taskById.get(row.node.taskId) : undefined;
@@ -51,10 +55,17 @@ export function taskViewRuns(graph: ProjectGraph, layout: GitGraphLayout): TaskR
     runs.push(current);
   }
 
-  return runs.map(run => ({
-    ...run,
-    id: `task-run:${run.branch.id}:${run.task.id}:${[...run.nodeIds].sort().join(':')}`,
-  }));
+  const rowByNodeId = new Map(layout.rows.map(row => [row.node.id, row]));
+  return runs.map(run => {
+    const releasedCount = run.nodeIds.filter(id => rowByNodeId.get(id)?.node.releasedAt !== null
+      && rowByNodeId.get(id)?.node.releasedAt !== undefined).length;
+    return {
+      ...run,
+      id: `task-run:${run.branch.id}:${run.task.id}:${[...run.nodeIds].sort().join(':')}`,
+      releasedCount,
+      releaseState: releasedCount === 0 ? 'none' : releasedCount === run.nodeIds.length ? 'all' : 'partial',
+    };
+  });
 }
 
 export function projectTaskViewLayout(

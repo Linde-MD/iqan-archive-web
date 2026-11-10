@@ -44,6 +44,20 @@ describe('分支内连续任务节点投影', () => {
     expect(runs.flatMap(run => run.nodeIds)).not.toContain('isolated-task');
   });
 
+  it('按任务段内实际版本放行状态汇总全部、部分和未放行', () => {
+    const graph = fixture();
+    graph.nodes.find(node => node.id === 'a2')!.releasedAt = '2026-01-02T00:00:00.000Z';
+    graph.nodes.find(node => node.id === 'a3')!.releasedAt = '2026-01-03T00:00:00.000Z';
+    const runs = taskViewRuns(graph, layoutGitGraph(graph, 'oldest'));
+    expect(runs.find(run => run.nodeIds.includes('a1'))).toMatchObject({ releasedCount: 2, releaseState: 'all' });
+    expect(runs.find(run => run.nodeIds.includes('b1'))).toMatchObject({ releasedCount: 0, releaseState: 'none' });
+
+    graph.nodes.find(node => node.id === 'a2')!.releasedAt = null;
+    const partial = taskViewRuns(graph, layoutGitGraph(graph, 'oldest'))
+      .find(run => run.nodeIds.includes('a1'));
+    expect(partial).toMatchObject({ releasedCount: 1, releaseState: 'partial' });
+  });
+
   it('折叠时在图内以任务节点替代连续版本，展开时保留版本节点和分组边界', () => {
     const graph = fixture();
     const before = structuredClone(graph);
