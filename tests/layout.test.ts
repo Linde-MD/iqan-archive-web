@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { layoutDag, LAYOUT, nodeSizeForVersion, relationForDropPoint, versionLines } from '../src/domain/layout';
+import { placeContextMenu } from '../src/utils/viewport';
 
 function graph(edges: [string, string][]) {
   const g = createProject('工程', '123');
@@ -93,5 +94,31 @@ describe('DAG 分层布局', () => {
 
   it('环图抛错', () => {
     expect(() => layoutDag(graph([['A', 'B'], ['B', 'A']]))).toThrow('成环');
+  });
+});
+
+describe('上下文菜单视口定位', () => {
+  it('底部锚点优先将菜单翻到节点上方', () => {
+    expect(placeContextMenu(
+      { x: 900, y: 700 },
+      { width: 280, height: 360 },
+      { width: 1000, height: 800 },
+    )).toEqual({ x: 616, y: 336 });
+  });
+
+  it('窄视口中的高菜单无法翻转时限制在视口内', () => {
+    expect(placeContextMenu(
+      { x: 250, y: 500 },
+      { width: 260, height: 700 },
+      { width: 320, height: 740 },
+    )).toEqual({ x: 52, y: 32 });
+  });
+
+  it('有足够空间时仍显示在右键位置下方', () => {
+    expect(placeContextMenu(
+      { x: 100, y: 100 },
+      { width: 220, height: 300 },
+      { width: 800, height: 600 },
+    )).toEqual({ x: 104, y: 104 });
   });
 });

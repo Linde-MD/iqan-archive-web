@@ -6,7 +6,7 @@ import type { Project, ProjectGraph } from './domain/model';
 import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/project-snapshot';
 import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
-import VersionGraph from './components/VersionGraph.vue';
+const VersionGraph = defineAsyncComponent(() => import('./components/VersionGraph.vue'));
 const ComparisonDocuments = defineAsyncComponent(() => import('./components/ComparisonDocuments.vue'));
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';

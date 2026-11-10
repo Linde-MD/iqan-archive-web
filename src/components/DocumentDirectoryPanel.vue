@@ -177,10 +177,30 @@ onUnmounted(() => { disposed = true; controller?.abort(); });
 </template>
 
 <style scoped>
-.document-directories .section-heading { align-items: flex-start; gap: 12px; }
-.document-directory-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.document-directories > .section-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.document-directories > .section-heading h3 { min-width: 0; margin: 0; }
+.document-directory-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.document-directory-actions > button { min-width: 118px; min-height: 44px; margin: 0; }
+.document-directory-actions > .tool-button {
+  flex-direction: row;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #152840;
+  color: #a9d2ff;
+}
+.document-directory-actions > .tool-button:hover { border-color: var(--accent); background: #1d3858; }
 .document-location-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.document-location-status { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: rgba(8, 15, 27, .35); }
+.document-location-status { display: grid; align-content: start; gap: 8px; min-width: 0; min-height: 112px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(145deg, #15243a, #101a2a); }
 .document-location-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .document-location-heading strong { display: inline-flex; align-items: center; gap: 7px; }
 .document-location-heading .app-icon { width: 17px; height: 17px; }
@@ -188,8 +208,9 @@ onUnmounted(() => { disposed = true; controller?.abort(); });
 .document-location-message { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .document-location-error { color: var(--danger, #ffaaa5); }
 @media (max-width: 620px) {
-  .document-directories .section-heading { flex-direction: column; }
-  .document-directory-actions { justify-content: flex-start; }
+  .document-directories > .section-heading { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .document-directory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; width: 100%; gap: 8px; }
+  .document-directory-actions > button { min-width: 0; width: 100%; }
   .document-location-status-grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

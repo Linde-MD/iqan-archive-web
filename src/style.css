@@ -494,7 +494,11 @@ tbody tr.row-selected { background: #1a3557; }
 .git-row-orphan { background: #151426; }
 .git-row-orphan:hover { background: #28233d; }
 .git-graph-empty { grid-column: 1 / -1; margin: 18px 24px; color: var(--muted); font-size: 13px; }
-.graph-menu { position: absolute; z-index: 6; background: #172338; border: 1px solid #52647e; border-radius: 8px; box-shadow: 0 12px 32px #020617aa; padding: 6px; width: max-content; min-width: 180px; max-width: min(300px, calc(100vw - 24px)); max-height: min(65vh, 480px); overflow: auto; overscroll-behavior: contain; }
+.graph-menu { position: fixed; z-index: 120; background: #172338; border: 1px solid #52647e; border-radius: 8px; box-shadow: 0 12px 32px #020617aa; padding: 6px; width: max-content; min-width: 180px; max-width: min(300px, calc(100vw - 16px)); max-height: min(calc(100dvh - 16px), 480px); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: #7f93ae #111b2b; }
+.graph-menu::-webkit-scrollbar { width: 10px; }
+.graph-menu::-webkit-scrollbar-track { background: #111b2b; border-radius: 6px; }
+.graph-menu::-webkit-scrollbar-thumb { border: 2px solid #111b2b; border-radius: 6px; background: #7186a1; }
+.graph-menu::-webkit-scrollbar-thumb:hover { background: #a7bdd8; }
 .graph-menu button { display: flex; width: 100%; justify-content: flex-start; min-height: 40px; background: transparent; color: var(--ink); border-radius: 6px; }
 .graph-menu button:hover { background: #253650; }
 .graph-menu-file-action { display: grid !important; grid-template-columns: 20px minmax(0, 1fr); align-items: center !important; gap: 8px; min-height: 52px !important; padding: 6px 9px !important; text-align: left; white-space: normal; }

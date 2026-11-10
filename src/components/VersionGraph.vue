@@ -16,6 +16,7 @@ import IqanIntegrationDialog from './IqanIntegrationDialog.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import { renderMarkdown } from '../utils/markdown';
+import { placeContextMenu } from '../utils/viewport';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
@@ -234,7 +235,7 @@ function closeBranchFilter(event: Event) {
   }
 }
 const activeBranchId = ref<string | null>(null);
-const menu = ref<{ kind: 'node' | 'branch' | 'engineering-file'; id: string; x: number; y: number } | null>(null);
+const menu = ref<{ kind: 'node' | 'branch' | 'engineering-file'; id: string; x: number; y: number; anchorX: number; anchorY: number } | null>(null);
 const menuOpenLocation = ref<ArchiveLocation>('local');
 const menuOpenLocations = shallowRef<{ nodeId: string; locations: ArchiveLocation[] } | null>(null);
 const menuOpenLocationBusy = ref(false);
@@ -1045,7 +1046,7 @@ watch(menu, value => {
     menuOpenLocationBusy.value = false;
     return;
   }
-  void nextTick(() => menuElement.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
+  void nextTick(constrainMenuToViewport);
 }, { flush: 'sync' });
 watch([panel, branchDeleteTarget, deletionPlan, nodeForm, branchForm], async ([nextPanel, nextBranchDelete, nextDeletion], [previousPanel, previousBranchDelete, previousDeletion]) => {
   if (nextPanel || nextBranchDelete || nextDeletion) fullscreenSidebarVisible.value = true;
@@ -1212,6 +1213,28 @@ function closeMenu(restoreFocus = true) {
   if (restoreFocus && target) void nextTick(() => target.focus());
 }
 
+function constrainMenuToViewport() {
+  const current = menu.value;
+  const element = menuElement.value;
+  if (!current || !element) return;
+  const bounds = element.getBoundingClientRect();
+  const visualViewport = window.visualViewport;
+  const offsetX = visualViewport?.offsetLeft ?? 0;
+  const offsetY = visualViewport?.offsetTop ?? 0;
+  const position = placeContextMenu(
+    { x: current.anchorX - offsetX, y: current.anchorY - offsetY },
+    { width: bounds.width, height: bounds.height },
+    { width: visualViewport?.width ?? window.innerWidth, height: visualViewport?.height ?? window.innerHeight },
+  );
+  const x = position.x + offsetX;
+  const y = position.y + offsetY;
+  if (x !== current.x || y !== current.y) {
+    menu.value = { ...current, x, y };
+    return;
+  }
+  element.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+}
+
 function onMenuOutsidePointerDown(event: PointerEvent) {
   if (menu.value && !event.composedPath().includes(menuElement.value as EventTarget)) {
     closeMenu(false);
@@ -1238,10 +1261,13 @@ onMounted(() => {
   window.addEventListener('scroll', onHintScroll, true);
   window.addEventListener('resize', hideVersionHint);
   document.addEventListener('fullscreenchange', onFullscreenChange);
+  window.visualViewport?.addEventListener('resize', constrainMenuToViewport);
+  window.visualViewport?.addEventListener('scroll', constrainMenuToViewport);
   window.addEventListener('keydown', onGlobalKeyDown);
   window.addEventListener('focus', refreshEngineeringFileStates);
   window.addEventListener('pointerdown', closeBranchFilter);
   window.addEventListener('pointerdown', onMenuOutsidePointerDown, true);
+  window.addEventListener('resize', constrainMenuToViewport);
   window.addEventListener('resize', updateSidebarHeight);
   window.addEventListener('scroll', updateSidebarHeight, { passive: true });
   void refresh();
@@ -1254,10 +1280,13 @@ onUnmounted(() => {
   window.removeEventListener('scroll', onHintScroll, true);
   window.removeEventListener('resize', hideVersionHint);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
+  window.visualViewport?.removeEventListener('resize', constrainMenuToViewport);
+  window.visualViewport?.removeEventListener('scroll', constrainMenuToViewport);
   window.removeEventListener('keydown', onGlobalKeyDown);
   window.removeEventListener('focus', refreshEngineeringFileStates);
   window.removeEventListener('pointerdown', closeBranchFilter);
   window.removeEventListener('pointerdown', onMenuOutsidePointerDown, true);
+  window.removeEventListener('resize', constrainMenuToViewport);
   window.removeEventListener('resize', updateSidebarHeight);
   window.removeEventListener('scroll', updateSidebarHeight);
 });
@@ -1356,12 +1385,13 @@ function openNodeMenu(event: MouseEvent, nodeId: string) {
     selectionAnchorId.value = nodeId;
   }
   activeBranchId.value = null;
-  const rect = graphScroller.value!.getBoundingClientRect();
   menu.value = {
     kind: 'node',
     id: nodeId,
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+    x: event.clientX,
+    y: event.clientY,
+    anchorX: event.clientX,
+    anchorY: event.clientY,
   };
   menuOpenLocation.value = 'local';
   menuOpenLocations.value = null;
@@ -1375,12 +1405,13 @@ function openEngineeringFileMenu(event: MouseEvent, node: VersionNode) {
   closeMenu(false);
   menuReturnFocus.value = event.currentTarget as HTMLElement;
   activeBranchId.value = null;
-  const rect = graphScroller.value!.getBoundingClientRect();
   menu.value = {
     kind: 'engineering-file',
     id: node.id,
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+    x: event.clientX,
+    y: event.clientY,
+    anchorX: event.clientX,
+    anchorY: event.clientY,
   };
   void refreshEngineeringFileStates();
 }
@@ -1551,12 +1582,13 @@ function openBranchMenu(event: MouseEvent, branchId: string) {
   event.stopPropagation();
   menuReturnFocus.value = event.currentTarget as HTMLElement;
   selectBranch(branchId);
-  const rect = graphScroller.value!.getBoundingClientRect();
   menu.value = {
     kind: 'branch',
     id: branchId,
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+    x: event.clientX,
+    y: event.clientY,
+    anchorX: event.clientX,
+    anchorY: event.clientY,
   };
 }
 
@@ -2342,7 +2374,7 @@ function onIqanDialogClosed() {
         </template>
         <button class="secondary icon-button" :disabled="saving" aria-label="缩小图形" title="缩小图形" @click="zoomAt(0.85)"><AppIcon name="zoom-out" /></button>
         <button class="secondary icon-button" :disabled="saving" aria-label="放大图形" title="放大图形" @click="zoomAt(1.15)"><AppIcon name="zoom-in" /></button>
-        <button class="secondary icon-button" :disabled="saving" aria-label="回到画布顶部并重置缩放" title="回到画布顶部并重置缩放" @click="resetZoom"><AppIcon name="fit" /></button>
+        <button class="secondary icon-button" :disabled="saving" aria-label="回到画布顶部并重置缩放" title="回到画布顶部并重置缩放" @click="resetZoom"><AppIcon name="top" /></button>
         <button class="secondary icon-button" :disabled="saving" aria-label="重新读取图" title="重新读取图" @click="refresh"><AppIcon name="refresh" /></button>
       </div>
     </div>
@@ -2685,6 +2717,7 @@ function onIqanDialogClosed() {
         </div>
       </div>
 
+      <Teleport :to="isFullscreen ? graphWorkspace : 'body'">
       <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : '工程文件操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
           <button role="menuitem" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" />对比所选版本（已选 {{ selectedNodeIds.length }} 个）</button>
@@ -2750,6 +2783,7 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
         </template>
       </div>
+      </Teleport>
       <IqanIntegrationDialog
         v-if="graph"
         ref="iqanIntegration"
