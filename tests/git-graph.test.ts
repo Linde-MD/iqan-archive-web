@@ -85,6 +85,16 @@ describe('Git Graph 投影', () => {
     });
   });
 
+  it('分支标签长度不参与版本信息列宽度计算', () => {
+    const graph = fixture();
+    const initialWidth = layoutGitGraph(graph, 'oldest').width;
+    graph.branches = graph.branches.map((branch, index) => ({
+      ...branch,
+      name: `${'长期分支名称'.repeat(12)}-${index}`,
+    }));
+    expect(layoutGitGraph(graph, 'oldest').width).toBe(initialWidth);
+  });
+
   it('无重合历史的分支共用同一列节省画布宽度', () => {
     const graph = createProject('分支列复用', '1479');
     const projectId = graph.project.id;

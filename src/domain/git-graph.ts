@@ -393,8 +393,7 @@ export function layoutGitGraph(
   });
   const trackWidth = GIT_GRAPH.laneStart + trackCount * GIT_GRAPH.laneGap + 14;
   const longestLabel = rows.reduce<number>((width, row) => {
-    const branchesWidth = row.branchHeads.reduce((sum, branch) => sum + branch.name.length * 8 + 30, 0);
-    return Math.max(width, row.node.version.length * 9 + Math.min(row.node.description.length * 7, 640) + branchesWidth);
+    return Math.max(width, row.node.version.length * 9 + Math.min(row.node.description.length * 7, 640));
   }, GIT_GRAPH.labelMinWidth);
   return {
     rows,

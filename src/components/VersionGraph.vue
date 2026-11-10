@@ -28,10 +28,13 @@ const status = ref('');
 const saving = ref(false);
 const errorHeading = ref<HTMLElement>();
 const graphScroller = ref<HTMLDivElement>();
+const branchLabelLeft = ref(0);
+const branchLabelWidth = ref(300);
 const versionHint = ref<HTMLDivElement>();
 const hintedNode = shallowRef<VersionNode>();
 let hintCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let nodeClickTimer: ReturnType<typeof setTimeout> | undefined;
+let graphScrollerResizeObserver: ResizeObserver | undefined;
 
 function clearNodeClickTimer() {
   clearTimeout(nodeClickTimer);
@@ -1004,6 +1007,21 @@ const laneWidth = computed(() => graphLayout.value?.trackWidth ?? 0);
 const canvasWidth = computed(() => (graphLayout.value?.width ?? 0) + (hideIsolated.value ? 20 : 300));
 const graphColumns = computed(() => `${laneWidth.value}px minmax(720px, 1fr)${hideIsolated.value ? '' : ' 280px'}`);
 const contentHeight = computed(() => (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight);
+function updateBranchLabelPosition() {
+  const scroller = graphScroller.value;
+  if (!scroller) return;
+  branchLabelWidth.value = Math.min(300, (scroller.clientWidth / scale.value) * 0.42);
+  branchLabelLeft.value = (scroller.scrollLeft + scroller.clientWidth - 12) / scale.value - branchLabelWidth.value;
+}
+
+watch(graphScroller, scroller => {
+  graphScrollerResizeObserver?.disconnect();
+  if (!scroller) return;
+  graphScrollerResizeObserver = new ResizeObserver(updateBranchLabelPosition);
+  graphScrollerResizeObserver.observe(scroller);
+  void nextTick(updateBranchLabelPosition);
+}, { flush: 'post' });
+watch(scale, () => void nextTick(updateBranchLabelPosition), { flush: 'post' });
 
 function clearSelectionsForFilter() {
   const visible = new Set(graphLayout.value?.rows.map(row => row.node.id) ?? []);
@@ -1291,6 +1309,7 @@ onMounted(() => {
   void refreshComparisonDocuments();
 });
 onUnmounted(() => {
+  graphScrollerResizeObserver?.disconnect();
   documentScanController?.abort();
   clearNodeClickTimer();
   hideVersionHint();
@@ -2486,12 +2505,13 @@ function onIqanDialogClosed() {
         role="region"
         tabindex="0"
         aria-label="版本历史图。普通滚轮上下滚动，Shift 加滚轮左右滚动，Ctrl 加滚轮缩放。"
+                @scroll="updateBranchLabelPosition"
         @wheel="onWheel"
       >
         <div class="git-graph-canvas" :style="{ width: `${canvasWidth * scale}px`, height: `${displayHeight * scale}px` }">
           <div class="git-graph-zoom-content" :style="{ width: `${canvasWidth}px`, height: `${displayHeight}px`, transform: `scale(${scale})`, '--graph-header-height': `${GIT_GRAPH.headerHeight}px`, '--graph-row-height': `${GIT_GRAPH.rowHeight}px` }">
             <div class="git-graph-column-head" :style="{ gridTemplateColumns: graphColumns }">
-              <span>分支轨道</span><span>版本 / 任务与改动信息 · 分支标签位于版本右侧</span><span v-if="!hideIsolated">未关联版本</span>
+              <span>分支轨道</span><span>版本 / 任务与改动信息 · 分支名悬浮于可视区右侧</span><span v-if="!hideIsolated">未关联版本</span>
             </div>
             <svg
               v-if="graphLayout"
@@ -2548,7 +2568,7 @@ function onIqanDialogClosed() {
                 @dragover="row.kind === 'version' && onBranchDragOver($event, row.node.id)"
                 @dragleave="row.kind === 'version' && dropTargetId === row.node.id && (dropTargetId = null)"
                 @drop="row.kind === 'version' && dropBranch($event, row.node.id)"
-                :style="{ gridTemplateColumns: graphColumns }"
+                :style="{ gridTemplateColumns: graphColumns, '--branch-label-left': `${branchLabelLeft}px`, '--branch-label-width': `${branchLabelWidth}px` }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
                 <div class="git-graph-main-cell" :class="{ 'has-version-slot': showFileIcons && row.kind === 'version' && !row.isolated }">
@@ -2647,8 +2667,9 @@ function onIqanDialogClosed() {
                       <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                     </span>
                   </button>
-                  <div v-if="row.kind !== 'task-header' && !row.isolated && row.branchHeads.length" class="git-node-accessories">
-                  <span v-if="row.branchHeads.length" class="git-branch-labels">
+                </div>
+                <div v-if="row.kind !== 'task-header' && !row.isolated && row.branchHeads.length" class="git-node-accessories">
+                  <span class="git-branch-labels">
                     <button
                       v-for="branch in row.branchHeads"
                       :key="branch.id"
@@ -2657,14 +2678,13 @@ function onIqanDialogClosed() {
                       :style="{ '--branch-color': branch.color }"
                       :aria-pressed="activeBranchId === branch.id"
                       :draggable="!saving && !editorOpen"
-                      title="拖到版本行以移动分支指针，或通过编辑分支选择版本"
+                      :title="`${branch.name}；拖到版本行以移动分支指针，或通过编辑分支选择版本`"
                       @dragstart="startBranchDrag($event, branch)"
                       @dragend="endBranchDrag"
                       @click="selectBranch(branch.id)"
                       @contextmenu="openBranchMenu($event, branch.id)"
                     >{{ branch.name }}</button>
                   </span>
-                  </div>
                 </div>
                 <div v-if="!hideIsolated" class="git-graph-orphan-cell" :class="{ 'has-version-slot': showFileIcons && row.kind === 'version' && row.isolated }">
                   <div v-if="showFileIcons && row.kind === 'version' && row.isolated" class="git-version-file-actions">
