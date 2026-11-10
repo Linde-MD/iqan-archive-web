@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef } from 'vue';
+import { onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
 import { checkPermission, chooseDirectory, type ArchiveRoots, type DirectoryHandle } from '../files/directories';
 import { buildArchiveRootOpenUri } from '../domain/iqan-protocol';
@@ -11,6 +11,8 @@ const roots = shallowRef<ArchiveRoots>({});
 const permission = ref<Record<'shared' | 'local', string>>({ shared: '未授权', local: '未授权' });
 const busy = ref(false);
 const message = ref('');
+const menu = ref<HTMLDetailsElement>();
+const menuTrigger = ref<HTMLElement>();
 
 async function operation(action: () => Promise<void>) {
   busy.value = true;
@@ -74,6 +76,15 @@ async function openRoot(location: 'shared' | 'local') {
   });
 }
 
+function closeMenu() {
+  if (menu.value) menu.value.open = false;
+  menuTrigger.value?.focus();
+}
+
+function onOutsidePointerDown(event: PointerEvent) {
+  if (menu.value?.open && !event.composedPath().includes(menu.value)) menu.value.open = false;
+}
+
 async function unbind(location: 'shared' | 'local') {
   await operation(async () => {
     await props.repository.db.archiveRoots.delete(location);
@@ -86,27 +97,31 @@ async function unbind(location: 'shared' | 'local') {
   });
 }
 
-onMounted(restore);
+onMounted(() => {
+  window.addEventListener('pointerdown', onOutsidePointerDown, true);
+  void restore();
+});
+onUnmounted(() => window.removeEventListener('pointerdown', onOutsidePointerDown, true));
 </script>
 
 <template>
-  <section class="panel archive-root-panel" aria-labelledby="archive-root-title" :aria-busy="busy">
-    <div class="section-heading"><h2 id="archive-root-title">归档目录</h2><span class="archive-root-note">JSON · 共享根目录</span></div>
-    <div class="archive-root-grid">
-      <div v-for="location in ['shared', 'local'] as const" :key="location" class="archive-root-entry">
-        <div class="section-heading">
-          <h3>{{ location === 'shared' ? '共享根目录' : '本地根目录' }}</h3>
+  <details ref="menu" class="topbar-menu archive-root-menu" @keydown.esc.prevent="closeMenu">
+    <summary ref="menuTrigger" class="topbar-menu-trigger"><AppIcon name="folder" />归档目录</summary>
+    <div class="topbar-menu-items archive-menu-items" :aria-busy="busy">
+      <section v-for="location in ['shared', 'local'] as const" :key="location" class="archive-menu-group" :aria-labelledby="`archive-${location}-title`">
+        <div class="archive-menu-heading">
+          <h3 :id="`archive-${location}-title`">{{ location === 'shared' ? '共享根目录' : '本地根目录' }}</h3>
           <span class="permission-badge">{{ permission[location] }}</span>
         </div>
         <div class="archive-root-value"><AppIcon name="folder" /><strong>{{ roots[location]?.name ?? '尚未选择目录' }}</strong></div>
-        <div class="actions">
-          <button type="button" class="secondary" :aria-label="`${roots[location] ? '更换' : '选择'}${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy" @click="chooseRoot(location)"><AppIcon name="folder" />{{ roots[location] ? '更换' : '选择' }}</button>
-          <button type="button" class="secondary" :aria-label="`在资源管理器中打开${location === 'shared' ? '共享' : '本地'}根目录`" :title="`请求 Launcher 打开本机配置的${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy || !roots[location]" @click="openRoot(location)"><AppIcon name="folder" />打开目录</button>
-          <button type="button" class="secondary" :aria-label="`重新授权${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy || !roots[location]" @click="authorize(location)"><AppIcon name="shield" />授权</button>
-          <button type="button" class="secondary" :aria-label="`解除${location === 'shared' ? '共享' : '本地'}根目录授权`" :disabled="disabled || busy || !roots[location]" @click="unbind(location)"><AppIcon name="unlink" />移除</button>
+        <div class="archive-menu-actions">
+          <button type="button" :aria-label="`${roots[location] ? '更换' : '选择'}${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy" @click="chooseRoot(location)"><AppIcon name="folder" />{{ roots[location] ? '更换' : '选择' }}</button>
+          <button type="button" :disabled="disabled || busy || !roots[location]" :aria-label="`重新授权${location === 'shared' ? '共享' : '本地'}根目录`" @click="authorize(location)"><AppIcon name="shield" />授权</button>
+          <button type="button" :disabled="disabled || busy || !roots[location]" :aria-label="`打开${location === 'shared' ? '共享' : '本地'}根目录`" :title="`请求 Launcher 打开本机配置的${location === 'shared' ? '共享' : '本地'}根目录`" @click="openRoot(location)"><AppIcon name="folder" />打开目录</button>
+          <button type="button" :disabled="disabled || busy || !roots[location]" :aria-label="`解除${location === 'shared' ? '共享' : '本地'}根目录授权`" @click="unbind(location)"><AppIcon name="unlink" />移除</button>
         </div>
-      </div>
+      </section>
+      <p class="archive-menu-status" role="status">{{ busy ? '正在处理归档根目录…' : message }}</p>
     </div>
-    <p role="status">{{ busy ? '正在处理归档根目录…' : message }}</p>
-  </section>
+  </details>
 </template>

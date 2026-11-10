@@ -46,7 +46,8 @@ const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
 const taskBoardTargetId = ref('');
 const focusNodeId = ref('');
 const versionOrder = ref<VersionOrder>('newest');
-const importButton = ref<HTMLButtonElement | null>(null);
+const backupMenu = ref<HTMLDetailsElement | null>(null);
+const backupMenuTrigger = ref<HTMLElement | null>(null);
 const importConfirmButton = ref<HTMLButtonElement | null>(null);
 const importPreview = ref<{ graph: ProjectGraph; fileName: string; conflict: boolean } | null>(null);
 const importFiles = ref<FileHandle[]>([]);
@@ -203,6 +204,29 @@ async function exportProject() {
   }
 }
 
+async function exportProjectFromMenu() {
+  if (backupMenu.value) backupMenu.value.open = false;
+  await nextTick();
+  backupMenuTrigger.value?.focus();
+  await exportProject();
+}
+
+async function importProjectFromMenu() {
+  if (backupMenu.value) backupMenu.value.open = false;
+  await nextTick();
+  backupMenuTrigger.value?.focus();
+  await chooseImportFromRoot();
+}
+
+function closeBackupMenu() {
+  if (backupMenu.value) backupMenu.value.open = false;
+  backupMenuTrigger.value?.focus();
+}
+
+function onBackupMenuOutsidePointerDown(event: PointerEvent) {
+  if (backupMenu.value?.open && !event.composedPath().includes(backupMenu.value)) backupMenu.value.open = false;
+}
+
 async function chooseImportFromRoot() {
   error.value = ''; status.value = '';
   try {
@@ -265,7 +289,7 @@ async function confirmImport() {
     saving.value = false;
     if (!importPreview.value) {
       await nextTick();
-      importButton.value?.focus();
+      backupMenuTrigger.value?.focus();
     }
   }
 }
@@ -273,11 +297,19 @@ async function confirmImport() {
 async function cancelImport() {
   importPreview.value = null;
   await nextTick();
-  importButton.value?.focus();
+  backupMenuTrigger.value?.focus();
 }
 
-onMounted(watchProjects);
-onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
+onMounted(() => {
+  window.addEventListener('pointerdown', onBackupMenuOutsidePointerDown, true);
+  void watchProjects();
+});
+onUnmounted(() => {
+  window.removeEventListener('pointerdown', onBackupMenuOutsidePointerDown, true);
+  ++loadAttempt;
+  subscription?.unsubscribe();
+  db.close();
+});
 </script>
 
 <template>
@@ -292,7 +324,17 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </svg>
       <span>IQAN <strong>Archive</strong></span>
     </a>
-    <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
+    <div class="topbar-actions">
+      <details ref="backupMenu" class="topbar-menu" @keydown.esc.prevent="closeBackupMenu">
+        <summary ref="backupMenuTrigger" class="topbar-menu-trigger"><AppIcon name="folder" />JSON 备份</summary>
+        <div class="topbar-menu-items">
+          <button v-if="activeProject" type="button" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="exportProjectFromMenu"><AppIcon name="download" />导出 JSON</button>
+          <button type="button" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="importProjectFromMenu"><AppIcon name="upload" />导入恢复</button>
+        </div>
+      </details>
+      <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="archiveRoots = $event; archiveRootRevision++" @busy="rootBusy = $event" @error="showError" />
+      <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
+    </div>
   </header>
 
   <main id="workspace">
@@ -311,18 +353,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       <p v-if="status" :key="status" role="status" class="status">{{ status }}</p>
     </Transition>
 
-    <button v-if="activeProjectId" class="secondary project-rail-toggle" :aria-expanded="!projectsCollapsed" aria-controls="project-rail" @click="projectsCollapsed = !projectsCollapsed">
-      <AppIcon name="folder" />{{ projectsCollapsed ? '展开项目区域' : '折叠项目区域' }}
-    </button>
-    <section v-if="activeProject || !loading" class="panel project-backup" aria-labelledby="backup-title">
-      <div class="section-heading">
-        <div><h2 id="backup-title">{{ activeProject ? `项目备份 · ${activeProject.name}` : '项目备份' }}</h2><p class="backup-scope">只包含图与任务配置，不含文件或目录授权。</p></div>
-        <div class="backup-actions">
-          <button v-if="activeProject" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="exportProject"><AppIcon name="download" />导出 JSON</button>
-          <button ref="importButton" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="chooseImportFromRoot"><AppIcon name="upload" />导入恢复</button>
-        </div>
-      </div>
-      <div v-if="importPreview" class="import-preview" aria-labelledby="import-preview-title">
+    <section v-if="importPreview" class="panel import-preview" aria-labelledby="import-preview-title">
         <h3 id="import-preview-title" tabindex="-1">导入预览</h3>
         <p><strong>{{ importPreview.graph.project.name }}</strong> · 零件号 {{ importPreview.graph.project.partNumber }}</p>
         <p>文件：{{ importPreview.fileName }} · {{ importPreview.graph.nodes.length }} 个版本 · {{ importPreview.graph.edges.length }} 条父边 · {{ importPreview.graph.branches.length }} 个分支 · {{ importPreview.graph.tasks.length }} 个任务</p>
@@ -333,9 +364,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
           <button ref="importConfirmButton" type="button" :disabled="saving || filesBusy || graphBusy" @click="confirmImport"><AppIcon name="check" />{{ saving ? '正在导入…' : importPreview.conflict ? '导入为副本' : '恢复此项目' }}</button>
           <button type="button" class="secondary" :disabled="saving" @click="cancelImport">取消</button>
         </div>
-      </div>
     </section>
-    <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="archiveRoots = $event; archiveRootRevision++" @busy="rootBusy = $event" @error="showError" />
     <dialog ref="importPicker" class="branch-move-dialog" aria-labelledby="import-picker-title" @close="importFiles = []; importFileName = ''">
       <h3 id="import-picker-title">从归档根目录导入</h3>
       <p>选择保存在归档根目录中的项目 JSON 备份。</p>
@@ -349,11 +378,19 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </div>
     </dialog>
     <div :class="['app-workspace', { 'has-project': activeProjectId, 'projects-collapsed': activeProjectId && projectsCollapsed }]">
-    <div id="project-rail" v-show="!activeProjectId || !projectsCollapsed" class="workspace-grid">
+    <div id="project-rail" class="workspace-grid project-rail-region" :class="{ 'is-collapsed': activeProjectId && projectsCollapsed }">
+      <template v-if="!activeProjectId || !projectsCollapsed">
       <section class="panel projects" aria-labelledby="projects-title" :aria-busy="loading">
         <div class="section-heading">
           <div><p class="eyebrow">PROJECTS</p><h2 id="projects-title">项目档案</h2></div>
-          <span class="count">{{ projects.length }} 个项目</span>
+          <div class="project-list-heading-actions">
+            <span class="count">{{ projects.length }} 个项目</span>
+            <button
+              v-if="activeProjectId" type="button" class="icon-button project-rail-toggle"
+              aria-label="折叠项目区域" title="折叠项目区域" :aria-expanded="!projectsCollapsed"
+              aria-controls="project-rail" @click="projectsCollapsed = true"
+            ><AppIcon name="chevron-left" /></button>
+          </div>
         </div>
         <p v-if="loading" role="status">正在读取本机项目…</p>
         <div v-else-if="projects.length === 0" class="empty">
@@ -423,6 +460,12 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
         </form>
         </template>
       </section>
+      </template>
+      <button
+        v-else type="button" class="icon-button project-rail-expand"
+        aria-label="展开项目区域" title="展开项目区域" :aria-expanded="false" aria-controls="project-rail"
+        @click="projectsCollapsed = false"
+      ><AppIcon name="chevron-right" /></button>
     </div>
 
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />

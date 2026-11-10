@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'chevron-left' | 'chevron-right' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -12,6 +12,8 @@ const paths = {
   clear: 'M6 6l12 12 M6 18L18 6',
   plus: 'M12 4v16 M4 12h16',
   arrow: 'M4 12h16 M14 6l6 6-6 6',
+  'chevron-left': 'm15 18-6-6 6-6',
+  'chevron-right': 'm9 18 6-6-6-6',
   top: 'M12 19V5 M6 11l6-6 6 6 M4 21h16',
   file: 'M14 3H5v18h14V8Z M14 3v5h5 M9 13h6 M9 17h6',
   documents: 'M16 3H8v16h12V7Z M16 3v4h4 M4 7v14h12 M11 11h6 M11 15h6',
