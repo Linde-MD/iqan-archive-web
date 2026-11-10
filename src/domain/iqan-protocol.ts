@@ -78,6 +78,11 @@ export function buildDocumentOpenUri(projectId: string, directoryName: string, f
   return assertUriLength(`iqanarchive://open-document?v=3&project=${projectId}&location=${location}&file=${encodeRfc3986(path)}`);
 }
 
+export function buildArchiveRootOpenUri(location: ArchiveLocation): string {
+  assertArchiveLocation(location);
+  return `iqanarchive://open-archive-root?v=1&location=${location}`;
+}
+
 export function buildEngineeringCopyUri(
   projectId: string,
   sourceLocation: ArchiveLocation,

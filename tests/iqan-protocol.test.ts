@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { buildCompareUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
+import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
 import fixture from '../specs/fixtures/launcher-uri-v1.json';
 
 const projectId = '550e8400-e29b-41d4-a716-446655440000';
 
 describe('Launcher 工程 URI v1', () => {
+  it('只能请求打开本机配置的共享或本地归档根目录', () => {
+    expect(buildArchiveRootOpenUri('shared')).toBe('iqanarchive://open-archive-root?v=1&location=shared');
+    expect(buildArchiveRootOpenUri('local')).toBe('iqanarchive://open-archive-root?v=1&location=local');
+  });
+  it('生成共享夹具定义的归档根目录打开请求', () => {
+    for (const testCase of fixture.openArchiveRootValid) {
+      expect(buildArchiveRootOpenUri(testCase.location.toLocaleLowerCase() as ArchiveLocation)).toBe(testCase.uri);
+    }
+  });
+  it('生成共享夹具定义的归档根目录打开请求', () => {
+    for (const testCase of fixture.openArchiveRootValid) {
+      expect(buildArchiveRootOpenUri(testCase.location.toLocaleLowerCase() as ArchiveLocation)).toBe(testCase.uri);
+    }
+  });
+  it('生成共享夹具定义的归档根目录打开请求', () => {
+    for (const testCase of fixture.openArchiveRootValid) {
+      expect(buildArchiveRootOpenUri(testCase.location.toLocaleLowerCase() as ArchiveLocation)).toBe(testCase.uri);
+    }
+  });
   it('文档使用独立 v2 操作，限定格式并复用路径校验', () => {
     expect(buildDocumentOpenUri(projectId, 'documents', '说明 A.DOCX')).toBe(`iqanarchive://open-document?v=3&project=${projectId}&location=shared&file=documents%2F%E8%AF%B4%E6%98%8E%20A.DOCX`);
     expect(buildDocumentOpenUri(projectId, 'documents', 'release.docx', 'local')).toBe(`iqanarchive://open-document?v=3&project=${projectId}&location=local&file=documents%2Frelease.docx`);

@@ -2,6 +2,7 @@
 import { onMounted, ref, shallowRef } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
 import { checkPermission, chooseDirectory, type ArchiveRoots, type DirectoryHandle } from '../files/directories';
+import { buildArchiveRootOpenUri } from '../domain/iqan-protocol';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; disabled: boolean }>();
@@ -62,6 +63,17 @@ async function authorize(location: 'shared' | 'local') {
   });
 }
 
+async function openRoot(location: 'shared' | 'local') {
+  await operation(async () => {
+    const root = roots.value[location];
+    if (!root) throw new Error(`请先选择${location === 'shared' ? '共享' : '本地'}根目录。`);
+    if (!await checkPermission(root, false, 'readwrite'))
+      throw new Error(`${location === 'shared' ? '共享' : '本地'}根目录授权已失效，请重新授权后再打开。`);
+    window.location.assign(buildArchiveRootOpenUri(location));
+    message.value = `已请求 Launcher 打开${location === 'shared' ? '共享' : '本地'}根目录；请在本机核对路径并确认。网页无法确认资源管理器是否已打开。`;
+  });
+}
+
 async function unbind(location: 'shared' | 'local') {
   await operation(async () => {
     await props.repository.db.archiveRoots.delete(location);
@@ -89,6 +101,7 @@ onMounted(restore);
         <div class="archive-root-value"><AppIcon name="folder" /><strong>{{ roots[location]?.name ?? '尚未选择目录' }}</strong></div>
         <div class="actions">
           <button type="button" class="secondary" :aria-label="`${roots[location] ? '更换' : '选择'}${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy" @click="chooseRoot(location)"><AppIcon name="folder" />{{ roots[location] ? '更换' : '选择' }}</button>
+          <button type="button" class="secondary" :aria-label="`在资源管理器中打开${location === 'shared' ? '共享' : '本地'}根目录`" :title="`请求 Launcher 打开本机配置的${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy || !roots[location]" @click="openRoot(location)"><AppIcon name="folder" />打开目录</button>
           <button type="button" class="secondary" :aria-label="`重新授权${location === 'shared' ? '共享' : '本地'}根目录`" :disabled="disabled || busy || !roots[location]" @click="authorize(location)"><AppIcon name="shield" />授权</button>
           <button type="button" class="secondary" :aria-label="`解除${location === 'shared' ? '共享' : '本地'}根目录授权`" :disabled="disabled || busy || !roots[location]" @click="unbind(location)"><AppIcon name="unlink" />移除</button>
         </div>

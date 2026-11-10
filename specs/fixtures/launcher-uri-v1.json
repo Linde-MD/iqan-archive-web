@@ -321,5 +321,33 @@
       "uri": "iqanarchive://copy-engineering?v=2&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_iqan_project_files%2Fmodel.idax&targetLocation=local&targetFile=Demo_iqan_project_files%2Fcopy.idax",
       "failure": "InvalidLocation"
     }
+  ],
+  "openArchiveRootValid": [
+    {
+      "name": "open-shared-archive-root",
+      "uri": "iqanarchive://open-archive-root?v=1&location=shared",
+      "operation": "OpenArchiveRoot",
+      "location": "Shared",
+      "files": []
+    },
+    {
+      "name": "open-local-archive-root",
+      "uri": "iqanarchive://open-archive-root?v=1&location=local",
+      "operation": "OpenArchiveRoot",
+      "location": "Local",
+      "files": []
+    }
+  ],
+  "openArchiveRootInvalid": [
+    {
+      "name": "open-archive-root-invalid-location",
+      "uri": "iqanarchive://open-archive-root?v=1&location=remote",
+      "failure": "InvalidLocation"
+    },
+    {
+      "name": "open-archive-root-extra-field",
+      "uri": "iqanarchive://open-archive-root?v=1&location=shared&path=C%3A%5C",
+      "failure": "InvalidSyntax"
+    }
   ]
 }
