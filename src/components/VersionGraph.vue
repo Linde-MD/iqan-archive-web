@@ -1217,17 +1217,29 @@ function constrainMenuToViewport() {
   const current = menu.value;
   const element = menuElement.value;
   if (!current || !element) return;
-  const bounds = element.getBoundingClientRect();
+  const graphBounds = graphScroller.value?.getBoundingClientRect();
   const visualViewport = window.visualViewport;
-  const offsetX = visualViewport?.offsetLeft ?? 0;
-  const offsetY = visualViewport?.offsetTop ?? 0;
+  const viewportLeft = visualViewport?.offsetLeft ?? 0;
+  const viewportTop = visualViewport?.offsetTop ?? 0;
+  const viewportRight = viewportLeft + (visualViewport?.width ?? window.innerWidth);
+  const viewportBottom = viewportTop + (visualViewport?.height ?? window.innerHeight);
+  const left = Math.max(graphBounds?.left ?? viewportLeft, viewportLeft);
+  const top = Math.max(graphBounds?.top ?? viewportTop, viewportTop);
+  const right = Math.min(graphBounds?.right ?? viewportRight, viewportRight);
+  const bottom = Math.min(graphBounds?.bottom ?? viewportBottom, viewportBottom);
+  const safeWidth = Math.max(0, right - left);
+  const safeHeight = Math.max(0, bottom - top);
+  element.style.minWidth = `${Math.min(180, Math.max(0, safeWidth - 16))}px`;
+  element.style.maxWidth = `${Math.max(0, safeWidth - 16)}px`;
+  element.style.maxHeight = `${Math.max(0, safeHeight - 16)}px`;
+  const bounds = element.getBoundingClientRect();
   const position = placeContextMenu(
-    { x: current.anchorX - offsetX, y: current.anchorY - offsetY },
+    { x: current.anchorX - left, y: current.anchorY - top },
     { width: bounds.width, height: bounds.height },
-    { width: visualViewport?.width ?? window.innerWidth, height: visualViewport?.height ?? window.innerHeight },
+    { width: safeWidth, height: safeHeight },
   );
-  const x = position.x + offsetX;
-  const y = position.y + offsetY;
+  const x = position.x + left;
+  const y = position.y + top;
   if (x !== current.x || y !== current.y) {
     menu.value = { ...current, x, y };
     return;
