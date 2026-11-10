@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { layoutGitGraph } from '../src/domain/git-graph';
-import { projectTaskViewLayout, taskViewRuns } from '../src/domain/task-view';
+import { projectTaskViewLayout, sortTasksByExternalId, taskViewRuns } from '../src/domain/task-view';
 
 function fixture() {
   const graph = createProject('任务视图', '123');
@@ -31,6 +31,14 @@ function fixture() {
 }
 
 describe('分支内连续任务节点投影', () => {
+  it('按外部任务 ID 的数值顺序排序，无 ID 任务排在末尾', () => {
+    const graph = fixture();
+    graph.tasks.push({ id: 'task-ten', projectId: graph.project.id, name: '任务 10', description: '', externalTaskId: '10' });
+    expect(sortTasksByExternalId(graph.tasks).map(task => task.id)).toEqual([
+      'task-a', 'task-empty', 'task-ten', 'task-b',
+    ]);
+  });
+
   it('只把同一轨道内连续且任务相同的版本组成任务段', () => {
     const graph = fixture();
     const layout = layoutGitGraph(graph, 'oldest');

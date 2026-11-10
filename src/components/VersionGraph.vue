@@ -14,6 +14,7 @@ import { projectTaskViewLayout, taskViewRuns, type TaskRun, type TaskViewLayout 
 import AppIcon from './AppIcon.vue';
 import IqanIntegrationDialog from './IqanIntegrationDialog.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
+import TaskPicker from './TaskPicker.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import { renderMarkdown } from '../utils/markdown';
 import { placeContextMenu } from '../utils/viewport';
@@ -3050,11 +3051,7 @@ function onIqanDialogClosed() {
         <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' && !!selectedNode?.releasedAt)" placeholder="例如：1479-1 20260115" />
         <label for="git-description">改动说明</label>
         <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" :disabled="saving" />
-        <label for="git-node-task">所属任务</label>
-        <select id="git-node-task" v-model="nodeTaskId" :disabled="saving">
-          <option value="">未关联任务</option>
-          <option v-for="task in graph.tasks" :key="task.id" :value="task.id">{{ taskLabel(task) }}</option>
-        </select>
+        <TaskPicker v-model="nodeTaskId" :tasks="graph.tasks" :disabled="saving" />
         <p class="form-help">每个版本可不关联任务，或关联一个任务；任务通过工具栏“任务管理”维护。</p>
         <template v-if="panel !== 'node-edit'">
           <ParentVersionPicker :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />

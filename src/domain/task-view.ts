@@ -25,6 +25,24 @@ export interface TaskViewLayout extends Omit<GitGraphLayout, 'rows' | 'edges' | 
   height: number;
 }
 
+export function sortTasksByExternalId(tasks: readonly Task[]): Task[] {
+  return [...tasks].sort((left, right) => {
+    const leftId = left.externalTaskId?.trim() ?? '';
+    const rightId = right.externalTaskId?.trim() ?? '';
+    if (!leftId || !rightId) {
+      if (!leftId && rightId) return 1;
+      if (leftId && !rightId) return -1;
+      return left.name.localeCompare(right.name);
+    }
+    const normalizedLeft = leftId.replace(/^0+(?=\d)/, '');
+    const normalizedRight = rightId.replace(/^0+(?=\d)/, '');
+    return normalizedLeft.length - normalizedRight.length
+      || normalizedLeft.localeCompare(normalizedRight)
+      || leftId.localeCompare(rightId)
+      || left.name.localeCompare(right.name);
+  });
+}
+
 export function taskViewRuns(graph: ProjectGraph, layout: GitGraphLayout): TaskRun[] {
   const taskById = new Map(graph.tasks.map(task => [task.id, task]));
   const runs: PendingTaskRun[] = [];
