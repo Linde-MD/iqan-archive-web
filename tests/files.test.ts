@@ -1,12 +1,13 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
-import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
+import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, mergeDocumentCandidates, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
 import { JSON_BACKUP_LOCATION, listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
+import { scanDocumentDirectories, scanDocumentDirectory } from '../src/files/document-directories';
 
 const databases: Dexie[] = [];
 afterEach(async () => { for (const db of databases.splice(0)) await db.delete(); });
@@ -171,6 +172,17 @@ describe('JSON 备份根目录策略', () => {
 });
 
 describe('软件对比文档版本匹配', () => {
+  it('按相对路径合并共享和本地扫描结果并标出文件来源', () => {
+    expect(mergeDocumentCandidates({
+      local: [candidate('本地.docx', 'nested'), candidate('both.doc')],
+      shared: [candidate('共享.docx'), candidate('both.doc')],
+    })).toEqual([
+      { fileName: '共享.docx', relativePath: '共享.docx', locations: ['shared'] },
+      { fileName: 'both.doc', relativePath: 'both.doc', locations: ['local', 'shared'] },
+      { fileName: '本地.docx', relativePath: 'nested/本地.docx', locations: ['local'] },
+    ]);
+  });
+
   it('按项目零件号和完整版本前缀临时匹配，保留任意后缀与多份文档', () => {
     const graph = registerCandidates(createProject('项目', '14798046800'), [
       candidate('14798046800 V1.0-2.idax'),
@@ -217,6 +229,49 @@ describe('软件对比文档版本匹配', () => {
 });
 
 describe('只读目录扫描与定位', () => {
+  it('扫描指定来源的项目文档子目录并保留根句柄和相对路径', async () => {
+    const graph = createProject('项目 A', '001');
+    const document = file('说明.docx');
+    const binding = directory('项目 A_software_changes_docs', [document]);
+    const root = directory('shared', [binding]);
+    const repository = {
+      async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? root : undefined; },
+      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
+    } as unknown as ArchiveRepository;
+    const scan = await scanDocumentDirectory(repository, graph.project.id, 'shared', new AbortController().signal);
+    expect(scan.location).toBe('shared');
+    expect(scan.root).toBe(root);
+    expect(scan.binding).toBe(binding);
+    expect(scan.files).toEqual([{ fileName: '说明.docx', relativePath: '说明.docx' }]);
+  });
+
+  it('并行扫描双来源时保留成功侧结果并报告未设置的一侧', async () => {
+    const graph = createProject('项目 A', '001');
+    const binding = directory('项目 A_software_changes_docs', [file('说明.docx')]);
+    const root = directory('shared', [binding]);
+    const repository = {
+      async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? root : undefined; },
+      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
+    } as unknown as ArchiveRepository;
+    const results = await scanDocumentDirectories(repository, graph.project.id, new AbortController().signal);
+    expect(results.find(result => result.location === 'shared')).toMatchObject({ status: 'success', count: 1 });
+    expect(results.find(result => result.location === 'local')).toMatchObject({ status: 'error', message: '本地根目录未设置。', count: 0 });
+  });
+
+  it('将授权根目录下缺少项目文档子目录标记为可复制的空目标', async () => {
+    const graph = createProject('项目 A', '001');
+    const sharedBinding = directory('项目 A_software_changes_docs', [file('说明.docx')]);
+    const shared = directory('shared', [sharedBinding]);
+    const local = directory('local', []);
+    const repository = {
+      async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? shared : local; },
+      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
+    } as unknown as ArchiveRepository;
+    const results = await scanDocumentDirectories(repository, graph.project.id, new AbortController().signal);
+    expect(results.find(result => result.location === 'shared')).toMatchObject({ status: 'success', count: 1 });
+    expect(results.find(result => result.location === 'local')).toMatchObject({ status: 'missing', scan: { missingDirectory: true, files: [] } });
+  });
+
   it('将文件或目录不存在的浏览器错误转换为中文原因和恢复建议', () => {
     const message = fileOperationErrorMessage(new DOMException('A requested file or directory could not be found at the time an operation was processed.', 'NotFoundError'));
     expect(message).toContain('找不到所需的文件或目录');

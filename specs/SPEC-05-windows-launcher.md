@@ -134,6 +134,18 @@ iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-44665544000
 - Launcher 每次请求逐次本机确认；确认后重验配置修订、所有源文件身份、根内路径及所有目标均不存在，再逐项使用同目录不覆盖移动。目标已存在、权限/占用错误、文件变化或任何重验失败时明确显示 Windows 错误、成功项、失败项及未执行项，并提示用户手动处理；不得覆盖、删除源文件或伪报批次全部成功。批次不是跨文件事务，部分成功不自动回滚。
 - 两端镜像夹具以 `renameEngineeringValid`/`renameEngineeringInvalid` 覆盖 shared/local、多项列表及空清单、未知字段、跨目录、扩展名变化和重复目标拒绝。URI 过长由 Web 生成器及 Launcher 长度边界共同拒绝。
 
+### 3.5 软件对比文档复制 v1
+
+```text
+iqanarchive://copy-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=local&sourceFile=Demo_software_changes_docs%2F%E8%AF%B4%E6%98%8E.docx&targetLocation=shared&targetFile=Demo_software_changes_docs%2F%E8%AF%B4%E6%98%8E.docx
+```
+
+- 字段顺序固定为 `v`、`project`、`sourceLocation`、`sourceFile`、`targetLocation`、`targetFile`；位置仅为 `local/shared` 且必须不同。源/目标必须是相同的归档根目录相对路径，首段为同一项目文档目录；只允许 `.doc/.docx`，不改名、不转格式。拒绝未知/额外字段、越界路径、URI 超限及无效扩展名。
+- Web 仅在 shared/local 两侧扫描均成功且目标侧未发现同一路径时发起请求；仅 local 有文件上传 shared，仅 shared 有文件下载 local。部分扫描失败时保留已扫描结果，但禁用复制。
+- Launcher 从配置中的 source/target 根目录解析两端路径，显示实际完整路径并逐次本机确认。确认后复核配置、源文件身份与目标不存在；在目标侧创建缺失的项目文档目录，使用同目录临时文件和不覆盖提交。拒绝覆盖源或目标，不执行文件内容。
+- 成功或失败结果只由 Launcher 本机显示。Web 仅提示已请求，不声称复制成功；失败显示 Windows 错误并保留源文件。独立协议不得扩展 `copy-engineering` 的允许格式或语义。
+- 两端镜像夹具使用 `documentCopyValid`/`documentCopyInvalid` 覆盖 doc/docx、shared/local、同路径要求及越界/错误扩展拒绝。
+
 ## 4. 信任与执行流程
 
 1. Windows 收到协议请求后按注册关联激活启动器；浏览器可能先要求用户确认打开外部应用。
@@ -165,6 +177,7 @@ iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-44665544000
 - [x] 实现受限 `copy-engineering` v1/v2：v1 复制到本地，v2 上传到共享；Launcher 逐次确认、路径重验并拒绝覆盖。Web 子版本复制与图标菜单均只发送单向请求；正式站点/真实安装器联调仍待综合验收。
 - [x] 实现受限 `open-archive-root` v1：请求仅含 shared/local 位置，Launcher 展示本机配置的完整路径、确认后复核并用参数列表启动固定 Explorer；Web 不传递路径或声称已打开。解析和夹具测试通过，安装器实机激活联调仍待 LSP-03。
 - [x] 实现受限 `rename-engineering` v1：Web 单请求列出该版本全部工程文件；Launcher 展示旧/新完整路径、逐次确认、复核所有文件身份并不覆盖改名，部分失败明确提示手动处理。自动化解析、文件移动和冲突测试通过；真实安装激活仍归 LSP-03。
+- [x] 实现受限 `copy-document` v1：Web 联合扫描 shared/local 软件对比文档；单侧文件可请求对侧副本，Launcher 显示本机路径、确认、重验并拒绝覆盖。协议及文件操作自动化通过；已安装 Launcher 真实激活仍归 LSP-03。
 - [x] 实现安装、可选协议注册、同路径升级及卸载所有权保护；早期包有局部安装证据，最新包安装引导及升级/卸载仍需完整重验。
 - [ ] 在正式网页补齐与已安装最新版 Launcher 的完整联调、异常场景及实际多版本兼容矩阵。
 - [ ] 完成干净 Windows、特殊目录安全、交互式清理配置等 LSP-03 剩余验证，并决定签名和公开分发方案。

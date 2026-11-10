@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
+import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentCopyUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
 import fixture from '../specs/fixtures/launcher-uri-v1.json';
 
 const projectId = '550e8400-e29b-41d4-a716-446655440000';
@@ -74,6 +74,22 @@ describe('Launcher 工程 URI v1', () => {
         testCase.targetLocation.toLocaleLowerCase() as ArchiveLocation,
       )).toBe(testCase.uri);
     }
+  });
+
+  it('生成共享夹具定义的跨位置软件对比文档复制请求', () => {
+    for (const testCase of fixture.documentCopyValid) {
+      const sourceFile = testCase.files[0]!;
+      const separator = sourceFile.indexOf('/');
+      expect(buildDocumentCopyUri(
+        testCase.projectId,
+        testCase.sourceLocation.toLocaleLowerCase() as ArchiveLocation,
+        sourceFile.slice(0, separator),
+        sourceFile.slice(separator + 1),
+        testCase.targetLocation.toLocaleLowerCase() as ArchiveLocation,
+      )).toBe(testCase.uri);
+    }
+    expect(() => buildDocumentCopyUri(projectId, 'shared', 'Demo_software_changes_docs', 'file.docx', 'shared')).toThrow('本地与共享');
+    expect(() => buildDocumentCopyUri(projectId, 'local', 'Demo_software_changes_docs', 'file.idax', 'shared')).toThrow('.doc/.docx');
   });
 
   it('生成共享夹具定义的 shared/local 批量工程改名请求', () => {

@@ -322,6 +322,34 @@
       "failure": "InvalidLocation"
     }
   ],
+  "documentCopyValid": [
+    {
+      "name": "copy-document-local-to-shared",
+      "uri": "iqanarchive://copy-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=local&sourceFile=Demo_software_changes_docs%2Fnested%2F%E8%AF%B4%E6%98%8E.docx&targetLocation=shared&targetFile=Demo_software_changes_docs%2Fnested%2F%E8%AF%B4%E6%98%8E.docx",
+      "operation": "CopyDocument",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "sourceLocation": "Local",
+      "targetLocation": "Shared",
+      "files": ["Demo_software_changes_docs/nested/说明.docx", "Demo_software_changes_docs/nested/说明.docx"]
+    }
+  ],
+  "documentCopyInvalid": [
+    {
+      "name": "copy-document-engineering-extension",
+      "uri": "iqanarchive://copy-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=local&sourceFile=Demo_software_changes_docs%2Fmodel.idax&targetLocation=shared&targetFile=Demo_software_changes_docs%2Fmodel.idax",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "copy-document-changed-relative-path",
+      "uri": "iqanarchive://copy-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=local&sourceFile=Demo_software_changes_docs%2Fmodel.docx&targetLocation=shared&targetFile=Demo_software_changes_docs%2Frenamed.docx",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "copy-document-same-location",
+      "uri": "iqanarchive://copy-document?v=1&project=550e8400-e29b-41d4-a716-446655440000&sourceLocation=shared&sourceFile=Demo_software_changes_docs%2Fmodel.docx&targetLocation=shared&targetFile=Demo_software_changes_docs%2Fmodel.docx",
+      "failure": "InvalidLocation"
+    }
+  ],
   "renameEngineeringValid": [
     {
       "name": "rename-engineering-batch-shared-and-local",

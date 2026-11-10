@@ -52,6 +52,24 @@ export interface FileCandidate {
   fileName: string;
 }
 
+export interface MergedDocumentCandidate extends FileCandidate {
+  locations: ArchiveLocation[];
+}
+
+export function mergeDocumentCandidates(
+  files: Readonly<Record<ArchiveLocation, readonly FileCandidate[]>>,
+): MergedDocumentCandidate[] {
+  const merged = new Map<string, MergedDocumentCandidate>();
+  for (const location of ['local', 'shared'] as const) {
+    for (const file of files[location]) {
+      const current = merged.get(file.relativePath);
+      if (current) current.locations.push(location);
+      else merged.set(file.relativePath, { ...file, locations: [location] });
+    }
+  }
+  return [...merged.values()].sort((first, second) => first.relativePath.localeCompare(second.relativePath));
+}
+
 export function candidateDetails(graph: ProjectGraph, candidate: FileCandidate) {
   const parts = relativeParts(candidate.relativePath);
   requireCondition(parts.at(-1) === candidate.fileName, 'FILE_NAME', '文件名与相对路径不一致。');

@@ -109,6 +109,22 @@ export function buildEngineeringCopyUri(
   return assertUriLength(`iqanarchive://copy-engineering?v=${version}&project=${projectId}&sourceLocation=${sourceLocation}&sourceFile=${encodeRfc3986(source)}&targetLocation=${targetLocation}&targetFile=${encodeRfc3986(target)}`);
 }
 
+export function buildDocumentCopyUri(
+  projectId: string,
+  sourceLocation: ArchiveLocation,
+  directoryName: string,
+  relativePath: string,
+  targetLocation: ArchiveLocation,
+): string {
+  assertProjectId(projectId);
+  assertArchiveLocation(sourceLocation);
+  assertArchiveLocation(targetLocation);
+  requireCondition(sourceLocation !== targetLocation, 'URI_DOCUMENT_COPY_LOCATION', '软件对比文档复制必须在本地与共享目录之间进行。');
+  requireCondition(/\.(doc|docx)$/i.test(relativePath), 'URI_DOCUMENT_COPY_EXTENSION', '仅支持复制 .doc/.docx 软件对比文档。');
+  const source = archiveRelativePath(directoryName, relativePath);
+  return assertUriLength(`iqanarchive://copy-document?v=1&project=${projectId}&sourceLocation=${sourceLocation}&sourceFile=${encodeRfc3986(source)}&targetLocation=${targetLocation}&targetFile=${encodeRfc3986(source)}`);
+}
+
 export interface EngineeringRenameChange {
   location: ArchiveLocation;
   directoryName: string;

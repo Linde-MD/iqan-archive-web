@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
 import type { Project, ProjectGraph } from './domain/model';
@@ -7,7 +7,7 @@ import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/proj
 import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
 import VersionGraph from './components/VersionGraph.vue';
-import ComparisonDocuments from './components/ComparisonDocuments.vue';
+const ComparisonDocuments = defineAsyncComponent(() => import('./components/ComparisonDocuments.vue'));
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
