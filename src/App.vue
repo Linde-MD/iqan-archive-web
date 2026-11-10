@@ -11,7 +11,7 @@ import ComparisonDocuments from './components/ComparisonDocuments.vue';
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
-import { listJsonBackups, writeJsonBackup } from './files/archive-json';
+import { JSON_BACKUP_LOCATION, listJsonBackups, writeJsonBackup } from './files/archive-json';
 
 const db = new ArchiveDatabase();
 const repository = new ArchiveRepository(db);
@@ -170,11 +170,11 @@ async function exportProject() {
   if (!activeProjectId.value) return;
   saving.value = true; error.value = ''; status.value = '';
   try {
-    const root = archiveRoots.value.local;
-    if (!root || !await checkPermission(root, false, 'readwrite')) throw new Error('请先授权归档根目录的读写权限。');
+    const root = archiveRoots.value[JSON_BACKUP_LOCATION];
+    if (!root || !await checkPermission(root, false, 'readwrite')) throw new Error('请先授权共享根目录的读写权限。');
     const snapshot = await repository.snapshot(activeProjectId.value);
     const fileName = await writeJsonBackup(root, snapshot.graph.project.name, serializeProjectSnapshot(snapshot));
-    status.value = `“${snapshot.graph.project.name}”配置已导出到归档根目录：${fileName}`;
+    status.value = `“${snapshot.graph.project.name}”配置已导出到共享根目录：${fileName}`;
   } catch (cause) {
     showError(cause);
   } finally {
@@ -185,12 +185,12 @@ async function exportProject() {
 async function chooseImportFromRoot() {
   error.value = ''; status.value = '';
   try {
-    const root = archiveRoots.value.local;
-    if (!root) throw new Error('请先选择归档根目录。');
-    if (!await checkPermission(root, false, 'readwrite')) throw new Error('归档根目录读写授权已失效，请重新授权。');
+    const root = archiveRoots.value[JSON_BACKUP_LOCATION];
+    if (!root) throw new Error('请先选择共享根目录。');
+    if (!await checkPermission(root, false, 'readwrite')) throw new Error('共享根目录读写授权已失效，请重新授权。');
     const files = await listJsonBackups(root);
     importFiles.value = files;
-    if (!files.length) { status.value = '归档根目录中没有 JSON 备份。'; return; }
+    if (!files.length) { status.value = '共享根目录中没有 JSON 备份。'; return; }
     importFileName.value = files[0]!.name;
     await nextTick();
     importPicker.value?.showModal();
@@ -204,11 +204,11 @@ async function readImportFileFromRoot() {
   importPreview.value = null;
   saving.value = true; error.value = ''; status.value = '';
   try {
-    const rootAtRead = archiveRoots.value.local;
-    const currentRoot = await repository.getArchiveRoot('local');
+    const rootAtRead = archiveRoots.value[JSON_BACKUP_LOCATION];
+    const currentRoot = await repository.getArchiveRoot(JSON_BACKUP_LOCATION);
     if (!rootAtRead || !currentRoot || !(await sameDirectory(rootAtRead, currentRoot)))
-      throw new Error('归档根目录已更改，请重新选择 JSON 备份。');
-    if (!await checkPermission(rootAtRead, false, 'readwrite')) throw new Error('归档根目录读写授权已失效，请重新授权。');
+      throw new Error('共享根目录已更改，请重新选择 JSON 备份。');
+    if (!await checkPermission(rootAtRead, false, 'readwrite')) throw new Error('共享根目录读写授权已失效，请重新授权。');
     const file = await fileHandle.getFile();
     const graph = await readProjectSnapshotFile(file);
     const conflict = await repository.inspectSnapshotImport(graph);
@@ -297,8 +297,8 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       <div class="section-heading">
         <div><h2 id="backup-title">{{ activeProject ? `项目备份 · ${activeProject.name}` : '项目备份' }}</h2><p class="backup-scope">只包含图与任务配置，不含文件或目录授权。</p></div>
         <div class="backup-actions">
-          <button v-if="activeProject" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.local" @click="exportProject"><AppIcon name="download" />导出 JSON</button>
-          <button ref="importButton" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.local" @click="chooseImportFromRoot"><AppIcon name="upload" />导入恢复</button>
+          <button v-if="activeProject" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="exportProject"><AppIcon name="download" />导出 JSON</button>
+          <button ref="importButton" type="button" class="secondary" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="chooseImportFromRoot"><AppIcon name="upload" />导入恢复</button>
         </div>
       </div>
       <div v-if="importPreview" class="import-preview" aria-labelledby="import-preview-title">

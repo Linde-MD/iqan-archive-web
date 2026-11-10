@@ -1,6 +1,7 @@
 import { requireCondition } from '../domain/model';
 import { checkPermission, type DirectoryHandle, type FileHandle } from './directories';
 
+export const JSON_BACKUP_LOCATION = 'shared' as const;
 export const MAX_ARCHIVE_ROOT_ENTRIES = 5_000;
 
 export async function listJsonBackups(root: DirectoryHandle): Promise<FileHandle[]> {

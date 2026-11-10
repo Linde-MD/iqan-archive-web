@@ -6,7 +6,7 @@ import { createProject, normalizeVersion, type VersionNode } from '../src/domain
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
-import { listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
+import { JSON_BACKUP_LOCATION, listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
 
 const databases: Dexie[] = [];
 afterEach(async () => { for (const db of databases.splice(0)) await db.delete(); });
@@ -161,6 +161,12 @@ describe('文件名和版本身份', () => {
     const added = registerCandidates(released, [candidate(), candidate('001 V2.idax')]);
     expect(added.nodes[0]).toEqual(released.nodes[0]);
     expect(added.nodes).toHaveLength(2);
+  });
+});
+
+describe('JSON 备份根目录策略', () => {
+  it('默认使用共享根目录，不隐式回退本地根目录', () => {
+    expect(JSON_BACKUP_LOCATION).toBe('shared');
   });
 });
 

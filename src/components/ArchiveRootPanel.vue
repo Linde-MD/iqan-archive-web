@@ -91,7 +91,7 @@ onMounted(restore);
 
 <template>
   <section class="panel archive-root-panel" aria-labelledby="archive-root-title" :aria-busy="busy">
-    <div class="section-heading"><h2 id="archive-root-title">归档目录</h2><span class="archive-root-note">JSON · 本地根目录</span></div>
+    <div class="section-heading"><h2 id="archive-root-title">归档目录</h2><span class="archive-root-note">JSON · 共享根目录</span></div>
     <div class="archive-root-grid">
       <div v-for="location in ['shared', 'local'] as const" :key="location" class="archive-root-entry">
         <div class="section-heading">
