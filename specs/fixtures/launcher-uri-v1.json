@@ -322,6 +322,59 @@
       "failure": "InvalidLocation"
     }
   ],
+  "renameEngineeringValid": [
+    {
+      "name": "rename-engineering-batch-shared-and-local",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fnested%2F99887766554%20V1.0.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fnested%2F99887766554%20V1.1.idax%22%7D%2C%7B%22location%22%3A%22local%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fnested%2Flocal.idsx%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fnested%2Flocal-new.idsx%22%7D%5D",
+      "operation": "RenameEngineering",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "changes": [
+        { "location": "Shared", "sourceFile": "Demo_iqan_project_files/nested/99887766554 V1.0.idax", "targetFile": "Demo_iqan_project_files/nested/99887766554 V1.1.idax" },
+        { "location": "Local", "sourceFile": "Demo_iqan_project_files/nested/local.idsx", "targetFile": "Demo_iqan_project_files/nested/local-new.idsx" }
+      ]
+    },
+    {
+      "name": "rename-engineering-case-only-change",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fnested%2FCaseV1.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fnested%2Fcasev1.idax%22%7D%5D",
+      "operation": "RenameEngineering",
+      "projectId": "550e8400-e29b-41d4-a716-446655440000",
+      "changes": [
+        { "location": "Shared", "sourceFile": "Demo_iqan_project_files/nested/CaseV1.idax", "targetFile": "Demo_iqan_project_files/nested/casev1.idax" }
+      ]
+    }
+  ],
+  "renameEngineeringInvalid": [
+    {
+      "name": "rename-engineering-empty-list",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%5D",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "rename-engineering-extension-mismatch",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fmodel.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fmodel.idsx%22%7D%5D",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "rename-engineering-unknown-location",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22remote%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fmodel.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fmodel-new.idax%22%7D%5D",
+      "failure": "InvalidLocation"
+    },
+    {
+      "name": "rename-engineering-unknown-json-field",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fmodel.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fmodel-new.idax%22%2C%22extra%22%3A%22x%22%7D%5D",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "rename-engineering-cross-directory",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fnested%2Fmodel.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fother%2Fmodel-new.idax%22%7D%5D",
+      "failure": "InvalidPath"
+    },
+    {
+      "name": "rename-engineering-duplicate-target",
+      "uri": "iqanarchive://rename-engineering?v=1&project=550e8400-e29b-41d4-a716-446655440000&changes=%5B%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fmodel.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fmodel-new.idax%22%7D%2C%7B%22location%22%3A%22shared%22%2C%22sourceFile%22%3A%22Demo_iqan_project_files%2Fother.idax%22%2C%22targetFile%22%3A%22Demo_iqan_project_files%2Fmodel-new.idax%22%7D%5D",
+      "failure": "InvalidPath"
+    }
+  ],
   "openArchiveRootValid": [
     {
       "name": "open-shared-archive-root",

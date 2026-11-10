@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
+import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
 import fixture from '../specs/fixtures/launcher-uri-v1.json';
 
 const projectId = '550e8400-e29b-41d4-a716-446655440000';
@@ -74,6 +74,44 @@ describe('Launcher 工程 URI v1', () => {
         testCase.targetLocation.toLocaleLowerCase() as ArchiveLocation,
       )).toBe(testCase.uri);
     }
+  });
+
+  it('生成共享夹具定义的 shared/local 批量工程改名请求', () => {
+    for (const testCase of fixture.renameEngineeringValid) {
+      const changes = testCase.changes.map(change => {
+        const sourceSeparator = change.sourceFile.indexOf('/');
+        const targetSeparator = change.targetFile.indexOf('/');
+        return {
+          location: change.location.toLocaleLowerCase() as ArchiveLocation,
+          directoryName: change.sourceFile.slice(0, sourceSeparator),
+          sourceRelativePath: change.sourceFile.slice(sourceSeparator + 1),
+          targetRelativePath: change.targetFile.slice(targetSeparator + 1),
+        };
+      });
+      expect(buildEngineeringRenameUri(testCase.projectId, changes)).toBe(testCase.uri);
+    }
+  });
+
+  it('拒绝空清单、跨目录、扩展名变化和重复目标改名', () => {
+    const base = {
+      location: 'local' as const,
+      directoryName: 'Demo_iqan_project_files',
+      sourceRelativePath: 'nested/model.idax',
+      targetRelativePath: 'nested/model-new.idax',
+    };
+    expect(() => buildEngineeringRenameUri(projectId, [])).toThrow();
+    expect(() => buildEngineeringRenameUri(projectId, [{ ...base, targetRelativePath: 'other/model-new.idax' }])).toThrow('同一父目录');
+    expect(() => buildEngineeringRenameUri(projectId, [{ ...base, targetRelativePath: 'nested/model-new.idsx' }])).toThrow('保留扩展名');
+    expect(() => buildEngineeringRenameUri(projectId, [base, { ...base, sourceRelativePath: 'nested/other.idax' }])).toThrow('重复');
+  });
+
+  it('允许仅大小写变化的版本文件名请求', () => {
+    expect(buildEngineeringRenameUri(projectId, [{
+      location: 'shared',
+      directoryName: 'Demo_iqan_project_files',
+      sourceRelativePath: 'nested/CaseV1.idax',
+      targetRelativePath: 'nested/casev1.idax',
+    }])).toContain('rename-engineering');
   });
   it('显式编码工程文件位置并保留 compare 两端各自位置', () => {
     expect(buildOpenUri(projectId, 'Demo_iqan_project_files', 'v1/model.idax', 'local'))

@@ -109,6 +109,58 @@ export function buildEngineeringCopyUri(
   return assertUriLength(`iqanarchive://copy-engineering?v=${version}&project=${projectId}&sourceLocation=${sourceLocation}&sourceFile=${encodeRfc3986(source)}&targetLocation=${targetLocation}&targetFile=${encodeRfc3986(target)}`);
 }
 
+export interface EngineeringRenameChange {
+  location: ArchiveLocation;
+  directoryName: string;
+  sourceRelativePath: string;
+  targetRelativePath: string;
+}
+
+export function buildEngineeringRenameUri(projectId: string, changes: readonly EngineeringRenameChange[]): string {
+  assertProjectId(projectId);
+  requireCondition(changes.length > 0 && changes.length <= 128, 'URI_RENAME_COUNT', '工程文件改名清单须包含 1 到 128 个文件。');
+
+  const projectDirectories = new Set<string>();
+  const sources = new Map<string, number>();
+  const targets = new Map<string, number>();
+  const wireChanges = changes.map((change, index) => {
+    assertArchiveLocation(change.location);
+    const sourceFile = archiveRelativePath(change.directoryName, change.sourceRelativePath);
+    const targetFile = archiveRelativePath(change.directoryName, change.targetRelativePath);
+    const sourceParts = sourceFile.split('/');
+    const targetParts = targetFile.split('/');
+    requireCondition(
+      sourceParts.length === targetParts.length
+        && sourceParts.slice(0, -1).every((part, parentIndex) => part === targetParts[parentIndex]),
+      'URI_RENAME_PARENT',
+      '工程文件改名必须在原项目目录和同一父目录内进行。',
+    );
+    projectDirectories.add(change.directoryName.normalize('NFC').toLowerCase());
+    const sourceExtension = pathExtension(sourceFile).toLowerCase();
+    const targetExtension = pathExtension(targetFile).toLowerCase();
+    requireCondition(
+      ['.idax', '.idsx', '.idvx'].includes(sourceExtension) && sourceExtension === targetExtension,
+      'URI_RENAME_EXTENSION',
+      '工程文件改名仅支持保留扩展名的 .idax/.idsx/.idvx 文件。',
+    );
+    const sourceKey = `${change.location}:${sourceFile.normalize('NFC').toLowerCase()}`;
+    const targetKey = `${change.location}:${targetFile.normalize('NFC').toLowerCase()}`;
+    requireCondition(sourceFile !== targetFile && !sources.has(sourceKey) && !targets.has(targetKey),
+      'URI_RENAME_DUPLICATE', '工程文件改名清单包含重复源、目标或无效改名。');
+    sources.set(sourceKey, index);
+    targets.set(targetKey, index);
+    return { location: change.location, sourceFile, targetFile };
+  });
+  requireCondition(projectDirectories.size === 1, 'URI_RENAME_PROJECT', '一次工程改名请求只能包含同一项目工程目录。');
+  for (const [targetKey, targetIndex] of targets) {
+    const sourceIndex = sources.get(targetKey);
+    requireCondition(sourceIndex === undefined || sourceIndex === targetIndex,
+      'URI_RENAME_CHAIN', '工程改名目标不能同时是另一项的源文件。');
+  }
+  const changesJson = JSON.stringify(wireChanges);
+  return assertUriLength(`iqanarchive://rename-engineering?v=1&project=${projectId}&changes=${encodeRfc3986(changesJson)}`);
+}
+
 function pathExtension(path: string): string {
   const name = path.slice(path.lastIndexOf('/') + 1);
   const dot = name.lastIndexOf('.');

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import { liveQuery } from 'dexie';
 import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type Task, type VersionNode } from '../domain/model';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
-import { buildDocumentOpenUri, buildEngineeringCopyUri } from '../domain/iqan-protocol';
+import { buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
@@ -1723,6 +1723,7 @@ async function submitNode(): Promise<boolean> {
   const actionPanel = panel.value;
   if (actionPanel !== 'node-add' && actionPanel !== 'node-edit' && actionPanel !== 'merge') return false;
   let copyPromptAfterSave: ChildCopyPrompt | undefined;
+  let renameRequestAfterSave: { uri: string; count: number } | undefined;
   let copyNotice = '';
   const saved = await operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
     const current = graph.value!;
@@ -1757,20 +1758,47 @@ async function submitNode(): Promise<boolean> {
       const currentNode = selectedNode.value!;
       if (normalizeVersion(nodeForm.value.version) !== normalizeVersion(currentNode.version)) {
         const associations = await findEngineeringFiles(current, currentNode);
-        const found = (['shared', 'local'] as const).flatMap(location => [
-          ...associations.files[location].engineering.map(file => ({ location, category: '工程文件', file })),
-          ...associations.files[location].documents.map(file => ({ location, category: '软件对比文档', file })),
-        ]);
-        if (found.length || associations.unavailable.length) {
-          const fileLines = found.map(({ location, category, file }) =>
-            `${location === 'shared' ? '共享' : '本地'}${category}：${file.relativePath}`);
-          const unavailableLine = associations.unavailable.length
-            ? `\n无法检查：${associations.unavailable.map(item => `${item.location === 'shared' ? '共享' : '本地'}${item.role ? item.role === 'engineering' ? '工程' : '文档' : ''}`).join('、')}目录。`
-            : '';
-          const message = found.length
-            ? `版本“${currentNode.version}”${found.length > 1 ? `有 ${found.length} 个` : '有'}关联工程文件：\n${fileLines.join('\n')}\n\n请手动将文件名改为匹配新版本“${nodeForm.value.version.trim()}”。保存不会重命名或移动文件。${unavailableLine}\n仍要保存版本号吗？`
-            : `版本号将从“${currentNode.version}”改为“${nodeForm.value.version.trim()}”。${unavailableLine}\n请确认磁盘文件名已人工检查。仍要保存吗？`;
-          if (!window.confirm(message)) return;
+        const configuredRoots = await Promise.all((['shared', 'local'] as const).map(location =>
+          props.repository.getArchiveRoot(location)));
+        const unavailableEngineering = associations.unavailable.filter(item => !item.role || item.role === 'engineering');
+        const scanComplete = configuredRoots.every(Boolean) && unavailableEngineering.length === 0;
+        const engineeringFiles = (['shared', 'local'] as const).flatMap(location =>
+          associations.files[location].engineering.map(file => ({ location, file })));
+        if (engineeringFiles.length && scanComplete) {
+          const targetVersion = normalizeVersion(nodeForm.value.version);
+          const changes = engineeringFiles.map(({ location, file }) => {
+            const parsed = parseEngineeringName(file.fileName);
+            const extension = file.fileName.slice(-parsed.extension.length);
+            const targetFileName = `${current.project.partNumber} ${targetVersion}${extension}`;
+            return {
+              location,
+              directoryName: projectDirectoryName(current.project.name, 'engineering'),
+              sourceRelativePath: file.relativePath,
+              targetRelativePath: replaceRelativeFileName(file.relativePath, targetFileName),
+            };
+          });
+          let renameUri: string;
+          try {
+            renameUri = buildEngineeringRenameUri(current.project.id, changes);
+          } catch (cause) {
+            const detail = fileOperationErrorMessage(cause);
+            if (!window.confirm(`找到 ${engineeringFiles.length} 个关联工程文件，但无法安全构造批量改名请求：\n${detail}\n\n仍保存版本号吗？保存后请手动检查并修改这些工程文件名。`)) return;
+            renameUri = '';
+          }
+          if (renameUri) {
+            const fileLines = changes.map((change, index) =>
+              `${change.location === 'shared' ? '共享' : '本地'}：\n${change.sourceRelativePath}\n-> ${change.targetRelativePath}`);
+            if (window.confirm(`版本“${currentNode.version}”有 ${engineeringFiles.length} 个关联工程文件。是否同步修改文件名为“${targetVersion}”？\n\n${fileLines.join('\n')}\n\n确定：保存版本后向 Launcher 发送一次批量改名请求；Launcher 会再次显示本机完整路径并要求确认。取消：只保存版本号，不改磁盘文件。`))
+              renameRequestAfterSave = { uri: renameUri, count: engineeringFiles.length };
+          }
+        } else if (engineeringFiles.length || !scanComplete) {
+          const unavailableLine = unavailableEngineering.length
+            ? unavailableEngineering.map(item => `${item.location === 'shared' ? '共享' : '本地'}${item.role === 'engineering' ? '工程' : ''}目录`).join('、')
+            : configuredRoots.some(root => !root) ? '共享或本地工程根目录未设置' : '工程目录扫描不完整';
+          const fileLines = engineeringFiles.map(({ location, file }) =>
+            `${location === 'shared' ? '共享' : '本地'}：${file.relativePath}`);
+          const foundLine = fileLines.length ? `\n已找到的文件（清单不完整，不能自动改名）：\n${fileLines.join('\n')}` : '';
+          if (!window.confirm(`无法完整扫描共享和本地工程目录（${unavailableLine}）。${foundLine}\n\n仍保存版本号吗？保存后请手动检查并修改关联工程文件名。`)) return;
         }
       }
       graph.value = await props.repository.saveNode(props.projectId, current.project.revision, selectedNode.value!.id, {
@@ -1795,6 +1823,10 @@ async function submitNode(): Promise<boolean> {
     childCopyPrompt.value = copyPromptAfterSave;
     selectedChildCopyKey.value = copyPromptAfterSave.candidates.length === 1
       ? childCopyKey(copyPromptAfterSave.candidates[0]!) : '';
+  }
+  if (saved && renameRequestAfterSave) {
+    status.value = `版本已更新；已请求 Launcher 批量改名 ${renameRequestAfterSave.count} 个工程文件。请在本机确认窗口核对路径；若取消或失败，请按 Launcher 提示手动处理。网页无法确认改名结果。`;
+    window.location.assign(renameRequestAfterSave.uri);
   }
   return saved;
 }
