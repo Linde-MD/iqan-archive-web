@@ -543,6 +543,14 @@ tbody tr.row-selected { background: #1a3557; }
 .deletion-rewires { margin: 12px 0; padding-top: 10px; border-top: 1px solid var(--border); }
 .deletion-rewires h4 { margin: 0 0 8px; color: #e4ecf8; font-size: 12px; }
 .deletion-rewires p { color: #c0cde0; font-size: 12px; }
+.deletion-file-node { display: grid; gap: 6px; padding: 8px 0; border-top: 1px solid #29384f; }
+.deletion-file-node > strong { color: #eaf1fc; font-size: 12px; }
+.deletion-file-choice { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: start; gap: 8px; min-height: 40px; margin: 0; padding: 8px; border: 1px solid #35445c; border-radius: 6px; background: #101a2a; cursor: pointer; }
+.deletion-file-choice input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: #60a5fa; }
+.deletion-file-choice > span { display: grid; gap: 4px; min-width: 0; }
+.deletion-file-choice b { color: #eaf1fc; font-size: 11px; }
+.deletion-file-choice small { color: #bac9dc; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+.deletion-file-warning { padding: 6px 8px; border-left: 2px solid #d5ad63; background: #282417; color: #f0d293 !important; }
 .deletion-rewires label { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(220px, 1fr); align-items: center; gap: 10px; margin: 10px 0; }
 .deletion-rewires input, .deletion-rewires select { margin: 0; }
 .deletion-child { padding: 8px 0; border-top: 1px solid #29384f; }

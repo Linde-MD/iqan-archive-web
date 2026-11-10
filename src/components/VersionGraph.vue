@@ -406,6 +406,12 @@ const deletionPlan = ref<MultiDeletionPlan | null>(null);
 const deletionChildParentChoices = ref<Record<string, string[]>>({});
 const deletionBranchChoices = ref<Record<string, string>>({});
 const deletionConfirmations = ref<Record<string, string>>({});
+const deletionEngineeringFiles = shallowRef<Record<string, Record<ArchiveLocation, FileCandidate[]>>>({});
+const deletionEngineeringSelections = ref<Record<string, Record<ArchiveLocation, boolean>>>({});
+const deletionEngineeringCanDelete = ref<Record<ArchiveLocation, boolean>>({ local: false, shared: false });
+const deletionEngineeringWarnings = ref<string[]>([]);
+const deletionEngineeringScanning = ref(false);
+const deletionRevision = ref<number | null>(null);
 const nodeForm = ref({ version: '', description: '', parentIds: [] as string[], targetBranchId: '' });
 const branchForm = ref({ id: '', name: '', description: '', color: '#2563eb', headId: '' });
 const branchEditRevision = ref(0);
@@ -516,6 +522,7 @@ async function refreshComparisonDocuments() {
 }
 
 const archiveLocationLabel = (location: ArchiveLocation) => location === 'local' ? '本地' : '共享';
+const archiveLocations = ['shared', 'local'] as const;
 
 function engineeringFileStateForNode(nodeId: string) {
   const locations = engineeringFileLocationsByNode.value.get(nodeId) ?? new Set<ArchiveLocation>();
@@ -985,7 +992,7 @@ const deletionReady = computed(() => {
   const confirmationsReady = releasedDeletionNodes.value.every(node => deletionConfirmations.value[node.id] === node.version);
   const childrenAreEditable = Object.keys(deletionPlan.value.childParents)
     .every(id => nodeById.value.get(id)?.releasedAt === null);
-  return branchChoicesReady && confirmationsReady && childrenAreEditable && !saving.value;
+  return branchChoicesReady && confirmationsReady && childrenAreEditable && !saving.value && !deletionEngineeringScanning.value;
 });
 const laneWidth = computed(() => graphLayout.value?.trackWidth ?? 0);
 const canvasWidth = computed(() => (graphLayout.value?.width ?? 0) + (hideIsolated.value ? 20 : 300));
@@ -1086,10 +1093,14 @@ async function operation(label: string, action: () => Promise<void>, recordUndo 
   try {
     await action();
     const after = graph.value;
-    if (recordUndo && before && after && after.project.revision > before.project.revision) {
-      redoHistory.value = [];
-      undoHistory.value.push({ before, afterRevision: after.project.revision, label });
-      if (undoHistory.value.length > 50) undoHistory.value.shift();
+    if (before && after && after.project.revision > before.project.revision) {
+      if (recordUndo) {
+        redoHistory.value = [];
+        undoHistory.value.push({ before, afterRevision: after.project.revision, label });
+        if (undoHistory.value.length > 50) undoHistory.value.shift();
+      } else {
+        clearHistory();
+      }
     }
     return true;
   } catch (cause) {
@@ -2072,10 +2083,93 @@ async function confirmRelations() {
   });
 }
 
+type DeletionEngineeringScan = {
+  files: Record<string, Record<ArchiveLocation, FileCandidate[]>>;
+  directories: Map<ArchiveLocation, DirectoryHandle>;
+  canDelete: Record<ArchiveLocation, boolean>;
+  warnings: string[];
+};
+
+async function scanDeletionEngineeringFiles(current: ProjectGraph, nodeIds: readonly string[]): Promise<DeletionEngineeringScan> {
+  const files = Object.fromEntries(nodeIds.map(id => [id, { local: [], shared: [] }])) as Record<string, Record<ArchiveLocation, FileCandidate[]>>;
+  const directories = new Map<ArchiveLocation, DirectoryHandle>();
+  const canDelete: Record<ArchiveLocation, boolean> = { local: false, shared: false };
+  const warnings: string[] = [];
+
+  for (const location of ['shared', 'local'] as const) {
+    const root = await props.repository.getArchiveRoot(location);
+    if (!root) {
+      warnings.push(`${archiveLocationLabel(location)}根目录未设置，无法检查磁盘文件。`);
+      continue;
+    }
+    if (!await checkPermission(root)) {
+      warnings.push(`${archiveLocationLabel(location)}根目录未授权，无法检查磁盘文件。`);
+      continue;
+    }
+    let directory: DirectoryHandle;
+    try {
+      directory = await resolveProjectDirectory(root, current.project.name, 'engineering');
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'NotFoundError') continue;
+      warnings.push(`${archiveLocationLabel(location)}工程目录扫描失败：${fileOperationErrorMessage(cause)}`);
+      continue;
+    }
+    try {
+      const candidates = await scanDirectory(directory, 'engineering', new AbortController().signal, () => undefined);
+      const [latestRoot, latestGraph] = await Promise.all([
+        props.repository.getArchiveRoot(location),
+        props.repository.get(props.projectId),
+      ]);
+      if (!latestRoot || !(await sameDirectory(root, latestRoot))) {
+        warnings.push(`${archiveLocationLabel(location)}根目录授权已变化，请重新打开删除预览。`);
+        continue;
+      }
+      if (latestGraph.project.revision !== current.project.revision || latestGraph.project.name !== current.project.name) {
+        warnings.push('版本图已变化，请重新打开删除预览。');
+        continue;
+      }
+      const latestDirectory = await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'engineering');
+      if (!(await sameDirectory(directory, latestDirectory))) {
+        warnings.push(`${archiveLocationLabel(location)}工程目录授权已变化，请重新打开删除预览。`);
+        continue;
+      }
+      directories.set(location, directory);
+      canDelete[location] = await checkPermission(directory, false, 'readwrite') && !!directory.removeEntry;
+      if (!canDelete[location]) warnings.push(`${archiveLocationLabel(location)}目录没有可用的读写删除权限。`);
+      const matches = matchScannedFiles(current, candidates).matches;
+      for (const nodeId of nodeIds) files[nodeId]![location] = matches.get(nodeId) ?? [];
+    } catch (cause) {
+      warnings.push(`${archiveLocationLabel(location)}工程目录扫描失败：${fileOperationErrorMessage(cause)}`);
+    }
+  }
+  return { files, directories, canDelete, warnings };
+}
+
+async function loadDeletionEngineeringFiles(current: ProjectGraph, nodeIds: readonly string[]) {
+  deletionEngineeringScanning.value = true;
+  try {
+    const result = await scanDeletionEngineeringFiles(current, nodeIds);
+    if (!deletionPlan.value || deletionRevision.value !== current.project.revision) return;
+    deletionEngineeringFiles.value = result.files;
+    deletionEngineeringCanDelete.value = result.canDelete;
+    deletionEngineeringWarnings.value = result.warnings;
+  } catch (cause) {
+    deletionEngineeringWarnings.value = [fileOperationErrorMessage(cause)];
+  } finally {
+    deletionEngineeringScanning.value = false;
+  }
+}
+
 function openDeletion() {
   const current = graph.value;
   if (!current || selectedNodeIds.value.length === 0) return;
   deletionPlan.value = planDeletionMany(current, selectedNodeIds.value);
+  deletionRevision.value = current.project.revision;
+  deletionEngineeringFiles.value = Object.fromEntries(deletionPlan.value.nodeIds.map(id => [id, { local: [], shared: [] }]));
+  deletionEngineeringSelections.value = Object.fromEntries(deletionPlan.value.nodeIds.map(id => [id, { local: false, shared: false }]));
+  deletionEngineeringCanDelete.value = { local: false, shared: false };
+  deletionEngineeringWarnings.value = [];
+  void loadDeletionEngineeringFiles(current, deletionPlan.value.nodeIds);
   deletionChildParentChoices.value = Object.fromEntries(
     Object.entries(deletionPlan.value.childParents).map(([id, parents]) => [id, [...parents]]),
   );
@@ -2090,11 +2184,41 @@ function openDeletion() {
   closeMenu(false);
 }
 
+function setDeletionEngineeringSelection(nodeId: string, location: ArchiveLocation, event: Event) {
+  if (!(event.currentTarget instanceof HTMLInputElement)) return;
+  deletionEngineeringSelections.value[nodeId] = {
+    ...(deletionEngineeringSelections.value[nodeId] ?? { local: false, shared: false }),
+    [location]: event.currentTarget.checked,
+  };
+}
+
 async function confirmDeletion() {
   const plan = deletionPlan.value;
-  if (!plan) return;
+  if (!plan || deletionEngineeringScanning.value) return;
+  const selectedFiles = plan.nodeIds.flatMap(nodeId => (['shared', 'local'] as const).flatMap(location =>
+    deletionEngineeringSelections.value[nodeId]?.[location]
+      ? (deletionEngineeringFiles.value[nodeId]?.[location] ?? []).map(file => ({ nodeId, location, file }))
+      : []));
   await operation(plan.nodeIds.length > 1 ? '删除多个版本' : '删除版本', async () => {
-    const current = graph.value!;
+    const current = await props.repository.get(props.projectId);
+    if (current.project.revision !== deletionRevision.value)
+      throw new Error('版本图已变化，请取消并重新打开删除预览。');
+    let diskScan: DeletionEngineeringScan | undefined;
+    if (selectedFiles.length) {
+      diskScan = await scanDeletionEngineeringFiles(current, plan.nodeIds);
+      const staleGraph = diskScan.warnings.find(warning => warning.startsWith('版本图已变化'));
+      if (staleGraph) throw new Error(`${staleGraph}尚未删除图或文件。`);
+      for (const selected of selectedFiles) {
+        const locationLabel = archiveLocationLabel(selected.location);
+        const locationWarning = diskScan.warnings.find(warning => warning.startsWith(`${locationLabel}根目录`)
+          || warning.startsWith(`${locationLabel}工程目录`));
+        if (locationWarning) throw new Error(`${locationWarning}尚未删除图或文件。`);
+        if (!diskScan.canDelete[selected.location])
+          throw new Error(`${archiveLocationLabel(selected.location)}目录没有读写删除权限，尚未删除图或文件。`);
+        if (!diskScan.files[selected.nodeId]?.[selected.location].some(file => file.relativePath === selected.file.relativePath))
+          throw new Error(`文件“${selected.file.relativePath}”已变化或不存在，尚未删除图或文件。`);
+      }
+    }
     const branchHeads = Object.fromEntries(Object.entries(deletionBranchChoices.value).map(([id, value]) => [
       id, value === '__delete__' ? null : value,
     ]));
@@ -2103,10 +2227,30 @@ async function confirmDeletion() {
       { ...plan, childParents: deletionChildParentChoices.value, branchHeads },
       deletionConfirmations.value,
     );
-    status.value = `已删除 ${plan.nodeIds.length} 个版本，并按预览更新关系。`;
+    const deletedPaths: string[] = [];
+    const failedPaths: string[] = [];
+    for (const selected of selectedFiles) {
+      const directory = diskScan?.directories.get(selected.location);
+      if (!directory) {
+        failedPaths.push(`${archiveLocationLabel(selected.location)}：${selected.file.relativePath}（目录不可用）`);
+        continue;
+      }
+      try {
+        await removeArchiveFile(directory, selected.file.relativePath);
+        deletedPaths.push(`${archiveLocationLabel(selected.location)}：${selected.file.relativePath}`);
+      } catch (cause) {
+        failedPaths.push(`${archiveLocationLabel(selected.location)}：${selected.file.relativePath}（${fileOperationErrorMessage(cause)}）`);
+      }
+    }
+    status.value = failedPaths.length
+      ? `版本图已删除 ${plan.nodeIds.length} 个版本，但 ${failedPaths.length} 个磁盘文件未删除。`
+      : `已删除 ${plan.nodeIds.length} 个版本${deletedPaths.length ? `及 ${deletedPaths.length} 个磁盘工程文件` : ''}，并按预览更新关系。`;
+    error.value = failedPaths.length ? `磁盘文件删除失败：\n${failedPaths.join('\n')}` : '';
     deletionPlan.value = null;
     selectedNodeIds.value = [];
-  });
+    deletionEngineeringSelections.value = {};
+    void refreshEngineeringFileStates();
+  }, selectedFiles.length === 0);
 }
 
 async function confirmBranchDelete() {
@@ -2877,7 +3021,7 @@ function onIqanDialogClosed() {
 
     <div v-if="deletionPlan" class="graph-form" role="dialog" aria-modal="false" aria-label="删除版本预览">
       <h3 tabindex="-1">删除 {{ deletionPlan.nodeIds.length }} 个版本</h3>
-      <p class="form-help">删除前预览父子关系重连；已放行子版本不能重连。本操作仅修改版本图，不会删除磁盘文件或其他未选版本。</p>
+      <p class="form-help">删除前预览父子关系重连；已放行子版本不能重连。仅删除下方勾选的共享/本地工程文件，不影响其他未选版本。</p>
       <ul class="deletion-preview-list">
         <li v-for="id in deletionPlan.nodeIds" :key="id">{{ nodeById.get(id)?.version ?? id }}</li>
       </ul>
@@ -2922,6 +3066,31 @@ function onIqanDialogClosed() {
           输入版本号：{{ node.version }}
           <input :id="`confirm-delete-${node.id}`" v-model="deletionConfirmations[node.id]" :disabled="saving" autocomplete="off" />
         </label>
+      </div>
+      <div class="deletion-rewires deletion-engineering-files">
+        <h4>同时删除工程文件（可选）</h4>
+        <p class="form-help">共享与本地文件分别勾选。先提交版本图删除，再删除勾选的磁盘文件；两者无法原子提交，文件操作失败会列出路径，且不会回滚已删除的版本图。</p>
+        <p v-if="deletionEngineeringScanning" class="form-help" role="status">正在检查共享和本地工程目录…</p>
+        <p v-for="warning in deletionEngineeringWarnings" :key="warning" class="deletion-file-warning" role="status">{{ warning }}</p>
+        <div v-for="nodeId in deletionPlan.nodeIds" :key="nodeId" class="deletion-file-node">
+          <strong>{{ nodeById.get(nodeId)?.version }}</strong>
+          <template v-for="location in archiveLocations" :key="`${nodeId}:${location}`">
+            <label v-if="deletionEngineeringFiles[nodeId]?.[location].length" class="deletion-file-choice">
+              <input
+                type="checkbox"
+                :checked="deletionEngineeringSelections[nodeId]?.[location] ?? false"
+                :disabled="saving || deletionEngineeringScanning || !deletionEngineeringCanDelete[location]"
+                @change="setDeletionEngineeringSelection(nodeId, location, $event)"
+              />
+              <span>
+                <b>删除{{ archiveLocationLabel(location) }}工程文件（{{ deletionEngineeringFiles[nodeId]![location].length }}）</b>
+                <small v-for="file in deletionEngineeringFiles[nodeId]![location]" :key="file.relativePath">{{ file.relativePath }}</small>
+                <small v-if="!deletionEngineeringCanDelete[location]">该位置没有读写删除权限</small>
+              </span>
+            </label>
+          </template>
+        </div>
+        <p v-if="!deletionEngineeringScanning && !Object.keys(deletionEngineeringFiles).some(id => deletionEngineeringFiles[id]?.local.length || deletionEngineeringFiles[id]?.shared.length) && !deletionEngineeringWarnings.length" class="form-help">没有找到与待删版本匹配的工程文件。</p>
       </div>
       <div class="actions">
         <button class="danger" :disabled="!deletionReady" @click="confirmDeletion"><AppIcon name="trash" />确认删除</button>
