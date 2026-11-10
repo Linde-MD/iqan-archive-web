@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'unrelease' | 'undo' | 'cloud' | 'computer' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -35,6 +35,7 @@ const paths = {
   undo: 'M9 14 4 9l5-5 M4 9h9a7 7 0 0 1 0 14h-2',
   cloud: 'M7 18h10a4 4 0 0 0 .4-8A6 6 0 0 0 6 9a4.5 4.5 0 0 0 1 9Z',
   computer: 'M3 4h18v13H3Z M8 21h8 M12 17v4',
+  tasks: 'M9 6h12 M9 12h12 M9 18h12 M3 6l1.5 1.5L7 5 M3 12l1.5 1.5L7 11 M3 18l1.5 1.5L7 17',
 };
 </script>
 

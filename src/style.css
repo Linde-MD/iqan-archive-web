@@ -127,7 +127,7 @@ form button { width: 100%; }
 .project-info p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; white-space: nowrap; }
 .project-state { font-size: 11px; color: var(--success); white-space: nowrap; }
 .project-actions { display: flex; grid-column: 2; grid-row: 1 / span 2; gap: 3px; justify-self: end; align-self: center; }
-.project-actions .compact-project-action { width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 6px; }
+.project-actions .compact-project-action { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 8px; }
 .project-part-number { display: flex; justify-content: flex-start; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; padding: 2px 0; border: 0; border-radius: 4px; background: transparent; color: #b7c8df; font-size: 11px; font-weight: 400; text-align: left; white-space: normal; }
 .project-part-number code { overflow-wrap: anywhere; text-align: left; }
 .project-part-number:hover { background: transparent; color: #9acaff; }
@@ -413,6 +413,7 @@ tbody tr.row-selected { background: #1a3557; }
 .document-source-choice strong { color: #edf4ff; font-size: 12px; }
 .document-source-choice small { min-width: 0; color: #c0cde0; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 11px; font-weight: 400; line-height: 1.45; overflow-wrap: anywhere; }
 .git-graph-row.selected { background: #18395b; box-shadow: inset 3px 0 #7dc0ff; }
+.git-graph-row.navigated { background: #1b3858; box-shadow: inset 0 0 0 2px #8bc3ff, inset 4px 0 #bfdbfe; }
 .git-graph-row.isolated { background: #171628; }
 .git-graph-row.isolated:hover { background: #25213c; }
 .git-graph-lanes { align-self: stretch; min-width: 0; }

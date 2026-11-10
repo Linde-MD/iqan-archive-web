@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createProject, normalizeExternalTaskId, type ProjectGraph, type Task } from '../src/domain/model';
 import { ancestors, appendVersion, applyDeletion, applyDeletionMany, createBranch, deleteBranch, deleteTask, mergeVersion, planDeletion, planDeletionMany, projectTaskView, release, revokeRelease, updateTask, validateGraph } from '../src/domain/graph';
@@ -17,7 +18,12 @@ function fixture(): ProjectGraph {
 }
 
 function task(graph: ProjectGraph, id: string, externalTaskId: string | null): Task {
-  return { id, projectId: graph.project.id, name: id, description: '', externalTaskId };
+  const sortOrder = graph.tasks.filter(candidate => candidate.statusOptionId === null).length;
+  return {
+    id, projectId: graph.project.id, name: id, description: '', externalTaskId,
+    statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
+    startDate: null, dueDate: null, sortOrder, comments: [],
+  };
 }
 
 const databases: ArchiveDatabase[] = [];
@@ -326,15 +332,61 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v5 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v7 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(7).stores({ projects: 'id' });
+    future.db.version(8).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
     const older = new ArchiveDatabase(name);
     databases.push(older);
     await expect(older.open()).rejects.toThrow('数据库版本超出');
+  });
+
+  it('v6 到 v7 迁移安装看板选项并稳定初始化旧任务字段和顺序', async () => {
+    const name = `task-migration-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(6).stores({
+      projects: 'id',
+      nodes: 'id, projectId, &[projectId+version]',
+      edges: 'id, projectId',
+      branches: 'id, projectId',
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId',
+      archiveRoots: 'id',
+    });
+    await legacy.open();
+    const project = createProject('旧看板', '001');
+    await legacy.table('projects').add({
+      id: project.project.id,
+      name: project.project.name,
+      partNumber: project.project.partNumber,
+      engineeringDirectoryHint: '',
+      wordDirectoryHint: '',
+      revision: 3,
+    });
+    await legacy.table('tasks').bulkAdd([
+      { id: 'legacy-b', projectId: project.project.id, name: 'B', description: '', externalTaskId: null },
+      { id: 'legacy-a', projectId: project.project.id, name: 'A', description: '', externalTaskId: '001' },
+    ]);
+    legacy.close();
+
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    const migrated = await new ArchiveRepository(db).get(project.project.id);
+    expect(migrated.project.statusOptions.map(option => option.name)).toEqual([
+      'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
+    ]);
+    expect(migrated.project.typeOptions).toHaveLength(7);
+    expect(migrated.project.priorityOptions).toEqual([]);
+    expect(migrated.project.assigneeOptions).toEqual([]);
+    expect([...migrated.tasks].sort((left, right) => left.sortOrder - right.sortOrder).map(task => [
+      task.id, task.statusOptionId, task.typeOptionId, task.priorityOptionId,
+      task.assigneeId, task.startDate, task.dueDate, task.sortOrder, task.comments,
+    ])).toEqual([
+      ['legacy-a', null, null, null, null, null, null, 0, []],
+      ['legacy-b', null, null, null, null, null, null, 1, []],
+    ]);
   });
 
   it('当前 schema 保存/重开往返，配置快照显式排除额外属性和权限', async () => {
@@ -348,11 +400,16 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes[0]).not.toHaveProperty('command');
     repo.db.close();
     await repo.db.open();
-    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(3);
+    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(4);
     const snapshot = (await repo.snapshot(graph.project.id)).graph;
     expect(snapshot.nodes).toEqual(stored.nodes);
-    expect(snapshot.tasks).toEqual([{ id: 'snapshot-task', projectId: graph.project.id, name: 'snapshot-task', description: '', externalTaskId: '001' }]);
-    expect(snapshot.project).toEqual({ id: stored.project.id, name: stored.project.name, partNumber: stored.project.partNumber, revision: stored.project.revision });
+    expect(snapshot.tasks).toEqual(stored.tasks);
+    expect(snapshot.project).toEqual({
+      id: stored.project.id, name: stored.project.name, partNumber: stored.project.partNumber,
+      revision: stored.project.revision, statusOptions: stored.project.statusOptions,
+      typeOptions: stored.project.typeOptions, priorityOptions: stored.project.priorityOptions,
+      assigneeOptions: stored.project.assigneeOptions,
+    });
   });
 
   it('外部 Task ID 修改不改节点身份，同项目唯一、跨项目可重复、多个 null 可共存', async () => {

@@ -23,6 +23,7 @@
     "VinkyDev/vibestart@vibestart"
   ],
   "dependencies": {
+    "@dnd-kit/vue": "^0.5.3",
     "dexie": "^4.4.7",
     "markdown-it": "^15.0.3",
     "vue": "^3.5.44"

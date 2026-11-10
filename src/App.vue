@@ -8,6 +8,7 @@ import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
 const VersionGraph = defineAsyncComponent(() => import('./components/VersionGraph.vue'));
 const ComparisonDocuments = defineAsyncComponent(() => import('./components/ComparisonDocuments.vue'));
+const TaskBoard = defineAsyncComponent(() => import('./components/TaskBoard.vue'));
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
@@ -40,7 +41,10 @@ const archiveRoots = shallowRef<ArchiveRoots>({});
 const archiveRootRevision = ref(0);
 const filesBusy = computed(() => filesPanelBusy.value || documentsBusy.value || rootBusy.value);
 const graphBusy = ref(false);
-const view = ref<'files' | 'graph' | 'documents'>('files');
+const taskBoardBusy = ref(false);
+const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
+const taskBoardTargetId = ref('');
+const focusNodeId = ref('');
 const versionOrder = ref<VersionOrder>('newest');
 const importButton = ref<HTMLButtonElement | null>(null);
 const importConfirmButton = ref<HTMLButtonElement | null>(null);
@@ -50,6 +54,7 @@ const importFileName = ref('');
 const importPicker = ref<HTMLDialogElement>();
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
+const workspaceBusy = computed(() => filesBusy.value || graphBusy.value || taskBoardBusy.value);
 const errorHeading = ref<HTMLElement | null>(null);
 let subscription: { unsubscribe(): void } | undefined;
 let loadAttempt = 0;
@@ -59,6 +64,22 @@ function showError(cause: unknown) {
   status.value = '';
   loading.value = false;
   void nextTick(() => errorHeading.value?.focus());
+}
+
+function openTaskBoard(taskId = '') {
+  taskBoardTargetId.value = taskId;
+  view.value = 'tasks';
+}
+
+function openVersionFromTaskBoard(nodeId: string) {
+  focusNodeId.value = nodeId;
+  view.value = 'graph';
+}
+
+function openProjectGraph(projectId: string) {
+  activeProjectId.value = projectId;
+  focusNodeId.value = '';
+  view.value = 'graph';
 }
 
 async function watchProjects() {
@@ -271,7 +292,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
       </svg>
       <span>IQAN <strong>Archive</strong></span>
     </a>
-    <span class="local-label"><AppIcon name="shield" /> 本地优先 <span aria-hidden="true">/</span> 工程版本工作台</span>
+    <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
   </header>
 
   <main id="workspace">
@@ -349,12 +370,13 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
                 <h3>{{ project.name }}</h3>
                 <span class="project-state">已保存</span>
               </div>
-              <button class="project-part-number" :disabled="saving || filesBusy || graphBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
+              <button class="project-part-number" :disabled="saving || workspaceBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
             </div>
             <div class="project-actions">
-              <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
-              <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="activeProjectId = project.id; view = 'graph'"><AppIcon name="branch" /></button>
-              <button class="secondary icon-button compact-project-action" :disabled="filesBusy || graphBusy" :aria-label="`查看 ${project.name} 软件对比文档`" :title="`查看 ${project.name} 软件对比文档`" :aria-pressed="activeProjectId === project.id && view === 'documents'" @click="activeProjectId = project.id; view = 'documents'"><AppIcon name="documents" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="openProjectGraph(project.id)"><AppIcon name="branch" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`查看 ${project.name} 软件对比文档`" :title="`查看 ${project.name} 软件对比文档`" :aria-pressed="activeProjectId === project.id && view === 'documents'" @click="activeProjectId = project.id; view = 'documents'"><AppIcon name="documents" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`打开 ${project.name} 任务看板`" :title="`任务看板：${project.name}`" :aria-pressed="activeProjectId === project.id && view === 'tasks'" @click="activeProjectId = project.id; openTaskBoard()"><AppIcon name="tasks" /></button>
             </div>
           </li>
         </TransitionGroup>
@@ -370,7 +392,7 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
           <form @submit.prevent="deleteProject">
             <label for="delete-project-name">输入完整项目名称确认</label>
             <input id="delete-project-name" ref="deleteInput" v-model="confirmedProjectName" :disabled="saving" autocomplete="off" required />
-            <button class="danger" :disabled="saving || filesBusy || graphBusy || confirmedProjectName !== deletion.project.name"><AppIcon name="trash" />{{ saving ? '正在删除…' : '永久删除项目' }}</button>
+            <button class="danger" :disabled="saving || workspaceBusy || confirmedProjectName !== deletion.project.name"><AppIcon name="trash" />{{ saving ? '正在删除…' : '永久删除项目' }}</button>
             <button type="button" class="secondary" :disabled="saving" @click="deletion = null">取消删除</button>
           </form>
         </template>
@@ -380,11 +402,11 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
           <p class="form-help">{{ editingProject.name }} · 不改变版本图或统一根目录授权，不重命名磁盘文件。保存后请重新扫描。</p>
           <form @submit.prevent="savePartNumber">
             <label for="edit-part-number">零件号 <span>必填</span></label>
-            <input id="edit-part-number" ref="editInput" v-model="editedPartNumber" required :disabled="saving || filesBusy || graphBusy" :aria-invalid="!editedPartNumber.trim()" :aria-describedby="!editedPartNumber.trim() ? 'edit-part-error' : undefined" />
+            <input id="edit-part-number" ref="editInput" v-model="editedPartNumber" required :disabled="saving || workspaceBusy" :aria-invalid="!editedPartNumber.trim()" :aria-describedby="!editedPartNumber.trim() ? 'edit-part-error' : undefined" />
             <p v-if="!editedPartNumber.trim()" id="edit-part-error" class="field-error">请输入非空零件号。</p>
-            <button :disabled="saving || filesBusy || graphBusy || !editedPartNumber.trim()"><AppIcon name="check" />{{ saving ? '正在保存…' : '保存零件号' }}</button>
+            <button :disabled="saving || workspaceBusy || !editedPartNumber.trim()"><AppIcon name="check" />{{ saving ? '正在保存…' : '保存零件号' }}</button>
             <button type="button" class="secondary" :disabled="saving" @click="editingProject = null">取消修改</button>
-            <button type="button" class="secondary" :disabled="saving || filesBusy || graphBusy" @click="previewProjectDeletion"><AppIcon name="trash" />删除此项目…</button>
+            <button type="button" class="secondary" :disabled="saving || workspaceBusy" @click="previewProjectDeletion"><AppIcon name="trash" />删除此项目…</button>
           </form>
         </template>
         <template v-else>
@@ -404,8 +426,9 @@ onUnmounted(() => { ++loadAttempt; subscription?.unsubscribe(); db.close(); });
     </div>
 
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" @busy="graphBusy = $event" @documents="view = 'documents'" />
-    <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="view = 'graph'" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" @busy="graphBusy = $event" @documents="view = 'documents'" @task-board="openTaskBoard" />
+    <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
+    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" @busy="taskBoardBusy = $event" @graph="openVersionFromTaskBoard" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">

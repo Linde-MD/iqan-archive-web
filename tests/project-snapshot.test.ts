@@ -15,6 +15,8 @@ afterEach(async () => { await Promise.all(databases.splice(0).map(db => db.delet
 function graphFixture(prefix = ''): ProjectGraph {
   const graph = createProject('测试工程', '001');
   const projectId = graph.project.id;
+  graph.project.priorityOptions = [{ id: `${prefix}priority-high`, name: '高' }];
+  graph.project.assigneeOptions = [{ id: `${prefix}assignee-owner`, name: '负责人' }];
   const releasedAt = '2026-01-01T00:00:00.000Z';
   graph.nodes = [
     { id: `${prefix}node-root`, projectId, version: 'R', description: '根版本', taskId: null, releasedAt },
@@ -34,17 +36,27 @@ function graphFixture(prefix = ''): ProjectGraph {
     { id: `${prefix}branch-main`, projectId, name: '主线', description: '', color: '#2563eb', headId: `${prefix}node-next` },
     { id: `${prefix}branch-maintenance`, projectId, name: '维护线', description: '', color: '#166534', headId: `${prefix}node-b` },
   ];
-  graph.tasks = [{ id: `${prefix}task-1`, projectId, name: '任务', description: '', externalTaskId: '001' }];
+  graph.tasks = [{
+    id: `${prefix}task-1`, projectId, name: '任务', description: '', externalTaskId: '001',
+    statusOptionId: graph.project.statusOptions[0]!.id,
+    typeOptionId: graph.project.typeOptions[0]!.id,
+    priorityOptionId: graph.project.priorityOptions[0]!.id,
+    assigneeId: graph.project.assigneeOptions[0]!.id,
+    startDate: '2026-01-02', dueDate: '2026-01-03', sortOrder: 0,
+    comments: [{ id: `${prefix}comment-1`, text: '**完成**', createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' }],
+  }];
   return graph;
 }
 
 function snapshot(graph: ProjectGraph): ProjectSnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     graph: {
       project: {
         id: graph.project.id, name: graph.project.name,
         partNumber: graph.project.partNumber, revision: graph.project.revision,
+        statusOptions: graph.project.statusOptions, typeOptions: graph.project.typeOptions,
+        priorityOptions: graph.project.priorityOptions, assigneeOptions: graph.project.assigneeOptions,
       },
       nodes: graph.nodes,
       edges: graph.edges,
@@ -55,7 +67,7 @@ function snapshot(graph: ProjectGraph): ProjectSnapshot {
 }
 
 describe('项目 JSON 快照验证', () => {
-  it('仅解析 schemaVersion 3，并生成不带目录信息的有效图', () => {
+  it('解析 schemaVersion 4 并往返任务选项、日期和 Markdown 评论', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));
     expect(parsed).toEqual({
@@ -64,6 +76,38 @@ describe('项目 JSON 快照验证', () => {
       branches: graph.branches.map((branch, order) => ({ ...branch, order })),
     });
     expect(parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(snapshot(graph))))).toEqual(parsed);
+  });
+
+  it('显式迁移 schemaVersion 3，保留图与任务并为新字段设空值', () => {
+    const graph = graphFixture();
+    const current = snapshot(graph);
+    const legacy = {
+      schemaVersion: 3,
+      graph: {
+        ...current.graph,
+        project: {
+          id: graph.project.id, name: graph.project.name,
+          partNumber: graph.project.partNumber, revision: graph.project.revision,
+        },
+        tasks: graph.tasks.map(({ id, projectId, name, description, externalTaskId }) => ({
+          id, projectId, name, description, externalTaskId,
+        })),
+      },
+    };
+    const migrated = parseProjectSnapshot(legacy);
+    expect(migrated.nodes).toEqual(graph.nodes);
+    expect(migrated.edges).toEqual(graph.edges);
+    expect(migrated.tasks[0]).toMatchObject({
+      id: 'task-1', externalTaskId: '001', statusOptionId: null, typeOptionId: null,
+      priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [],
+    });
+    expect(migrated.project.statusOptions.map(option => option.name)).toEqual([
+      'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
+    ]);
+    expect(migrated.project.typeOptions).toHaveLength(7);
+    expect(migrated.project.priorityOptions).toEqual([]);
+    expect(migrated.project.assigneeOptions).toEqual([]);
+    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3 和 4');
   });
 
   it('以分支数组顺序往返显示优先级，快照不暴露本地排序字段', () => {
@@ -80,10 +124,16 @@ describe('项目 JSON 快照验证', () => {
 
   it('拒绝未知版本、额外字段、错误类型、无效关系及不合法 Task ID', () => {
     const source = snapshot(graphFixture());
-    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 4 })).toThrow('schemaVersion 3');
+    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3 和 4');
     expect(() => parseProjectSnapshot({ ...source, executable: 'no' })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, extra: true } })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, nodes: [{ ...source.graph.nodes[0], releasedAt: 12 }] } })).toThrow('文本或 null');
+    const invalidTaskDate = structuredClone(source);
+    invalidTaskDate.graph.tasks[0]!.startDate = '2026-02-30';
+    expect(() => parseProjectSnapshot(invalidTaskDate)).toThrow('有效的 YYYY-MM-DD');
+    const missingTaskOption = structuredClone(source);
+    missingTaskOption.graph.tasks[0]!.priorityOptionId = 'missing-option';
+    expect(() => parseProjectSnapshot(missingTaskOption)).toThrow('priority 选项不存在');
     const dangling = structuredClone(source);
     dangling.graph.edges[0]!.parentId = 'missing';
     expect(() => parseProjectSnapshot(dangling)).toThrow('不存在');
@@ -101,6 +151,11 @@ describe('项目 JSON 快照验证', () => {
     expect(() => parseProjectSnapshot(oversized)).toThrow(`${MAX_SNAPSHOT_ENTITIES}`);
     source.graph.nodes.length = MAX_SNAPSHOT_ENTITIES + 1;
     expect(() => serializeProjectSnapshot(source)).toThrow(`${MAX_SNAPSHOT_ENTITIES}`);
+    const oversizedComments = snapshot(graphFixture());
+    oversizedComments.graph.tasks[0]!.comments = Array.from({ length: MAX_SNAPSHOT_ENTITIES }, (_, index) => ({
+      id: `comment-${index}`, text: 'x', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    }));
+    expect(() => serializeProjectSnapshot(oversizedComments)).toThrow(`${MAX_SNAPSHOT_ENTITIES}`);
   });
 
   it('拒绝超大、非法 UTF-8 和非法 JSON 文件', async () => {
@@ -124,6 +179,9 @@ describe('项目 JSON 快照验证', () => {
     expect(second.graph.project.id).not.toBe(source.project.id);
     expect(second.graph.project.revision).toBe(0);
     expect(second.graph.nodes.map(node => node.id)).not.toContain('node-root');
+    expect(second.graph.project.statusOptions.map(option => option.id)).not.toEqual(source.project.statusOptions.map(option => option.id));
+    expect(second.graph.tasks[0]!.statusOptionId).toBe(second.graph.project.statusOptions[0]!.id);
+    expect(second.graph.tasks[0]!.comments[0]!.id).not.toBe(source.tasks[0]!.comments[0]!.id);
     expect(second.graph.edges[0]).toMatchObject({
       projectId: second.graph.project.id,
       parentId: second.graph.nodes[0]!.id,

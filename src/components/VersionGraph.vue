@@ -19,9 +19,9 @@ import MarkdownEditor from './MarkdownEditor.vue';
 import { renderMarkdown } from '../utils/markdown';
 import { placeContextMenu } from '../utils/viewport';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; focusNodeId?: string | null }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
-const emit = defineEmits<{ busy: [value: boolean]; documents: [] }>();
+const emit = defineEmits<{ busy: [value: boolean]; documents: []; taskBoard: [taskId: string] }>();
 
 const graph = shallowRef<ProjectGraph>();
 const error = ref('');
@@ -29,6 +29,7 @@ const status = ref('');
 const saving = ref(false);
 const errorHeading = ref<HTMLElement>();
 const graphScroller = ref<HTMLDivElement>();
+const highlightedNavigationNodeId = ref('');
 const branchLabelLeft = ref(0);
 const branchLabelWidth = ref(300);
 const versionHint = ref<HTMLDivElement>();
@@ -36,6 +37,7 @@ const hintedNode = shallowRef<VersionNode>();
 let hintCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let nodeClickTimer: ReturnType<typeof setTimeout> | undefined;
 let graphScrollerResizeObserver: ResizeObserver | undefined;
+let navigationHighlightTimer: ReturnType<typeof setTimeout> | undefined;
 
 function clearNodeClickTimer() {
   clearTimeout(nodeClickTimer);
@@ -239,7 +241,7 @@ function closeBranchFilter(event: Event) {
   }
 }
 const activeBranchId = ref<string | null>(null);
-const menu = ref<{ kind: 'node' | 'branch' | 'engineering-file'; id: string; x: number; y: number; anchorX: number; anchorY: number } | null>(null);
+const menu = ref<{ kind: 'node' | 'branch' | 'task' | 'engineering-file'; id: string; x: number; y: number; anchorX: number; anchorY: number } | null>(null);
 const menuOpenLocation = ref<ArchiveLocation>('local');
 const menuOpenLocations = shallowRef<{ nodeId: string; locations: ArchiveLocation[] } | null>(null);
 const menuOpenLocationBusy = ref(false);
@@ -251,7 +253,11 @@ type NodeSwitchSource = 'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'br
   | 'deletion-preview' | 'branch-delete' | 'relation-preview';
 const pendingNodeSwitch = ref<{ nodeId: string; mode: 'details' | 'edit'; source: NodeSwitchSource } | null>(null);
 const nodeTaskId = ref('');
-const taskForm = ref({ id: '', name: '', description: '', externalTaskId: '' });
+const taskForm = ref<Task>({
+  id: '', projectId: '', name: '', description: '', externalTaskId: '', statusOptionId: null,
+  typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null,
+  sortOrder: 0, comments: [],
+});
 const nodeDraftBaseline = ref('');
 const branchDraftBaseline = ref('');
 const nodeDraftValue = () => JSON.stringify([nodeForm.value, nodeTaskId.value]);
@@ -337,7 +343,13 @@ function taskLabel(task: Task): string {
 }
 
 function editTask(task?: Task) {
-  taskForm.value = task ? { ...task, externalTaskId: task.externalTaskId ?? '' } : { id: '', name: '', description: '', externalTaskId: '' };
+  const project = graph.value!.project;
+  taskForm.value = task ? structuredClone(task) : {
+    id: '', projectId: project.id, name: '', description: '', externalTaskId: '',
+    statusOptionId: project.statusOptions[0]?.id ?? null,
+    typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null,
+    sortOrder: graph.value!.tasks.filter(candidate => candidate.statusOptionId === (project.statusOptions[0]?.id ?? null)).length, comments: [],
+  };
   taskRevision.value = graph.value!.project.revision;
   taskDeleteId.value = null;
   error.value = '';
@@ -1008,6 +1020,32 @@ const laneWidth = computed(() => graphLayout.value?.trackWidth ?? 0);
 const canvasWidth = computed(() => (graphLayout.value?.width ?? 0) + (hideIsolated.value ? 20 : 300));
 const graphColumns = computed(() => `${laneWidth.value}px minmax(720px, 1fr)${hideIsolated.value ? '' : ' 280px'}`);
 const contentHeight = computed(() => (graphLayout.value?.height ?? 0) + GIT_GRAPH.headerHeight);
+
+async function focusRequestedNode() {
+  const nodeId = props.focusNodeId;
+  if (!nodeId || !graph.value?.nodes.some(node => node.id === nodeId)) return;
+  graphMode.value = 'all';
+  branchFilter.value = null;
+  hideIsolated.value = false;
+  expandedTaskRunIds.value = [];
+  selectedNodeIds.value = [nodeId];
+  selectionAnchorId.value = nodeId;
+  await nextTick();
+  const scroller = graphScroller.value;
+  const row = [...(scroller?.querySelectorAll<HTMLElement>('[data-node-id]') ?? [])]
+    .find(element => element.dataset.nodeId === nodeId);
+  if (scroller && row) {
+    const rowRect = row.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    scroller.scrollTop += rowRect.top - scrollerRect.top - (scroller.clientHeight - rowRect.height) / 2;
+  }
+  highlightedNavigationNodeId.value = nodeId;
+  clearTimeout(navigationHighlightTimer);
+  navigationHighlightTimer = setTimeout(() => { highlightedNavigationNodeId.value = ''; }, 2500);
+}
+
+watch([graph, () => props.focusNodeId], () => { void focusRequestedNode(); }, { flush: 'post', immediate: true });
+
 function updateBranchLabelPosition() {
   const scroller = graphScroller.value;
   if (!scroller) return;
@@ -1311,6 +1349,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   graphScrollerResizeObserver?.disconnect();
+  clearTimeout(navigationHighlightTimer);
   documentScanController?.abort();
   clearNodeClickTimer();
   hideVersionHint();
@@ -1412,6 +1451,36 @@ function onNodeClick(nodeId: string, event: MouseEvent) {
   }
   if (editorOpen.value) return;
   selectNode(nodeId, event.ctrlKey || event.metaKey, event.shiftKey);
+}
+
+function onTaskSummaryClick(run: TaskRun, event: MouseEvent) {
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey) {
+    event.preventDefault();
+    emit('taskBoard', run.task.id);
+    return;
+  }
+  toggleTaskRun(run);
+}
+
+function onTaskSummaryKeydown(event: KeyboardEvent, taskId: string) {
+  if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu'
+    || ((event.ctrlKey || event.metaKey) && event.key === 'Enter')) {
+    event.preventDefault();
+    openTaskBoardMenu(event, taskId);
+  }
+}
+
+function openTaskBoardMenu(event: MouseEvent | KeyboardEvent, taskId: string) {
+  event.preventDefault();
+  event.stopPropagation();
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+  menuReturnFocus.value = target;
+  const rect = target.getBoundingClientRect();
+  const mouse = event instanceof MouseEvent;
+  const x = mouse ? event.clientX : rect.left;
+  const y = mouse ? event.clientY : rect.bottom;
+  menu.value = { kind: 'task', id: taskId, x, y, anchorX: x, anchorY: y };
 }
 
 function openNodeMenu(event: MouseEvent, nodeId: string) {
@@ -2561,7 +2630,7 @@ function onIqanDialogClosed() {
                 :key="row.key"
                 class="git-graph-row"
                 :class="[
-                  { selected: row.kind === 'version' && selectedNodeIds.includes(row.node.id), isolated: row.isolated, 'branch-drop-target': row.kind === 'version' && dropTargetId === row.node.id },
+                  { selected: row.kind === 'version' && selectedNodeIds.includes(row.node.id), isolated: row.isolated, navigated: highlightedNavigationNodeId === row.node.id, 'branch-drop-target': row.kind === 'version' && dropTargetId === row.node.id },
                   row.taskRun && row.groupPosition ? `task-run-${row.groupPosition}` : '',
                   row.taskRun && row.kind !== 'version' ? `task-release-${row.taskRun.releaseState}` : '',
                   `git-graph-row-${row.kind}`,
@@ -2569,6 +2638,7 @@ function onIqanDialogClosed() {
                 @dragover="row.kind === 'version' && onBranchDragOver($event, row.node.id)"
                 @dragleave="row.kind === 'version' && dropTargetId === row.node.id && (dropTargetId = null)"
                 @drop="row.kind === 'version' && dropBranch($event, row.node.id)"
+                :data-node-id="row.node.id"
                 :style="{ gridTemplateColumns: graphColumns, '--branch-label-left': `${branchLabelLeft}px`, '--branch-label-width': `${branchLabelWidth}px` }"
               >
                 <div class="git-graph-lanes" aria-hidden="true"></div>
@@ -2613,8 +2683,11 @@ function onIqanDialogClosed() {
                     :aria-expanded="false"
                     :class="{ 'is-released': row.taskRun.releaseState === 'all', 'is-partially-released': row.taskRun.releaseState === 'partial' }"
                     :aria-label="`${row.taskRun.task.externalTaskId ? `任务编号 ${row.taskRun.task.externalTaskId}，` : ''}${row.taskRun.task.name}，${row.taskRun.nodeIds.length} 个连续版本，${taskRunReleaseLabel(row.taskRun)}：${taskRunVersions(row.taskRun).join('、')}，点击展开`"
+                    aria-keyshortcuts="Control+Enter Meta+Enter Shift+F10 ContextMenu"
                     :disabled="saving"
-                    @click="toggleTaskRun(row.taskRun)"
+                    @click="onTaskSummaryClick(row.taskRun, $event)"
+                    @contextmenu="openTaskBoardMenu($event, row.taskRun.task.id)"
+                    @keydown="onTaskSummaryKeydown($event, row.taskRun.task.id)"
                   >
                     <AppIcon class="git-release-icon" :name="taskRunReleaseIcon(row.taskRun)" />
                     <span class="task-summary-heading">
@@ -2762,7 +2835,7 @@ function onIqanDialogClosed() {
       </div>
 
       <Teleport :to="isFullscreen ? graphWorkspace : 'body'">
-      <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : '工程文件操作'" @keydown="onMenuKeyDown">
+      <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : menu.kind === 'task' ? '任务操作' : '工程文件操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
           <button role="menuitem" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" />对比所选版本（已选 {{ selectedNodeIds.length }} 个）</button>
           <button role="menuitem" :disabled="saving" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
@@ -2795,6 +2868,9 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving" @click="openParentEdit(); closeMenu(false)" :title="selectedNode?.releasedAt ? '更换父节点后会自动补齐新放行链' : undefined"><AppIcon name="link" />设置父版本</button>
           <button role="menuitem" :disabled="saving" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除</button>
+        </template>
+        <template v-else-if="menu.kind === 'task'">
+          <button role="menuitem" :disabled="saving" @click="emit('taskBoard', menu.id); closeMenu(false)"><AppIcon name="tasks" />在任务看板中打开</button>
         </template>
         <template v-else-if="menu.kind === 'engineering-file'">
           <template v-if="engineeringFileStateForNode(menu.id).kind === 'unknown'">

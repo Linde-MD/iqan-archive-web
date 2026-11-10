@@ -1,5 +1,17 @@
 export type ArchiveLocation = 'shared' | 'local';
 
+export interface TaskOption {
+  id: string;
+  name: string;
+}
+
+export interface TaskComment {
+  id: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -7,6 +19,10 @@ export interface Project {
   engineeringDirectoryHint: string;
   wordDirectoryHint: string;
   revision: number;
+  statusOptions: TaskOption[];
+  typeOptions: TaskOption[];
+  priorityOptions: TaskOption[];
+  assigneeOptions: TaskOption[];
 }
 
 export interface VersionNode {
@@ -48,6 +64,14 @@ export interface Task {
   name: string;
   description: string;
   externalTaskId: string | null;
+  statusOptionId: string | null;
+  typeOptionId: string | null;
+  priorityOptionId: string | null;
+  assigneeId: string | null;
+  startDate: string | null;
+  dueDate: string | null;
+  sortOrder: number;
+  comments: TaskComment[];
 }
 
 export interface ProjectGraph {
@@ -59,9 +83,9 @@ export interface ProjectGraph {
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 3;
+  schemaVersion: 4;
   graph: Omit<ProjectGraph, 'project' | 'branches'> & {
-    project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision'>;
+    project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision' | 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>;
     branches: Array<Omit<Branch, 'order'>>;
   };
 }
@@ -111,6 +135,18 @@ export function createProject(name: string, partNumber: string): ProjectGraph {
       engineeringDirectoryHint: '',
       wordDirectoryHint: '',
       revision: 0,
+      statusOptions: [
+        { id: crypto.randomUUID(), name: 'Backlog' },
+        { id: crypto.randomUUID(), name: 'Pending' },
+        { id: crypto.randomUUID(), name: 'In Progress' },
+        { id: crypto.randomUUID(), name: 'release pending' },
+        { id: crypto.randomUUID(), name: 'Done' },
+      ],
+      typeOptions: [
+        'Project Devel...', 'Series Mainte...', 'Field/After-...', 'CO Support', 'Bug/Issue', 'Technical Imp...', 'Internal',
+      ].map(name => ({ id: crypto.randomUUID(), name })),
+      priorityOptions: [],
+      assigneeOptions: [],
     },
     nodes: [], edges: [], branches: [], tasks: [],
   };

@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import { createProject, normalizeVersion, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
+import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, updateTasks, updateTaskOptions, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
+import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
@@ -12,10 +13,14 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
       revision: graph.project.revision,
       engineeringDirectoryHint: graph.project.engineeringDirectoryHint,
       wordDirectoryHint: graph.project.wordDirectoryHint,
+      statusOptions: structuredClone(graph.project.statusOptions),
+      typeOptions: structuredClone(graph.project.typeOptions),
+      priorityOptions: structuredClone(graph.project.priorityOptions),
+      assigneeOptions: structuredClone(graph.project.assigneeOptions),
     },
     nodes: graph.nodes.map(({ id, projectId, version, description, taskId, releasedAt }) => ({ id, projectId, version, description, taskId, releasedAt })),
     edges: graph.edges.map(({ id, projectId, parentId, childId }) => ({ id, projectId, parentId, childId })),
-    tasks: graph.tasks.map(({ id, projectId, name, description, externalTaskId }) => ({ id, projectId, name, description, externalTaskId })),
+    tasks: graph.tasks.map(task => structuredClone(task)),
     branches: orderedBranches(graph.branches).map((branch, order) => ({
       id: branch.id,
       projectId: branch.projectId,
@@ -75,6 +80,50 @@ export class ArchiveDatabase extends Dexie {
       if (legacyRoot) {
         await roots.put({ ...legacyRoot, id: 'shared' });
         await roots.delete('root');
+      }
+    });
+    this.version(7).stores({
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+      archiveRoots: 'id',
+    }).upgrade(async transaction => {
+      const projects = transaction.table<Project>('projects');
+      const tasks = transaction.table<Task>('tasks');
+      const projectRows = await projects.toArray();
+      const taskRows = await tasks.toArray();
+      for (const project of projectRows) {
+        await projects.put({
+          ...project,
+          statusOptions: project.statusOptions ?? [
+            'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
+          ].map(name => ({ id: crypto.randomUUID(), name })),
+          typeOptions: project.typeOptions ?? [
+            'Project Devel...', 'Series Mainte...', 'Field/After-...', 'CO Support', 'Bug/Issue', 'Technical Imp...', 'Internal',
+          ].map(name => ({ id: crypto.randomUUID(), name })),
+          priorityOptions: project.priorityOptions ?? [],
+          assigneeOptions: project.assigneeOptions ?? [],
+        });
+      }
+      const tasksByProject = new Map<string, Task[]>();
+      for (const task of taskRows) {
+        const bucket = tasksByProject.get(task.projectId) ?? [];
+        bucket.push(task);
+        tasksByProject.set(task.projectId, bucket);
+      }
+      for (const projectTasks of tasksByProject.values()) {
+        projectTasks.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+        for (const [sortOrder, task] of projectTasks.entries()) {
+          await tasks.put({
+            ...task,
+            statusOptionId: null,
+            typeOptionId: null,
+            priorityOptionId: null,
+            assigneeId: null,
+            startDate: null,
+            dueDate: null,
+            sortOrder,
+            comments: [],
+          });
+        }
       }
     });
     this.on('ready', () => {
@@ -177,6 +226,22 @@ export class ArchiveRepository {
 
   async saveTask(projectId: string, revision: number, task: Task): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => updateTask(graph, task));
+  }
+
+  async saveTasks(projectId: string, revision: number, tasks: readonly Task[]): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => updateTasks(graph, tasks));
+  }
+
+  async moveTask(projectId: string, revision: number, taskId: string, statusOptionId: string | null, beforeTaskId: string | null): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => moveTaskInBoard(graph, taskId, statusOptionId, beforeTaskId));
+  }
+
+  async saveTaskOptions(
+    projectId: string,
+    revision: number,
+    options: Pick<Project, 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>,
+  ): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => updateTaskOptions(graph, options));
   }
 
   async deleteTask(projectId: string, revision: number, taskId: string): Promise<ProjectGraph> {
@@ -282,12 +347,12 @@ export class ArchiveRepository {
   async snapshot(projectId: string): Promise<ProjectSnapshot> {
     const graph = await this.get(projectId);
     const clean = configurationOnly(graph);
-    const { id, name, partNumber, revision } = clean.project;
+    const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = clean.project;
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       graph: {
         ...clean,
-        project: { id, name, partNumber, revision },
+        project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },
         branches: clean.branches.map(({ id, projectId, name, description, color, headId }) => ({
           id, projectId, name, description, color, headId,
         })),
@@ -355,8 +420,22 @@ export class ArchiveRepository {
     const projectId = projectIds[0]!;
     const nodeIdMap = new Map(graph.nodes.map((item, index) => [item.id, nodeIds[index]!]));
     const taskIdMap = new Map(graph.tasks.map((item, index) => [item.id, taskIds[index]!]));
+    const remapOptions = (options: Project['statusOptions']) => options.map(option => ({ ...option, id: crypto.randomUUID() }));
+    const statusOptions = remapOptions(graph.project.statusOptions);
+    const typeOptions = remapOptions(graph.project.typeOptions);
+    const priorityOptions = remapOptions(graph.project.priorityOptions);
+    const assigneeOptions = remapOptions(graph.project.assigneeOptions);
+    const optionIdMap = (original: Project['statusOptions'], remapped: Project['statusOptions']) =>
+      new Map(original.map((option, index) => [option.id, remapped[index]!.id]));
+    const statusIdMap = optionIdMap(graph.project.statusOptions, statusOptions);
+    const typeIdMap = optionIdMap(graph.project.typeOptions, typeOptions);
+    const priorityIdMap = optionIdMap(graph.project.priorityOptions, priorityOptions);
+    const assigneeIdMap = optionIdMap(graph.project.assigneeOptions, assigneeOptions);
     return {
-      project: { ...graph.project, id: projectId, revision: 0, engineeringDirectoryHint: '', wordDirectoryHint: '' },
+      project: {
+        ...graph.project, id: projectId, revision: 0, engineeringDirectoryHint: '', wordDirectoryHint: '',
+        statusOptions, typeOptions, priorityOptions, assigneeOptions,
+      },
       nodes: graph.nodes.map(item => ({
         ...item,
         id: nodeIdMap.get(item.id)!,
@@ -371,7 +450,16 @@ export class ArchiveRepository {
       branches: graph.branches.map((item, index) => ({
         ...item, id: branchIds[index]!, projectId, headId: nodeIdMap.get(item.headId)!,
       })),
-      tasks: graph.tasks.map((item, index) => ({ ...item, id: taskIds[index]!, projectId })),
+      tasks: graph.tasks.map((item, index) => ({
+        ...item,
+        id: taskIds[index]!,
+        projectId,
+        statusOptionId: item.statusOptionId === null ? null : statusIdMap.get(item.statusOptionId)!,
+        typeOptionId: item.typeOptionId === null ? null : typeIdMap.get(item.typeOptionId)!,
+        priorityOptionId: item.priorityOptionId === null ? null : priorityIdMap.get(item.priorityOptionId)!,
+        assigneeId: item.assigneeId === null ? null : assigneeIdMap.get(item.assigneeId)!,
+        comments: item.comments.map(comment => ({ ...comment, id: crypto.randomUUID() })),
+      })),
     };
   }
 }

@@ -1,5 +1,5 @@
 import { validateGraph } from './graph';
-import { DomainError, normalizeExternalTaskId, requireCondition, type ProjectGraph, type ProjectSnapshot } from './model';
+import { DomainError, normalizeExternalTaskId, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
 
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_SNAPSHOT_ENTITIES = 100_000;
@@ -13,7 +13,7 @@ function record(value: unknown, label: string, fields: readonly string[]): JsonR
   requireCondition(
     keys.length === fields.length && keys.every(key => fields.includes(key)),
     'SNAPSHOT_FIELDS',
-    `${label}字段不符合 schemaVersion 3。`,
+    `${label}字段不符合快照 schema。`,
   );
   return result;
 }
@@ -25,6 +25,11 @@ function text(value: unknown, label: string): string {
 
 function nullableText(value: unknown, label: string): string | null {
   requireCondition(value === null || typeof value === 'string', 'SNAPSHOT_TYPE', `${label}必须为文本或 null。`);
+  return value;
+}
+
+function safeInteger(value: unknown, label: string): number {
+  requireCondition(typeof value === 'number' && Number.isSafeInteger(value), 'SNAPSHOT_TYPE', `${label}必须为安全整数。`);
   return value;
 }
 
@@ -40,7 +45,10 @@ function parseItems<T>(
 
 export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
   const { nodes, edges, branches, tasks } = snapshot.graph;
-  const entityCount = nodes.length + edges.length + branches.length + tasks.length;
+  const project = snapshot.graph.project;
+  const entityCount = nodes.length + edges.length + branches.length + tasks.length
+    + project.statusOptions.length + project.typeOptions.length + project.priorityOptions.length + project.assigneeOptions.length
+    + tasks.reduce((count, task) => count + task.comments.length, 0);
   requireCondition(entityCount <= MAX_SNAPSHOT_ENTITIES, 'SNAPSHOT_ENTITY_LIMIT', `配置实体超过 ${MAX_SNAPSHOT_ENTITIES} 个上限，无法导出为可恢复备份。`);
   const json = JSON.stringify({
     ...snapshot,
@@ -56,8 +64,53 @@ export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
 }
 
 export function parseProjectSnapshot(value: unknown): ProjectGraph {
-  const root = record(value, '快照', ['schemaVersion', 'graph']);
-  requireCondition(root.schemaVersion === 3, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3 配置文件。');
+  let root = record(value, '快照', ['schemaVersion', 'graph']);
+  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3 和 4 配置文件。');
+  if (root.schemaVersion === 3) {
+    const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
+    requireCondition(Array.isArray(legacy.tasks), 'SNAPSHOT_TYPE', 'graph.tasks 必须为数组。');
+    const legacyProject = record(legacy.project, 'graph.project', ['id', 'name', 'partNumber', 'revision']);
+    const legacyTasks = parseItems(legacy.tasks, 'graph.tasks', [
+      'id', 'projectId', 'name', 'description', 'externalTaskId',
+    ], item => ({
+      id: text(item.id, 'task.id'),
+      projectId: text(item.projectId, 'task.projectId'),
+      name: text(item.name, 'task.name'),
+      description: text(item.description, 'task.description'),
+      externalTaskId: nullableText(item.externalTaskId, 'task.externalTaskId'),
+    }));
+    const orderedTasks = [...legacyTasks].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+    const orderById = new Map(orderedTasks.map((task, sortOrder) => [task.id, sortOrder]));
+    const makeOptions = (names: readonly string[]): TaskOption[] => names.map(name => ({ id: crypto.randomUUID(), name }));
+    const statusOptions = makeOptions(['Backlog', 'Pending', 'In Progress', 'release pending', 'Done']);
+    const typeOptions = makeOptions([
+      'Project Devel...', 'Series Mainte...', 'Field/After-...', 'CO Support', 'Bug/Issue', 'Technical Imp...', 'Internal',
+    ]);
+    root = {
+      schemaVersion: 4,
+      graph: {
+        ...legacy,
+        project: {
+          ...legacyProject,
+          statusOptions,
+          typeOptions,
+          priorityOptions: [],
+          assigneeOptions: [],
+        },
+        tasks: legacyTasks.map(task => ({
+          ...task,
+          statusOptionId: null,
+          typeOptionId: null,
+          priorityOptionId: null,
+          assigneeId: null,
+          startDate: null,
+          dueDate: null,
+          sortOrder: orderById.get(task.id)!,
+          comments: [],
+        })),
+      },
+    };
+  }
   const source = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
   requireCondition(
     Array.isArray(source.nodes) && Array.isArray(source.edges) &&
@@ -65,11 +118,27 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
     'SNAPSHOT_TYPE',
     'graph.nodes、edges、branches、tasks 必须为数组。',
   );
-  const entityCount = source.nodes.length + source.edges.length + source.branches.length + source.tasks.length;
-  requireCondition(entityCount <= MAX_SNAPSHOT_ENTITIES, 'SNAPSHOT_ENTITY_LIMIT', `配置实体超过 ${MAX_SNAPSHOT_ENTITIES} 个上限。`);
-
-  const project = record(source.project, 'graph.project', ['id', 'name', 'partNumber', 'revision']);
+  const project = record(source.project, 'graph.project', [
+    'id', 'name', 'partNumber', 'revision', 'statusOptions', 'typeOptions', 'priorityOptions', 'assigneeOptions',
+  ]);
   requireCondition(typeof project.revision === 'number' && Number.isSafeInteger(project.revision), 'SNAPSHOT_TYPE', 'graph.project.revision 必须为安全整数。');
+  const optionFields = ['statusOptions', 'typeOptions', 'priorityOptions', 'assigneeOptions'] as const;
+  requireCondition(optionFields.every(field => Array.isArray(project[field])), 'SNAPSHOT_TYPE', '项目任务选项必须为数组。');
+  const commentCount = source.tasks.reduce((count, task) => {
+    if (task !== null && typeof task === 'object' && !Array.isArray(task) && Array.isArray((task as JsonRecord).comments)) {
+      return count + ((task as JsonRecord).comments as unknown[]).length;
+    }
+    return count;
+  }, 0);
+  const entityCount = source.nodes.length + source.edges.length + source.branches.length + source.tasks.length
+    + optionFields.reduce((count, field) => count + (project[field] as unknown[]).length, 0) + commentCount;
+  requireCondition(entityCount <= MAX_SNAPSHOT_ENTITIES, 'SNAPSHOT_ENTITY_LIMIT', `配置实体超过 ${MAX_SNAPSHOT_ENTITIES} 个上限。`);
+  const parseOption = (item: JsonRecord, index: number): TaskOption => ({
+    id: text(item.id, `project option ${index}.id`),
+    name: text(item.name, `project option ${index}.name`),
+  });
+  const parseOptions = (field: 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'): TaskOption[] =>
+    parseItems(project[field], `graph.project.${field}`, ['id', 'name'], parseOption);
   const graph: ProjectGraph = {
     project: {
       id: text(project.id, 'graph.project.id'),
@@ -78,6 +147,10 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       revision: project.revision,
       engineeringDirectoryHint: '',
       wordDirectoryHint: '',
+      statusOptions: parseOptions('statusOptions'),
+      typeOptions: parseOptions('typeOptions'),
+      priorityOptions: parseOptions('priorityOptions'),
+      assigneeOptions: parseOptions('assigneeOptions'),
     },
     nodes: parseItems(source.nodes, 'graph.nodes', ['id', 'projectId', 'version', 'description', 'taskId', 'releasedAt'], item => ({
       id: text(item.id, 'node.id'),
@@ -102,12 +175,28 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       headId: text(item.headId, 'branch.headId'),
       order: index,
     })),
-    tasks: parseItems(source.tasks, 'graph.tasks', ['id', 'projectId', 'name', 'description', 'externalTaskId'], item => ({
+    tasks: parseItems(source.tasks, 'graph.tasks', [
+      'id', 'projectId', 'name', 'description', 'externalTaskId', 'statusOptionId', 'typeOptionId', 'priorityOptionId',
+      'assigneeId', 'startDate', 'dueDate', 'sortOrder', 'comments',
+    ], item => ({
       id: text(item.id, 'task.id'),
       projectId: text(item.projectId, 'task.projectId'),
       name: text(item.name, 'task.name'),
       description: text(item.description, 'task.description'),
       externalTaskId: nullableText(item.externalTaskId, 'task.externalTaskId'),
+      statusOptionId: nullableText(item.statusOptionId, 'task.statusOptionId'),
+      typeOptionId: nullableText(item.typeOptionId, 'task.typeOptionId'),
+      priorityOptionId: nullableText(item.priorityOptionId, 'task.priorityOptionId'),
+      assigneeId: nullableText(item.assigneeId, 'task.assigneeId'),
+      startDate: nullableText(item.startDate, 'task.startDate'),
+      dueDate: nullableText(item.dueDate, 'task.dueDate'),
+      sortOrder: safeInteger(item.sortOrder, 'task.sortOrder'),
+      comments: parseItems(item.comments, 'task.comments', ['id', 'text', 'createdAt', 'updatedAt'], comment => ({
+        id: text(comment.id, 'comment.id'),
+        text: text(comment.text, 'comment.text'),
+        createdAt: text(comment.createdAt, 'comment.createdAt'),
+        updatedAt: text(comment.updatedAt, 'comment.updatedAt'),
+      } satisfies TaskComment)),
     })),
   };
   const taskIds = new Set<string>();

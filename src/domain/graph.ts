@@ -1,6 +1,6 @@
 import {
   DomainError, normalizeExternalTaskId, normalizeVersion, requireCondition,
-  orderedBranches, type ProjectGraph, type Task, type VersionNode,
+  orderedBranches, type ProjectGraph, type Task, type TaskOption, type VersionNode,
 } from './model';
 
 function uniqueIds(items: readonly { id: string }[], label: string) {
@@ -15,6 +15,19 @@ export function validateGraph(graph: ProjectGraph): void {
   const { project, nodes, edges, branches, tasks } = graph;
   requireCondition(project.id.trim() && project.name.trim() && project.partNumber.trim(), 'PROJECT', '项目身份、名称和零件号不能为空。');
   requireCondition(Number.isSafeInteger(project.revision) && project.revision >= 0, 'REVISION', '项目修订号无效。');
+  const validateOptions = (options: readonly TaskOption[], label: string) => {
+    uniqueIds(options, label);
+    const names = new Set<string>();
+    for (const option of options) {
+      requireCondition(option.name.trim() && option.name === option.name.trim(), 'TASK_OPTION_NAME', `${label}名称不能为空或含首尾空白。`);
+      requireCondition(!names.has(option.name.toLocaleLowerCase()), 'TASK_OPTION_DUPLICATE', `${label}名称不能重复：${option.name}`);
+      names.add(option.name.toLocaleLowerCase());
+    }
+  };
+  validateOptions(project.statusOptions, 'Status');
+  validateOptions(project.typeOptions, 'Type');
+  validateOptions(project.priorityOptions, 'Priority');
+  validateOptions(project.assigneeOptions, 'Assignee');
   for (const [label, items] of [
     ['版本', nodes], ['关系', edges], ['分支', branches], ['任务', tasks],
   ] as const) {
@@ -23,8 +36,15 @@ export function validateGraph(graph: ProjectGraph): void {
   }
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
   const taskIds = new Set(tasks.map(task => task.id));
+  const optionIds = {
+    status: new Set(project.statusOptions.map(option => option.id)),
+    type: new Set(project.typeOptions.map(option => option.id)),
+    priority: new Set(project.priorityOptions.map(option => option.id)),
+    assignee: new Set(project.assigneeOptions.map(option => option.id)),
+  };
   const versions = new Set<string>();
   const externalTaskIds = new Set<string>();
+  const taskOrderKeys = new Set<string>();
   for (const task of tasks) {
     requireCondition(task.name.trim(), 'TASK_NAME', '任务名称不能为空。');
     const value = normalizeExternalTaskId(task.externalTaskId);
@@ -32,6 +52,24 @@ export function validateGraph(graph: ProjectGraph): void {
     if (value !== null) {
       requireCondition(!externalTaskIds.has(value), 'DUPLICATE_TASK_ID', `Task ID 已被其他任务使用：${value}`);
       externalTaskIds.add(value);
+    }
+    requireCondition(task.statusOptionId === null || optionIds.status.has(task.statusOptionId), 'TASK_STATUS_REFERENCE', '任务引用的 Status 选项不存在。');
+    requireCondition(task.typeOptionId === null || optionIds.type.has(task.typeOptionId), 'TASK_TYPE_REFERENCE', '任务引用的 Type 选项不存在。');
+    requireCondition(task.priorityOptionId === null || optionIds.priority.has(task.priorityOptionId), 'TASK_PRIORITY_REFERENCE', '任务引用的 priority 选项不存在。');
+    requireCondition(task.assigneeId === null || optionIds.assignee.has(task.assigneeId), 'TASK_ASSIGNEE_REFERENCE', '任务引用的 assignee 不存在。');
+    requireCondition(Number.isSafeInteger(task.sortOrder) && task.sortOrder >= 0, 'TASK_ORDER', '任务顺序无效。');
+    const orderKey = `${task.statusOptionId ?? ''}:${task.sortOrder}`;
+    requireCondition(!taskOrderKeys.has(orderKey), 'TASK_ORDER_DUPLICATE', '同一 Status 泳道内的任务顺序不能重复。');
+    taskOrderKeys.add(orderKey);
+    requireCondition(task.startDate === null || isCalendarDate(task.startDate), 'TASK_START_DATE', '开始日期必须为有效的 YYYY-MM-DD 日期。');
+    requireCondition(task.dueDate === null || isCalendarDate(task.dueDate), 'TASK_DUE_DATE', '截止日期必须为有效的 YYYY-MM-DD 日期。');
+    requireCondition(task.startDate === null || task.dueDate === null || task.dueDate >= task.startDate, 'TASK_DATE_RANGE', '截止日期不能早于开始日期。');
+    uniqueIds(task.comments, `任务 ${task.id} 的评论`);
+    for (const comment of task.comments) {
+      requireCondition(comment.text.trim(), 'TASK_COMMENT_EMPTY', '评论内容不能为空。');
+      const createdAt = Date.parse(comment.createdAt);
+      const updatedAt = Date.parse(comment.updatedAt);
+      requireCondition(Number.isFinite(createdAt) && Number.isFinite(updatedAt) && updatedAt >= createdAt, 'TASK_COMMENT_TIME', '评论时间无效。');
     }
   }
   for (const node of nodes) {
@@ -82,12 +120,34 @@ export function validateGraph(graph: ProjectGraph): void {
   );
 }
 
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 export function updatePartNumber(graph: ProjectGraph, value: string): ProjectGraph {
   requireCondition(value.trim(), 'REQUIRED', '项目零件号不能为空。');
   const next = structuredClone(graph);
   next.project.partNumber = value.trim();
   validateTransition(graph, next);
   return next;
+}
+
+function reindexTaskLanes(tasks: Task[]): void {
+  const lanes = new Map<string, Task[]>();
+  for (const task of tasks) {
+    const key = task.statusOptionId ?? '';
+    const lane = lanes.get(key) ?? [];
+    lane.push(task);
+    lanes.set(key, lane);
+  }
+  for (const lane of lanes.values()) {
+    lane.sort((left, right) => left.sortOrder - right.sortOrder
+      || left.name.localeCompare(right.name)
+      || left.id.localeCompare(right.id));
+    lane.forEach((task, sortOrder) => { task.sortOrder = sortOrder; });
+  }
 }
 
 function getNode(graph: ProjectGraph, id: string): VersionNode {
@@ -150,12 +210,50 @@ export function updateTask(graph: ProjectGraph, task: Task): ProjectGraph {
   return next;
 }
 
+export function updateTasks(graph: ProjectGraph, tasks: readonly Task[]): ProjectGraph {
+  const next = structuredClone(graph);
+  const taskById = new Map(next.tasks.map((task, index) => [task.id, index]));
+  for (const task of tasks) {
+    requireCondition(task.projectId === graph.project.id, 'CROSS_PROJECT', '任务不能跨项目引用。');
+    const index = taskById.get(task.id);
+    requireCondition(index !== undefined, 'TASK_REFERENCE', `任务不存在：${task.id}`);
+    next.tasks[index] = structuredClone(task);
+  }
+  validateGraph(next);
+  return next;
+}
+
+export function updateTaskOptions(
+  graph: ProjectGraph,
+  options: Pick<ProjectGraph['project'], 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>,
+): ProjectGraph {
+  const next = structuredClone(graph);
+  const validIds = {
+    status: new Set(options.statusOptions.map(option => option.id)),
+    type: new Set(options.typeOptions.map(option => option.id)),
+    priority: new Set(options.priorityOptions.map(option => option.id)),
+    assignee: new Set(options.assigneeOptions.map(option => option.id)),
+  };
+  Object.assign(next.project, structuredClone(options));
+  for (const task of next.tasks) {
+    if (task.statusOptionId && !validIds.status.has(task.statusOptionId)) task.statusOptionId = null;
+    if (task.typeOptionId && !validIds.type.has(task.typeOptionId)) task.typeOptionId = null;
+    if (task.priorityOptionId && !validIds.priority.has(task.priorityOptionId)) task.priorityOptionId = null;
+    if (task.assigneeId && !validIds.assignee.has(task.assigneeId)) task.assigneeId = null;
+  }
+  reindexTaskLanes(next.tasks);
+  validateGraph(next);
+  return next;
+}
+
 export function deleteTask(graph: ProjectGraph, taskId: string): ProjectGraph {
   validateGraph(graph);
   requireCondition(graph.tasks.some(task => task.id === taskId), 'TASK_REFERENCE', '任务不存在。');
   const next = structuredClone(graph);
   next.tasks = next.tasks.filter(task => task.id !== taskId);
   for (const node of next.nodes) if (node.taskId === taskId) node.taskId = null;
+  reindexTaskLanes(next.tasks);
+  validateGraph(next);
   return next;
 }
 
