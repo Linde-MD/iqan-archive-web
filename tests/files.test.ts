@@ -351,12 +351,16 @@ describe('统一归档根目录 JSON 文件', () => {
   });
 
   it('导出在归档根目录创建唯一 JSON，遇到重名则换名，不覆盖旧备份', async () => {
-    const stamp = '2026-11-06T12-00-00-000Z';
-    const root = writableDirectory('IQAN_Archive', { [`IQAN-项目-${stamp}-first.json`]: 'existing backup' });
-    const ids = ['first', 'second'];
-    const name = await writeJsonBackup(root.handle, '项目', '{"schemaVersion":3}', new Date('2026-11-06T12:00:00.000Z'), () => ids.shift()!);
-    expect(name).toBe(`IQAN-项目-${stamp}-second.json`);
-    expect(root.contents.get(`IQAN-项目-${stamp}-first.json`)).toBe('existing backup');
+    const stamp = '261106-T12-00';
+    const baseName = `IQAN-项目-${stamp}`;
+    const root = writableDirectory('IQAN_Archive', {
+      [`${baseName}.json`]: 'existing backup',
+      [`${baseName}-1.json`]: 'first duplicate',
+    });
+    const name = await writeJsonBackup(root.handle, '项目', '{"schemaVersion":3}', new Date(2026, 10, 6, 12, 0));
+    expect(name).toBe(`${baseName}-2.json`);
+    expect(root.contents.get(`${baseName}.json`)).toBe('existing backup');
+    expect(root.contents.get(`${baseName}-1.json`)).toBe('first duplicate');
     expect(root.contents.get(name)).toBe('{"schemaVersion":3}');
     await expect(writeJsonBackup({ ...root.handle, async queryPermission() { return 'denied'; } }, '项目', '{}'))
       .rejects.toThrow('读写授权已失效');
