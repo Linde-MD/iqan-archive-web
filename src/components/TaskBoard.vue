@@ -3,7 +3,7 @@ import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStart
 import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
-import { moveTaskInBoard, tasksInLane } from '../domain/task-board';
+import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, tasksInLane, type TaskSearchMode } from '../domain/task-board';
 import { createPriorityOption, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { renderMarkdown } from '../utils/markdown';
@@ -34,6 +34,7 @@ const saving = ref(false);
 const error = ref('');
 const statusMessage = ref('');
 const query = ref('');
+const searchMode = ref<TaskSearchMode>('keyword');
 const selectedTaskId = ref('');
 const taskDraft = ref<Task | null>(null);
 const taskDraftRevision = ref(-1);
@@ -73,12 +74,19 @@ const dueDateInput = computed({
 const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ?? []).map(option => [option.id, option.name])));
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeNameById = computed(() => new Map((graph.value?.project.assigneeOptions ?? []).map(option => [option.id, option.name])));
+const taskIdSearch = computed(() => parseTaskIdSearch(query.value));
+const taskIdSearchError = computed(() => searchMode.value === 'id' && taskIdSearch.value.kind === 'invalid'
+  ? taskIdSearch.value.message : '');
 const taskMatches = computed(() => {
   const search = query.value.trim().toLocaleLowerCase();
   return (graph.value?.tasks ?? []).filter(task => {
     if (!search) return true;
-    const assignee = task.assigneeId ? assigneeNameById.value.get(task.assigneeId) ?? '' : '';
-    return `${task.name} ${task.externalTaskId ?? ''} ${assignee}`.toLocaleLowerCase().includes(search);
+    if (searchMode.value === 'id') return matchesTaskIdSearch(task.externalTaskId, taskIdSearch.value);
+    if (searchMode.value === 'assignee') {
+      const assignee = task.assigneeId ? assigneeNameById.value.get(task.assigneeId) ?? '' : '';
+      return assignee.toLocaleLowerCase().includes(search);
+    }
+    return `${task.name} ${task.description}`.toLocaleLowerCase().includes(search);
   });
 });
 const lanes = computed(() => {
@@ -99,6 +107,8 @@ const optionDraftChanged = computed(() => {
   const current = graph.value?.project[optionKey.value] ?? [];
   return JSON.stringify(optionDraft.value) !== JSON.stringify(current);
 });
+
+watch(searchMode, () => { query.value = ''; });
 
 function setTaskDraft(task: Task) {
   taskDraft.value = structuredClone(task);
@@ -591,10 +601,17 @@ onUnmounted(() => {
       </div>
     </header>
     <div v-if="!taskDraft" class="task-board-toolbar">
-      <label class="task-board-search-label" for="task-board-search">搜索任务</label>
-      <input id="task-board-search" v-model="query" type="search" placeholder="任务名、Task ID 或负责人" :disabled="loading" />
+      <label class="task-board-search-label" for="task-board-search-mode">筛选条件</label>
+      <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading" aria-label="任务搜索条件">
+        <option value="id">ID</option>
+        <option value="keyword">关键字</option>
+        <option value="assignee">负责人</option>
+      </select>
+      <input id="task-board-search" v-model="query" type="search" :aria-label="searchMode === 'id' ? 'Task ID 精确值或范围' : searchMode === 'assignee' ? '负责人名称' : '任务关键字'"
+        :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading" />
       <span class="task-board-count">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
     </div>
+    <p v-if="!taskDraft && taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
     <p v-if="!taskDraft && loading" class="task-board-state" role="status">正在读取任务…</p>
     <p v-else-if="!taskDraft && !graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
     <p v-else-if="!taskDraft && !taskMatches.length" class="task-board-state">没有匹配的任务。</p>
@@ -751,6 +768,7 @@ onUnmounted(() => {
 .task-board-detail-header h2 { overflow-wrap: anywhere; }
 .task-board-toolbar { min-width: 0; margin-bottom: 12px; }
 .task-board-search-label { flex: 0 0 auto; margin: 0; }
+.task-board-search-mode { flex: 0 0 132px; min-width: 0; margin: 0; }
 .task-board-toolbar input { flex: 1; min-width: 120px; margin: 0; }
 .task-board-count { color: #afbdd2; font-size: 11px; white-space: nowrap; }
 .task-board-message, .task-board-state { margin: 8px 0; color: #cbd9ed; font-size: 12px; line-height: 1.6; }
@@ -831,7 +849,9 @@ onUnmounted(() => {
   .task-board-header-actions { width: 100%; }
   .task-board-header-actions button { flex: 1; }
   .task-board-toolbar { flex-wrap: wrap; }
-  .task-board-search-label { width: 100%; }
+  .task-board-search-label { flex: 0 0 auto; }
+  .task-board-search-mode { flex: 1 1 110px; }
+  .task-board-toolbar input { flex: 1 1 100%; order: 2; }
   .task-board-count { margin-left: auto; }
 }
 </style>

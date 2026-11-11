@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
-import { moveTaskInBoard, tasksInLane } from '../src/domain/task-board';
+import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, tasksInLane } from '../src/domain/task-board';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
 function fixture() {
@@ -19,6 +19,24 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('按 Task ID 精确值或含端点的数字范围筛选，支持 16 位 ID', () => {
+    const exact = parseTaskIdSearch('0007');
+    expect(matchesTaskIdSearch('0007', exact)).toBe(true);
+    expect(matchesTaskIdSearch('7', exact)).toBe(false);
+
+    const range = parseTaskIdSearch('9007199254740990 - 9007199254740992');
+    expect(range).toEqual({ kind: 'range', start: '9007199254740990', end: '9007199254740992' });
+    expect(matchesTaskIdSearch('9007199254740991', range)).toBe(true);
+    expect(matchesTaskIdSearch('9007199254740993', range)).toBe(false);
+    expect(matchesTaskIdSearch(null, range)).toBe(false);
+  });
+
+  it('拒绝非法 ID 查询和逆序范围', () => {
+    expect(parseTaskIdSearch('12345678901234567')).toMatchObject({ kind: 'invalid' });
+    expect(parseTaskIdSearch('200-100')).toMatchObject({ kind: 'invalid', message: 'ID 范围的起始值不能大于结束值。' });
+    expect(matchesTaskIdSearch('150', parseTaskIdSearch('200-100'))).toBe(false);
+  });
+
   it('拒绝无效的 priority 感叹号数量和颜色', () => {
     const graph = createProject('优先级测试', '1479');
     graph.project.priorityOptions[0]!.indicatorCount = 0;
