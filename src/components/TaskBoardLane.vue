@@ -72,13 +72,13 @@ function move(index: number, offset: -1 | 1) {
 <style scoped>
 .task-lane {
   display: flex; flex: 0 0 280px; flex-direction: column; min-width: 260px; max-width: 320px;
-  min-height: 340px; border: 1px solid #35445c; border-radius: 8px; background: #101a2a;
+  min-height: 0; height: 100%; border: 1px solid #35445c; border-radius: 8px; background: #101a2a;
 }
 .task-lane.is-drop-target { border-color: #82bfff; box-shadow: inset 0 0 0 2px #60a5fa55; }
-.task-lane-heading { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 10px; border-bottom: 1px solid #35445c; border-radius: 8px 8px 0 0; background: #17243a; }
+.task-lane-heading { display: flex; flex: 0 0 48px; align-items: center; gap: 8px; min-height: 48px; padding: 8px 10px; border-bottom: 1px solid #35445c; border-radius: 8px 8px 0 0; background: #17243a; }
 .task-lane-heading h3 { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .task-lane-count { display: grid; flex: 0 0 24px; place-items: center; width: 24px; height: 24px; border: 1px solid #40516a; border-radius: 50%; color: #c1d0e4; font-size: 10px; font-variant-numeric: tabular-nums; }
-.task-lane-list { display: grid; align-content: start; gap: 8px; flex: 1; min-height: 0; padding: 8px; }
+.task-lane-list { display: grid; align-content: start; gap: 8px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding: 8px; }
 .task-lane-empty { display: grid; place-items: center; align-content: center; gap: 8px; min-height: 120px; color: #afbdd2; font-size: 12px; text-align: center; }
 .task-lane-empty button { min-height: 44px; }
 </style>

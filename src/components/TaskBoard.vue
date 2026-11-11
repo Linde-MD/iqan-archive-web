@@ -757,8 +757,8 @@ onUnmounted(() => {
 .task-board-message { padding: 9px 11px; border: 1px solid #35445c; border-radius: 6px; background: #101a2a; }
 .task-board-message.is-error { border-color: #9c4a55; background: #2a1820; color: #ffd1d5; }
 .task-board-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
-.task-board-scroll { display: block; min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-gutter: stable; }
-.task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; padding: 2px 2px 10px; }
+.task-board-scroll { display: block; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; height: clamp(320px, calc(100dvh - 260px), 680px); padding: 2px 2px 10px; }
 .task-detail-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); grid-template-rows: auto auto; gap: 0 24px; min-width: 0; padding-top: 14px; border-top: 1px solid #35445c; }
 .task-detail-view > .task-board-message { grid-column: 1 / -1; }
 .task-detail-form { min-width: 0; }
