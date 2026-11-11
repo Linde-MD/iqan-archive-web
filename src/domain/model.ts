@@ -11,8 +11,8 @@ export const DEFAULT_PRIORITY_PRESENTATIONS = [
   { name: '最高', indicatorCount: 3, indicatorColor: '#f05252' },
   { name: '较高', indicatorCount: 2, indicatorColor: '#f27ba5' },
   { name: '普通', indicatorCount: 2, indicatorColor: '#eabf35' },
-  { name: '最低', indicatorCount: 1, indicatorColor: '#20bfa9' },
   { name: '较低', indicatorCount: 1, indicatorColor: '#35b8ed' },
+  { name: '最低', indicatorCount: 1, indicatorColor: '#20bfa9' },
 ] as const;
 
 export function createDefaultPriorityOptions(): TaskOption[] {
@@ -24,16 +24,28 @@ export function createPriorityOption(name: string, index: number): TaskOption {
   return { id: crypto.randomUUID(), name, indicatorCount: presentation.indicatorCount, indicatorColor: presentation.indicatorColor };
 }
 
+export function orderPriorityOptions(options: readonly TaskOption[]): TaskOption[] {
+  const result = [...options];
+  const lowestIndex = result.findIndex(option => option.name === '最低');
+  const lowerIndex = result.findIndex(option => option.name === '较低');
+  if (lowestIndex >= 0 && lowerIndex >= 0 && lowestIndex < lowerIndex) {
+    const [lowest] = result.splice(lowestIndex, 1);
+    const updatedLowerIndex = result.findIndex(option => option.name === '较低');
+    result.splice(updatedLowerIndex + 1, 0, lowest!);
+  }
+  return result;
+}
+
 export function migratePriorityOptions(options: readonly TaskOption[]): TaskOption[] {
   if (!options.length) return createDefaultPriorityOptions();
-  return options.map((option, index) => {
+  return orderPriorityOptions(options.map((option, index) => {
     const presentation = DEFAULT_PRIORITY_PRESENTATIONS[index % DEFAULT_PRIORITY_PRESENTATIONS.length]!;
     return {
       ...option,
       indicatorCount: option.indicatorCount ?? presentation.indicatorCount,
       indicatorColor: option.indicatorColor ?? presentation.indicatorColor,
     };
-  });
+  }));
 }
 
 export interface TaskComment {

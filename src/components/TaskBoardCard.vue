@@ -41,7 +41,12 @@ function openFromCard(event: MouseEvent) {
 </script>
 
 <template>
-  <article ref="card" :data-task-card-id="task.id" class="task-card" :class="{ 'is-dragging': isDragging, 'is-drop-target': isDropTarget, 'is-selected': selected }" @click="openFromCard">
+  <article
+    ref="card" :data-task-card-id="task.id" class="task-card"
+    :class="{ 'is-dragging': isDragging, 'is-drop-target': isDropTarget, 'is-selected': selected, 'has-priority': !!priorityName }"
+    :style="priorityName ? { '--priority-edge-color': priorityIndicatorColor ?? '#eabf35', '--priority-edge-width': `${(priorityIndicatorCount ?? 1) + 1}px` } : undefined"
+    @click="openFromCard"
+  >
     <div class="task-card-topline">
       <span class="task-card-status">{{ statusName }}</span>
       <div class="task-card-order-actions">
@@ -55,10 +60,7 @@ function openFromCard(event: MouseEvent) {
     </button>
     <div class="task-card-meta">
       <span v-if="typeName">{{ typeName }}</span>
-      <span v-if="priorityName" class="task-priority-label" :aria-label="`优先级${priorityName}`">
-        <span class="task-priority-indicator" aria-hidden="true" :style="{ color: priorityIndicatorColor ?? undefined }">{{ '!'.repeat(priorityIndicatorCount ?? 1) }}</span>
-        <span>{{ priorityName }}</span>
-      </span>
+      <span v-if="priorityName" class="task-priority-accessible-text">优先级：{{ priorityName }}</span>
       <span v-if="assigneeName">{{ assigneeName }}</span>
       <span v-if="task.startDate || task.dueDate" class="task-date-label">
         {{ task.startDate || '未定' }} – {{ task.dueDate || '未定' }}
@@ -69,9 +71,11 @@ function openFromCard(event: MouseEvent) {
 
 <style scoped>
 .task-card {
-  min-width: 0; padding: 10px; border: 1px solid #35445c; border-radius: 6px;
+  position: relative; min-width: 0; padding: 10px; border: 1px solid #35445c; border-radius: 6px;
   background: #121d2e; box-shadow: 0 2px 6px #02061740; cursor: pointer;
 }
+.task-card.has-priority::before { position: absolute; top: 0; bottom: 0; left: 0; width: var(--priority-edge-width); border-radius: 6px 0 0 6px; background: var(--priority-edge-color); content: ""; pointer-events: none; }
+.task-priority-accessible-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .task-card:hover { border-color: #526a89; background: #17243a; }
 .task-card.is-dragging { opacity: .48; }
 .task-card.is-drop-target { border-color: #8bc3ff; box-shadow: 0 0 0 2px #60a5fa66; }
@@ -86,7 +90,5 @@ function openFromCard(event: MouseEvent) {
 .task-card-title .task-reference-id { flex: 0 0 auto; margin: 0 6px 0 0; }
 .task-card-meta { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
 .task-card-meta > span { max-width: 100%; padding: 2px 6px; border: 1px solid #35445c; border-radius: 4px; color: #c1d0e4; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
-.task-card-meta > .task-priority-label { display: inline-flex; align-items: center; gap: 3px; border-color: transparent; padding-left: 0; color: #c1d0e4; }
-.task-priority-indicator { font-weight: 800; }
 .task-card-meta > .task-date-label { width: 100%; border-color: transparent; padding-left: 0; color: #afbdd2; font-variant-numeric: tabular-nums; }
 </style>

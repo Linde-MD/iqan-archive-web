@@ -1,6 +1,6 @@
 # IQAN 工程版本管理工具 SPEC 索引
 
-> 自动关联与 Git Graph 交互修订：允许修改项目零件号；扫描按零件号+完整版本自动关联，登记只创建缺失版本。本地文件独立维护，当前配置快照 schemaVersion 5 不含文件/路径，数据库 v8 保存全局 shared/local `archiveRoots` 与任务看板数据，使用通用 `externalTaskId`。工作台采用深色工程控制台视觉；版本图为固定行高的 Git Graph 纵向历史，支持分支筛选、独立未关联列、滚轮导航、搜索选择父版本和当前会话撤销/重做。图内任务聚合及键盘焦点已验收；任务看板及其 assignee、日期、priority 标记、comment 归 SPEC-07/REQ-036。JSON 默认在共享根目录读写，不自动回退本地根目录；根目录原生授权验收仍未完成。启动器正式站点全流程、异常场景与 LSP-03 安装发行仍待验收。
+> 自动关联与 Git Graph 交互修订：允许修改项目零件号；扫描按零件号+完整版本自动关联，登记只创建缺失版本。本地文件独立维护，当前配置快照 schemaVersion 5 不含文件/路径，数据库 v9 保存全局 shared/local `archiveRoots` 与任务看板数据，使用通用 `externalTaskId`。priority 五档顺序为最高、较高、普通、较低、最低，标记可自定义。工作台采用深色工程控制台视觉；版本图为固定行高的 Git Graph 纵向历史，支持分支筛选、独立未关联列、滚轮导航、搜索选择父版本和当前会话撤销/重做。图内任务聚合及键盘焦点已验收；任务看板及其 assignee、日期、priority 标记、comment 归 SPEC-07/REQ-036。JSON 默认在共享根目录读写，不自动回退本地根目录；根目录原生授权验收仍未完成。启动器正式站点全流程、异常场景与 LSP-03 安装发行仍待验收。
 
 ## 目标与边界
 
@@ -25,7 +25,7 @@
 | Windows 启动器 | C#/.NET 10/WinForms、自包含 Windows 11 x64 内部包已生成；配置、多程序优先级/临时选择、单次确认、取消和执行重验均已实现，用户有安装后界面反馈。 | 正式站点全流程、最新包安装/升级/清理配置、干净 Windows、实际多版本兼容及特殊链接目录安全；公开签名/分发待定。 | DEC-011、DEC-013、DEC-016、DEC-017、DEC-018、Q-016、Q-017 |
 | UI 设计依据 | UI/UX Pro Max `dark-mode-oled` 风格经工程桌面工具适用性筛选；深海军蓝分层工作台、冷蓝操作色、响应式侧栏与图形画布。DESIGN 记录当前 token。 | 不照搬霓虹发光或原 Claude 暖色示例；使用系统中文字体与 Vue/CSS 轻动效。完整键盘/原生目录仍待实机补验。 | DEC-003、REQ-025 |
 | 图形画布 | Git Graph 投影、固定行高版本列表、图命令与撤销/重做、任务关联与图内聚合、分支优先顺序及 SPEC-04 打开/对比入口已实现。 | 独立任务看板及双向跳转归 SPEC-07；其他浏览器验收、窄屏/触屏及 SPEC-04 完整联调待补。 | Q-003、REQ-032/033/035 |
-| 持久化与工程文件 | 当前 Dexie v8、v1 升级检查、项目事务/修订保护、全局 `archiveRoots` 根句柄、schemaVersion 5 项目快照；旧 `directoryBindings` 仅兼容保留；任务编号字段为 `externalTaskId`。 | priority 标记迁移至 v8/schemaVersion 5 已实现；剩余 Pages/原生权限验收。 | DEC-006、DEC-007 |
+| 持久化与工程文件 | 当前 Dexie v9、v1 升级检查、项目事务/修订保护、全局 `archiveRoots` 根句柄、schemaVersion 5 项目快照；旧 `directoryBindings` 仅兼容保留；任务编号字段为 `externalTaskId`。 | priority 标记和排序迁移至 v8/v9/schemaVersion 5 已实现；剩余 Pages/原生权限验收。 | DEC-006、DEC-007 |
 | IQANdesign 参考资料 | 手册印刷页 47–48 的对比参数已核实；本机版本 7.06.22.11482，既有真实打开/比较反馈见 LSP-02。 | 最新流程和实际多版本兼容矩阵待补；`.idsx/.idvx` 不属当前首版必验范围；网页无可靠结果回传。资料目录被忽略，不随仓库分发。 | DEC-010、Q-015 |
 
 ## 需求台账
@@ -61,7 +61,7 @@
 | REQ-019 | 可选 Windows 协议启动器按需打开/对比，不是 HTTP 服务；本机程序与归档根目录独立配置、每次操作确认，网页无可靠结果回传。 | 可选本地能力 | 核心及内部包已实现；安装发行整体验收未关闭 | 第四轮确认表单及原理讨论 | [SPEC-04 AC-03](./SPEC-04-iqandesign-integration.md)、[SPEC-05 AC-01/02/03/04/05](./SPEC-05-windows-launcher.md)、[SPEC-03 AC-10](./SPEC-03-persistence-and-release.md) |
 | REQ-020 | 任务可手工关联外部 Task ID（1–16 位纯数字），同项目内唯一；与内部 `Task.id` 分离，适当展示并持久化/导出恢复。首版不提供外部链接或同步，数据模型不绑定 Loop。 | 核心任务能力 | 领域/存储、编辑/任务列表/选择器/详情已实现；聚合标题与 JSON UI 待实施 | 第五轮确认外部编号；2026-11-03 更新格式及通用命名 | [SPEC-00 AC-06](./SPEC-00-foundation.md)、[SPEC-02 AC-15](./SPEC-02-version-graph.md)、[SPEC-03 AC-11](./SPEC-03-persistence-and-release.md) |
 | REQ-033 | 每项目有独立任务管理看板；卡片支持 Task ID、任务名、Status、Type、Description；Status/Type 选项可增删改，默认按 Status 分列；拖拽及键盘替代可管理任务，图聚合任务与详情版本支持双向跳转。 | 核心任务能力 | 需求及交互规则已确认；实施中 | 用户新增需求及澄清：使用 Vue，Type 初始项按截图可辨内容，删除在用选项确认后清空字段 | [SPEC-07 AC-01–10](./SPEC-07-task-board.md)、[SPEC-03 AC-12](./SPEC-03-persistence-and-release.md) |
-| REQ-036 | 任务支持项目内 assignee、开始/截止日期、五档默认 priority 及可自定义感叹号数量/颜色、可新增/修改/删除的 Markdown comment；按 Dexie v8 / JSON schemaVersion 5 持久化。 | 核心任务能力 | 已确认 | 用户 2026-11-10 新增需求及 2026-11-11 priority 修订 | [SPEC-07 AC-11–13](./SPEC-07-task-board.md)、[SPEC-00](./SPEC-00-foundation.md)、[SPEC-03 AC-12](./SPEC-03-persistence-and-release.md) |
+| REQ-036 | 任务支持项目内 assignee、开始/截止日期、五档默认 priority 及可自定义感叹号数量/颜色、可新增/修改/删除的 Markdown comment；按 Dexie v9 / JSON schemaVersion 5 持久化。 | 核心任务能力 | 已确认 | 用户 2026-11-10 新增需求及 2026-11-11 priority 修订 | [SPEC-07 AC-11–13](./SPEC-07-task-board.md)、[SPEC-00](./SPEC-00-foundation.md)、[SPEC-03 AC-12](./SPEC-03-persistence-and-release.md) |
 | REQ-034 | 网页无法读取 Windows 绝对路径；启动 URI 传入 `<项目名>_iqan_project_files` 及扫描相对文件路径，Launcher 用独立配置的归档根目录解析。两边必须指向同一磁盘目录。 | 可选本机能力 | 已实现并有测试；完整站点/文件布局验收待补 | 用户确认以“归档根目录 + 项目工程子目录名”定位文件 | [SPEC-04 第 5 节](./SPEC-04-iqandesign-integration.md)、[SPEC-05 第 2–4 节](./SPEC-05-windows-launcher.md)、[Launcher LSP-01/02](../../iqan-archive-launcher/specs/README.md) |
 
 ## 决策与假设
@@ -145,9 +145,9 @@
 | [SPEC-06 文档关联后续迭代](./SPEC-06-document-associations.md) | 独立列表/搜索、扫描匹配版本、图节点文档入口、多份选择及 Word 打开。 | 增强 | SPEC-01 全局根/项目子目录、SPEC-02 图投影、SPEC-05 文档 v2、Launcher LSP-04 | 可实施 | 列表和受限打开已实现；匹配/节点入口正在实施 | 真实目录/Word 全链路；未来持久化关联另确认 |
 | [SPEC-07 项目任务看板](./SPEC-07-task-board.md) | 独立看板、Task ID/Status/Type/Description、assignee/日期/priority/comments、选项维护、拖拽及图节点双向跳转。 | 核心 | SPEC-00 任务/事务契约、SPEC-02 任务图投影、SPEC-03 schema v4 契约；不依赖 JSON UI 完成 | 可实施 | 进行中（领域/存储/快照及界面已实现，验收进行中） | 浏览器验收与全量回归待完成 |
 
-推荐：SPEC-00 基础已完成；SPEC-07 按 Dexie v8 / schemaVersion 5 契约实施，不依赖 SPEC-03 完整 JSON UI。SPEC-01 原生目录实机验收和 SPEC-02 其余交互验收可并行推进；SPEC-06 是首版后增强，非首版依赖。
+推荐：SPEC-00 基础已完成；SPEC-07 按 Dexie v9 / schemaVersion 5 契约实施，不依赖 SPEC-03 完整 JSON UI。SPEC-01 原生目录实机验收和 SPEC-02 其余交互验收可并行推进；SPEC-06 是首版后增强，非首版依赖。
 
-执行入口：`npm run dev` 启动，`npm test`、`npm run typecheck`、`npm run build` 验证，`npm run preview` 预览；Windows 可用 `npm.cmd`。当前数据库 v8、JSON schemaVersion 5。保留 v1 升级检查/回滚，旧文件表已移除、旧目录绑定表仅兼容保留；任务使用 `externalTaskId` 且不兼容旧字段。输入限额为 20 MiB / 100,000 个图、任务选项和评论实体；本机存储不是永久备份。
+执行入口：`npm run dev` 启动，`npm test`、`npm run typecheck`、`npm run build` 验证，`npm run preview` 预览；Windows 可用 `npm.cmd`。当前数据库 v9、JSON schemaVersion 5。保留 v1 升级检查/回滚，旧文件表已移除、旧目录绑定表仅兼容保留；任务使用 `externalTaskId` 且不兼容旧字段。输入限额为 20 MiB / 100,000 个图、任务选项和评论实体；本机存储不是永久备份。
 
 交付分层：先发布不依赖启动器的 Web 核心；SPEC-05 在共享协议定稿后独立开发并以真实 IQANdesign 验证；最后从 GitHub Pages 正式 HTTPS 地址验证协议激活及有/无安装、拒绝/被阻止场景。后两项是本机集成验收的前置，不是核心 Web 发布依赖。
 

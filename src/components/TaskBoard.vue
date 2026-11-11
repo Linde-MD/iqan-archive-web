@@ -19,10 +19,13 @@ const props = defineProps<{
   projectId: string;
   projectName: string;
   focusTaskId: string | null;
+  detailTaskId: string;
+  optionsOpen: boolean;
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
   graph: [nodeId: string];
+  navigateChild: [child: string[], action?: 'push' | 'replace' | 'back'];
 }>();
 
 const graph = shallowRef<ProjectGraph>();
@@ -114,11 +117,12 @@ function switchTask(taskId: string) {
   const task = graph.value?.tasks.find(candidate => candidate.id === taskId);
   if (task) {
     setTaskDraft(task);
+    emit('navigateChild', ['detail', taskId]);
     void nextTick(() => document.getElementById('task-detail-page-title')?.focus({ preventScroll: true }));
   }
 }
 
-function createTask(statusOptionId?: string | null) {
+function createTask(statusOptionId?: string | null, updateRoute = true) {
   if (hasUnsavedTaskChanges.value && !window.confirm('当前任务修改尚未保存。放弃修改并新建任务吗？')) return;
   const current = graph.value;
   if (!current) return;
@@ -137,6 +141,7 @@ function createTask(statusOptionId?: string | null) {
   editingCommentId.value = null;
   commentText.value = '';
   commentTextBaseline.value = '';
+  if (updateRoute) emit('navigateChild', ['new']);
   void nextTick(() => document.getElementById('task-board-name')?.focus());
 }
 
@@ -186,7 +191,10 @@ async function submitTask() {
     error.value = '请先保存或取消未完成的评论，再保存任务。';
     return;
   }
-  await saveTask(taskDraft.value, '任务已保存。');
+  const isNew = !taskDraft.value.id;
+  if (await saveTask(taskDraft.value, '任务已保存。') && isNew && taskDraft.value?.id) {
+    emit('navigateChild', ['detail', taskDraft.value.id], 'replace');
+  }
 }
 
 async function deleteCurrentTask() {
@@ -200,6 +208,7 @@ async function deleteCurrentTask() {
     taskDraftRevision.value = -1;
     taskDraftBaseline.value = '';
     selectedTaskId.value = '';
+    emit('navigateChild', [], 'replace');
     statusMessage.value = '任务已删除；关联版本已解除任务关联。';
     error.value = '';
   } catch (cause) {
@@ -301,7 +310,7 @@ async function onDragEnd(event: DragEndEvent) {
   await persistMove(sourceTaskId, targetStatusOptionId, beforeTaskId);
 }
 
-function openOptions() {
+function openOptions(updateRoute = true) {
   const current = graph.value;
   if (!current) return;
   optionKind.value = 'status';
@@ -309,7 +318,8 @@ function openOptions() {
   optionDraftRevision.value = current.project.revision;
   optionNameDrafts.value = { status: '', type: '', priority: '', assignee: '' };
   optionName.value = '';
-  optionsDialog.value?.showModal();
+  if (!optionsDialog.value?.open) optionsDialog.value?.showModal();
+  if (updateRoute) emit('navigateChild', ['options']);
 }
 
 function selectOptionKind(kind: OptionKind) {
@@ -329,6 +339,7 @@ function closeOptions() {
   if ((optionDraftChanged.value || pendingName)
     && !window.confirm('放弃尚未保存的选项修改吗？')) return;
   optionsDialog.value?.close();
+  emit('navigateChild', [], 'back');
 }
 
 function addOption() {
@@ -408,12 +419,68 @@ function closeTaskDetails() {
   taskDraft.value = null;
   taskDraftRevision.value = -1;
   taskDraftBaseline.value = '';
+  emit('navigateChild', [], 'back');
   void nextTick(() => {
     const card = [...document.querySelectorAll<HTMLElement>('[data-task-card-id]')]
       .find(element => element.dataset.taskCardId === taskId);
     card?.querySelector<HTMLButtonElement>('.task-card-title')?.focus({ preventScroll: true });
   });
 }
+
+watch([graph, () => props.detailTaskId], async ([current, detailId]) => {
+  if (!current) return;
+  if (detailId === 'new') {
+    if (!taskDraft.value || taskDraft.value.id) createTask(undefined, false);
+    return;
+  }
+  if (detailId) {
+    const task = current.tasks.find(candidate => candidate.id === detailId);
+    if (!task) {
+      emit('navigateChild', [], 'replace');
+      reportError(new Error('此任务不存在或已删除。'));
+      return;
+    }
+    if (taskDraft.value?.id !== task.id) {
+      if (hasUnsavedTaskChanges.value
+        && !window.confirm('当前任务修改尚未保存。放弃修改并打开此任务吗？')) {
+        emit('navigateChild', taskDraft.value?.id ? ['detail', taskDraft.value.id] : ['new'], 'replace');
+        return;
+      }
+      setTaskDraft(task);
+    }
+    await nextTick();
+    document.getElementById('task-detail-page-title')?.focus({ preventScroll: true });
+    return;
+  }
+  if (taskDraft.value) {
+    if (hasUnsavedTaskChanges.value && !window.confirm('当前任务修改尚未保存。放弃修改并返回任务看板吗？')) {
+      emit('navigateChild', taskDraft.value.id ? ['detail', taskDraft.value.id] : ['new'], 'replace');
+      return;
+    }
+    taskDraft.value = null;
+    taskDraftRevision.value = -1;
+    taskDraftBaseline.value = '';
+  }
+});
+
+watch([() => props.optionsOpen, graph], async ([open, current]) => {
+  if (open) {
+    if (!current) return;
+    if (!optionsDialog.value?.open) {
+      await nextTick();
+      if (!optionsDialog.value?.open) openOptions(false);
+    }
+    return;
+  }
+  if (!optionsDialog.value?.open) return;
+  const pendingName = optionName.value.trim() || Object.values(optionNameDrafts.value).some(name => name.trim());
+  if ((optionDraftChanged.value || pendingName)
+    && !window.confirm('放弃尚未保存的选项修改吗？')) {
+    emit('navigateChild', ['options'], 'replace');
+    return;
+  }
+  optionsDialog.value.close();
+}, { immediate: true });
 
 function beginEditComment(comment: TaskComment) {
   editingCommentId.value = comment.id;
@@ -512,7 +579,7 @@ onUnmounted(() => {
         <h2 id="task-board-title">{{ projectName }} · 任务看板</h2>
       </div>
       <div class="task-board-header-actions">
-        <button type="button" class="secondary" :disabled="loading || saving || hasUnsavedTaskChanges" @click="openOptions"><AppIcon name="edit" />管理选项</button>
+        <button type="button" class="secondary" :disabled="loading || saving || hasUnsavedTaskChanges" @click="openOptions()"><AppIcon name="edit" />管理选项</button>
         <button type="button" :disabled="loading || saving" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository } from './storage/database';
 import type { Project, ProjectGraph } from './domain/model';
@@ -13,9 +14,13 @@ import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { JSON_BACKUP_LOCATION, listJsonBackups, writeJsonBackup } from './files/archive-json';
+import { parseWorkspaceLocation, projectOverlayPath, projectPath, type ProjectView } from './workspace-routes';
 
 const db = new ArchiveDatabase();
 const repository = new ArchiveRepository(db);
+const route = useRoute();
+const router = useRouter();
+let lastRouteFullPath = route.fullPath;
 const projects = ref<Project[]>([]);
 const name = ref('');
 const partNumber = ref('');
@@ -44,7 +49,10 @@ const graphBusy = ref(false);
 const taskBoardBusy = ref(false);
 const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
 const taskBoardTargetId = ref('');
+const taskBoardDetailId = ref('');
+const taskBoardOptionsOpen = ref(false);
 const focusNodeId = ref('');
+const graphPanelRoute = ref<string[]>([]);
 const versionOrder = ref<VersionOrder>('newest');
 const backupMenu = ref<HTMLDetailsElement | null>(null);
 const backupMenuTrigger = ref<HTMLElement | null>(null);
@@ -68,20 +76,124 @@ function showError(cause: unknown) {
 }
 
 function openTaskBoard(taskId = '') {
-  taskBoardTargetId.value = taskId;
-  view.value = 'tasks';
+  if (!activeProjectId.value) return;
+  void router.push(taskId
+    ? { path: projectPath(activeProjectId.value, 'tasks'), query: { focus: taskId } }
+    : projectPath(activeProjectId.value, 'tasks'));
 }
 
 function openVersionFromTaskBoard(nodeId: string) {
-  focusNodeId.value = nodeId;
-  view.value = 'graph';
+  if (!activeProjectId.value) return;
+  void router.push(projectPath(activeProjectId.value, 'graph', 'node', nodeId));
 }
 
 function openProjectGraph(projectId: string) {
-  activeProjectId.value = projectId;
-  focusNodeId.value = '';
-  view.value = 'graph';
+  void router.push(projectPath(projectId, 'graph'));
 }
+
+function navigateProject(projectId: string, nextView: ProjectView) {
+  void router.push(projectPath(projectId, nextView));
+}
+
+function openProjectTaskBoard(projectId: string) {
+  void router.push(projectPath(projectId, 'tasks'));
+}
+
+function navigateTaskBoardChild(child: string[], action: 'push' | 'replace' | 'back' = 'push') {
+  if (!activeProjectId.value) return;
+  if (action === 'back') {
+    const previous = window.history.state?.back;
+    if (typeof previous === 'string' && previous.includes(`/projects/${encodeURIComponent(activeProjectId.value)}/tasks`)) {
+      void router.back();
+    } else {
+      void router.replace(projectPath(activeProjectId.value, 'tasks'));
+    }
+    return;
+  }
+  const target = projectPath(activeProjectId.value, 'tasks', ...child);
+  void router[action](target);
+}
+
+function navigateGraphPanel(child: string[], action: 'push' | 'replace' | 'back' = 'push') {
+  if (!activeProjectId.value) return;
+  const basePath = projectPath(activeProjectId.value, 'graph');
+  if (action === 'back') {
+    const previous = window.history.state?.back;
+    if (typeof previous === 'string' && previous.includes(`${basePath}/panel`)) void router.back();
+    else void router.replace(basePath);
+    return;
+  }
+  const target = projectPath(activeProjectId.value, 'graph', ...(child.length ? ['panel', ...child] : []));
+  void router[action](target);
+}
+
+function closeProjectOverlay() {
+  if (!activeProjectId.value) return;
+  const parentPath = projectPath(activeProjectId.value, view.value);
+  const previous = window.history.state?.back;
+  if (typeof previous === 'string' && previous.includes(`/projects/${encodeURIComponent(activeProjectId.value)}/`)) void router.back();
+  else void router.replace(parentPath);
+}
+
+watch([() => route.fullPath, projects, loading], async ([fullPath]) => {
+  const location = parseWorkspaceLocation(route.path);
+  if (fullPath !== lastRouteFullPath && editingProject.value
+    && editedPartNumber.value !== editingProject.value.partNumber
+    && !(location.projectId === editingProject.value.id && location.overlay === 'edit')
+    && !window.confirm('零件号修改尚未保存。放弃修改并切换路由吗？')) {
+    void router.replace(lastRouteFullPath);
+    return;
+  }
+  lastRouteFullPath = fullPath;
+  if (!location.projectId) {
+    activeProjectId.value = '';
+    view.value = 'files';
+    taskBoardTargetId.value = '';
+    taskBoardDetailId.value = '';
+    taskBoardOptionsOpen.value = false;
+    focusNodeId.value = '';
+    graphPanelRoute.value = [];
+    editingProject.value = null;
+    deletion.value = null;
+    return;
+  }
+  if (loading.value) return;
+  const project = projects.value.find(item => item.id === location.projectId);
+  if (!project) {
+    void router.replace('/');
+    return;
+  }
+  activeProjectId.value = project.id;
+  view.value = location.view;
+  taskBoardTargetId.value = location.view === 'tasks' && typeof route.query.focus === 'string' ? route.query.focus : '';
+  taskBoardDetailId.value = location.view === 'tasks'
+    ? location.child[0] === 'detail' ? location.child[1] ?? '' : location.child[0] === 'new' ? 'new' : ''
+    : '';
+  taskBoardOptionsOpen.value = location.view === 'tasks' && location.child[0] === 'options';
+  focusNodeId.value = location.view === 'graph' && location.child[0] === 'node' ? location.child[1] ?? '' : '';
+  graphPanelRoute.value = location.view === 'graph' && location.child[0] === 'panel' ? location.child.slice(1) : [];
+  if (location.overlay === 'edit') {
+    if (editingProject.value?.id !== project.id || editedPartNumber.value === editingProject.value.partNumber) {
+      editingProject.value = { ...project };
+      editedPartNumber.value = project.partNumber;
+    }
+    deletion.value = null;
+  } else if (location.overlay === 'delete') {
+    editingProject.value = null;
+    if (deletion.value?.project.id !== project.id) {
+      try {
+        deletion.value = await repository.get(project.id);
+        confirmedProjectName.value = '';
+      } catch (cause) {
+        showError(cause);
+        void router.replace(projectPath(project.id, location.view));
+      }
+    }
+  } else {
+    editingProject.value = null;
+    deletion.value = null;
+  }
+}, { immediate: true });
 
 async function watchProjects() {
   const attempt = ++loadAttempt;
@@ -127,9 +239,7 @@ async function addProject() {
 }
 
 async function editPartNumber(project: Project) {
-  deletion.value = null;
-  editingProject.value = { ...project };
-  editedPartNumber.value = project.partNumber;
+  void router.push(projectOverlayPath(project.id, view.value, 'edit'));
   error.value = ''; status.value = '';
   await nextTick();
   editInput.value?.focus();
@@ -139,18 +249,8 @@ async function editPartNumber(project: Project) {
 async function previewProjectDeletion() {
   const project = editingProject.value;
   if (!project) return;
-  saving.value = true; error.value = ''; status.value = '';
-  try {
-    deletion.value = await repository.get(project.id);
-    confirmedProjectName.value = '';
-    saving.value = false;
-    await nextTick();
-    deleteInput.value?.focus();
-  } catch (cause) {
-    showError(cause);
-  } finally {
-    saving.value = false;
-  }
+  error.value = ''; status.value = '';
+  void router.push(projectOverlayPath(project.id, view.value, 'delete'));
 }
 
 async function deleteProject() {
@@ -159,7 +259,7 @@ async function deleteProject() {
   saving.value = true; error.value = ''; status.value = '';
   try {
     await repository.deleteProject(target.project.id, target.project.revision, confirmedProjectName.value);
-    if (activeProjectId.value === target.project.id) activeProjectId.value = '';
+    if (activeProjectId.value === target.project.id) void router.replace('/');
     editingProject.value = null; deletion.value = null;
     status.value = `项目“${target.project.name}”及其浏览器配置已删除；磁盘文件未删除，其他项目未改变。`;
   } catch (cause) {
@@ -180,6 +280,7 @@ async function savePartNumber() {
   try {
     await repository.setPartNumber(project.id, project.revision, editedPartNumber.value);
     editingProject.value = null;
+    closeProjectOverlay();
     status.value = '零件号已保存，版本图与统一归档根目录授权未改变。请重新扫描工程子目录；原磁盘文件未改名。';
   } catch (cause) {
     showError(cause);
@@ -277,8 +378,7 @@ async function confirmImport() {
     importPreview.value = null;
     projectsCollapsed.value = false;
     if (!activeProjectId.value) {
-      activeProjectId.value = result.graph.project.id;
-      view.value = 'files';
+      void router.push(projectPath(result.graph.project.id, 'files'));
     }
     status.value = result.copied
       ? `配置已作为“${result.graph.project.name}”的独立副本导入；内部身份已重新生成。请从当前归档根目录扫描项目子目录。`
@@ -315,7 +415,7 @@ onUnmounted(() => {
 <template>
   <a class="skip-link" href="#workspace">跳至工作区</a>
   <header class="topbar">
-    <a class="brand" href="#" aria-label="IQAN Archive 首页">
+    <a class="brand" href="#" aria-label="IQAN Archive 首页" @click.prevent="router.push('/')">
       <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
         <path d="M8 5v22M8 10h10a6 6 0 0 1 6 6v11" fill="none" stroke="currentColor" stroke-width="2" />
         <circle cx="8" cy="7" r="3" fill="currentColor" />
@@ -410,10 +510,10 @@ onUnmounted(() => {
               <button class="project-part-number" :disabled="saving || workspaceBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
             </div>
             <div class="project-actions">
-              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="activeProjectId = project.id; view = 'files'"><AppIcon name="file" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="navigateProject(project.id, 'files')"><AppIcon name="file" /></button>
               <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`查看 ${project.name} 版本图`" :title="`查看 ${project.name} 版本图`" :aria-pressed="activeProjectId === project.id && view === 'graph'" @click="openProjectGraph(project.id)"><AppIcon name="branch" /></button>
-              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`查看 ${project.name} 软件对比文档`" :title="`查看 ${project.name} 软件对比文档`" :aria-pressed="activeProjectId === project.id && view === 'documents'" @click="activeProjectId = project.id; view = 'documents'"><AppIcon name="documents" /></button>
-              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`打开 ${project.name} 任务看板`" :title="`任务看板：${project.name}`" :aria-pressed="activeProjectId === project.id && view === 'tasks'" @click="activeProjectId = project.id; openTaskBoard()"><AppIcon name="tasks" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`查看 ${project.name} 软件对比文档`" :title="`查看 ${project.name} 软件对比文档`" :aria-pressed="activeProjectId === project.id && view === 'documents'" @click="navigateProject(project.id, 'documents')"><AppIcon name="documents" /></button>
+              <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`打开 ${project.name} 任务看板`" :title="`任务看板：${project.name}`" :aria-pressed="activeProjectId === project.id && view === 'tasks'" @click="openProjectTaskBoard(project.id)"><AppIcon name="tasks" /></button>
             </div>
           </li>
         </TransitionGroup>
@@ -430,7 +530,7 @@ onUnmounted(() => {
             <label for="delete-project-name">输入完整项目名称确认</label>
             <input id="delete-project-name" ref="deleteInput" v-model="confirmedProjectName" :disabled="saving" autocomplete="off" required />
             <button class="danger" :disabled="saving || workspaceBusy || confirmedProjectName !== deletion.project.name"><AppIcon name="trash" />{{ saving ? '正在删除…' : '永久删除项目' }}</button>
-            <button type="button" class="secondary" :disabled="saving" @click="deletion = null">取消删除</button>
+            <button type="button" class="secondary" :disabled="saving" @click="closeProjectOverlay">取消删除</button>
           </form>
         </template>
         <template v-else-if="editingProject">
@@ -442,7 +542,7 @@ onUnmounted(() => {
             <input id="edit-part-number" ref="editInput" v-model="editedPartNumber" required :disabled="saving || workspaceBusy" :aria-invalid="!editedPartNumber.trim()" :aria-describedby="!editedPartNumber.trim() ? 'edit-part-error' : undefined" />
             <p v-if="!editedPartNumber.trim()" id="edit-part-error" class="field-error">请输入非空零件号。</p>
             <button :disabled="saving || workspaceBusy || !editedPartNumber.trim()"><AppIcon name="check" />{{ saving ? '正在保存…' : '保存零件号' }}</button>
-            <button type="button" class="secondary" :disabled="saving" @click="editingProject = null">取消修改</button>
+            <button type="button" class="secondary" :disabled="saving" @click="closeProjectOverlay">取消修改</button>
             <button type="button" class="secondary" :disabled="saving || workspaceBusy" @click="previewProjectDeletion"><AppIcon name="trash" />删除此项目…</button>
           </form>
         </template>
@@ -469,9 +569,9 @@ onUnmounted(() => {
     </div>
 
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" @busy="graphBusy = $event" @documents="view = 'documents'" @task-board="openTaskBoard" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
     <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
-    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" @busy="taskBoardBusy = $event" @graph="openVersionFromTaskBoard" />
+    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" @busy="taskBoardBusy = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">

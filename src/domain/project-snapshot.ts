@@ -1,5 +1,5 @@
 import { validateGraph } from './graph';
-import { DomainError, migratePriorityOptions, normalizeExternalTaskId, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
+import { DomainError, migratePriorityOptions, normalizeExternalTaskId, orderPriorityOptions, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
 
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_SNAPSHOT_ENTITIES = 100_000;
@@ -155,12 +155,13 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
   requireCondition(entityCount <= MAX_SNAPSHOT_ENTITIES, 'SNAPSHOT_ENTITY_LIMIT', `配置实体超过 ${MAX_SNAPSHOT_ENTITIES} 个上限。`);
   const parseOptions = (field: 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'): TaskOption[] => {
     if (field === 'priorityOptions') {
-      return parseItems(project[field], `graph.project.${field}`, ['id', 'name', 'indicatorCount', 'indicatorColor'], (item, index) => ({
+      const options = parseItems(project[field], `graph.project.${field}`, ['id', 'name', 'indicatorCount', 'indicatorColor'], (item, index) => ({
         id: text(item.id, `project option ${index}.id`),
         name: text(item.name, `project option ${index}.name`),
         indicatorCount: safeInteger(item.indicatorCount, `project option ${index}.indicatorCount`),
         indicatorColor: text(item.indicatorColor, `project option ${index}.indicatorColor`),
       }));
+      return orderPriorityOptions(options);
     }
     return parseItems(project[field], `graph.project.${field}`, ['id', 'name'], (item, index) => ({
       id: text(item.id, `project option ${index}.id`),

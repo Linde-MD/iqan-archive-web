@@ -19,9 +19,14 @@ import MarkdownEditor from './MarkdownEditor.vue';
 import { renderMarkdown } from '../utils/markdown';
 import { placeContextMenu } from '../utils/viewport';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string; focusNodeId?: string | null }>();
+const props = defineProps<{ repository: ArchiveRepository; projectId: string; focusNodeId?: string | null; panelRoute?: string[] }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
-const emit = defineEmits<{ busy: [value: boolean]; documents: []; taskBoard: [taskId: string] }>();
+const emit = defineEmits<{
+  busy: [value: boolean];
+  documents: [];
+  taskBoard: [taskId: string];
+  navigatePanel: [panel: string[], action?: 'push' | 'replace' | 'back'];
+}>();
 
 const graph = shallowRef<ProjectGraph>();
 const error = ref('');
@@ -248,6 +253,7 @@ const menuOpenLocationBusy = ref(false);
 let menuOpenLocationController: AbortController | undefined;
 const menuReturnFocus = ref<HTMLElement | null>(null);
 const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'branch-manager' | 'relations' | null>(null);
+const applyingPanelRoute = ref(false);
 const nodeSwitchDialog = ref<HTMLDialogElement>();
 type NodeSwitchSource = 'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit'
   | 'deletion-preview' | 'branch-delete' | 'relation-preview';
@@ -359,6 +365,30 @@ const nodeForm = ref({ version: '', description: '', parentIds: [] as string[], 
 const branchForm = ref({ id: '', name: '', description: '', color: '#2563eb', headId: '' });
 const branchEditRevision = ref(0);
 const editorOpen = computed(() => !!(panel.value || branchDeleteTarget.value || deletionPlan.value));
+
+function editorRouteSegments(): string[] {
+  if (deletionPlan.value) return ['delete', ...deletionPlan.value.nodeIds];
+  if (branchDeleteTarget.value) return ['branch-delete', branchDeleteTarget.value];
+  if (panel.value === 'relations' && relationPreview.value)
+    return ['relations', relationPreview.value.action, ...relationPreview.value.nodeIds];
+  switch (panel.value) {
+    case 'branch-manager': return ['branch-manager'];
+    case 'node-add': return ['node-add', ...nodeForm.value.parentIds];
+    case 'node-edit': return selectedNode.value ? ['node-edit', selectedNode.value.id] : ['node-edit'];
+    case 'parent-edit': return selectedNode.value ? ['parent-edit', selectedNode.value.id] : ['parent-edit'];
+    case 'merge': return ['merge', ...nodeForm.value.parentIds];
+    case 'branch-add': return ['branch-add', branchForm.value.headId];
+    case 'branch-edit': return ['branch-edit', branchForm.value.id];
+    default: return [];
+  }
+}
+
+function syncEditorRoute() {
+  if (applyingPanelRoute.value) return;
+  const next = editorRouteSegments();
+  if (JSON.stringify(next) === JSON.stringify(props.panelRoute ?? [])) return;
+  emit('navigatePanel', next, next.length ? 'push' : 'back');
+}
 const branchMoveDialog = ref<HTMLDialogElement>();
 const draggedBranch = ref<{ branchId: string; headId: string; revision: number } | null>(null);
 const dropTargetId = ref<string | null>(null);
@@ -1056,6 +1086,85 @@ watch(panel, value => {
   branchDeleteTarget.value = null;
   deletionPlan.value = null;
 });
+watch([panel, branchDeleteTarget, deletionPlan, relationPreview], syncEditorRoute, { flush: 'post' });
+
+function restoreEditorRoute(route: readonly string[]): boolean {
+  const [kind, ...ids] = route;
+  if (kind === 'branch-manager') {
+    panel.value = 'branch-manager';
+    return true;
+  }
+  if (kind === 'node-add') {
+    const parents = ids.filter(id => nodeById.value.has(id));
+    openNodeAdd(parents);
+    return parents.length === ids.length;
+  }
+  if (kind === 'node-edit' && ids[0] && nodeById.value.has(ids[0])) {
+    openNodeEditFor(ids[0]);
+    return true;
+  }
+  if (kind === 'parent-edit' && ids[0] && nodeById.value.has(ids[0])) {
+    selectedNodeIds.value = [ids[0]];
+    selectionAnchorId.value = ids[0];
+    openParentEdit();
+    return true;
+  }
+  if (kind === 'merge' && ids.length >= 2 && ids.every(id => nodeById.value.has(id))) {
+    selectedNodeIds.value = ids;
+    openMerge();
+    return true;
+  }
+  if (kind === 'branch-add' && ids[0] && nodeById.value.has(ids[0])) {
+    openBranchAdd(ids[0]);
+    return true;
+  }
+  if (kind === 'branch-edit' && ids[0] && graph.value?.branches.some(branch => branch.id === ids[0])) {
+    openBranchEdit(ids[0]);
+    return true;
+  }
+  if (kind === 'branch-delete' && ids[0] && graph.value?.branches.some(branch => branch.id === ids[0])) {
+    activeBranchId.value = ids[0];
+    openBranchDelete();
+    return true;
+  }
+  if (kind === 'relations' && (ids[0] === 'clear' || ids[0] === 'linear') && ids.slice(1).every(id => nodeById.value.has(id))) {
+    selectedNodeIds.value = ids.slice(1);
+    openRelationPreview(ids[0]);
+    return !!relationPreview.value;
+  }
+  if (kind === 'delete' && ids.length && ids.every(id => nodeById.value.has(id))) {
+    selectedNodeIds.value = ids;
+    openDeletion();
+    return !!deletionPlan.value;
+  }
+  return false;
+}
+
+watch([() => props.panelRoute, graph], async ([route]) => {
+  if (!graph.value) return;
+  const next = route ?? [];
+  if (JSON.stringify(editorRouteSegments()) === JSON.stringify(next)) return;
+  if (editorOpen.value && editorDraftDirty.value
+    && !window.confirm('当前图操作尚未保存。放弃修改并切换路由吗？')) {
+    emit('navigatePanel', editorRouteSegments(), 'replace');
+    return;
+  }
+  applyingPanelRoute.value = true;
+  if (!next.length) {
+    panel.value = null;
+    branchDeleteTarget.value = null;
+    deletionPlan.value = null;
+    relationPreview.value = undefined;
+  } else if (!restoreEditorRoute(next)) {
+    panel.value = null;
+    branchDeleteTarget.value = null;
+    deletionPlan.value = null;
+    relationPreview.value = undefined;
+    emit('navigatePanel', [], 'replace');
+  }
+  await nextTick();
+  applyingPanelRoute.value = false;
+}, { immediate: true, deep: true });
 watch(() => props.projectId, () => {
   pendingBranchMove.value = null;
   endBranchDrag();

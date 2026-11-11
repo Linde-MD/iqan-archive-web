@@ -105,7 +105,7 @@ describe('项目 JSON 快照验证', () => {
       'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
     ]);
     expect(migrated.project.typeOptions).toHaveLength(7);
-    expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '最低', '较低']);
+    expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(migrated.project.assigneeOptions).toEqual([]);
     expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4 和 5');
   });
@@ -133,7 +133,7 @@ describe('项目 JSON 快照验证', () => {
     emptyLegacy.graph.project.priorityOptions = [];
     (emptyLegacy.graph.tasks[0] as { priorityOptionId: string | null }).priorityOptionId = null;
     expect(parseProjectSnapshot(emptyLegacy).project.priorityOptions.map(option => option.name)).toEqual([
-      '最高', '较高', '普通', '最低', '较低',
+      '最高', '较高', '普通', '较低', '最低',
     ]);
   });
 

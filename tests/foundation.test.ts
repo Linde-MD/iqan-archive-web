@@ -45,7 +45,7 @@ describe('领域基础', () => {
 
   it('新项目安装五个带感叹号数量和颜色的默认优先级', () => {
     const options = createProject('优先级工程', '123').project.priorityOptions;
-    expect(options.map(option => option.name)).toEqual(['最高', '较高', '普通', '最低', '较低']);
+    expect(options.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(options.map(option => option.indicatorCount)).toEqual([3, 2, 2, 1, 1]);
     expect(options.every(option => /^#[0-9a-f]{6}$/i.test(option.indicatorColor ?? ''))).toBe(true);
     expect(new Set(options.map(option => option.id)).size).toBe(5);
@@ -342,7 +342,7 @@ describe('Dexie 原子持久化', () => {
 
   it('未知未来 schema 不被 v8 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(9).stores({ projects: 'id' });
+    future.db.version(10).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -351,7 +351,7 @@ describe('Dexie 原子持久化', () => {
     await expect(older.open()).rejects.toThrow('数据库版本超出');
   });
 
-  it('v6 到 v8 迁移安装看板选项和默认 priority 并稳定初始化旧任务字段和顺序', async () => {
+  it('v6 到 v9 迁移安装看板选项和默认 priority 并稳定初始化旧任务字段和顺序', async () => {
     const name = `task-migration-${crypto.randomUUID()}`;
     const legacy = new Dexie(name);
     legacy.version(6).stores({
@@ -386,7 +386,7 @@ describe('Dexie 原子持久化', () => {
       'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
     ]);
     expect(migrated.project.typeOptions).toHaveLength(7);
-    expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '最低', '较低']);
+    expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(migrated.project.priorityOptions[0]).toMatchObject({ indicatorCount: 3, indicatorColor: '#f05252' });
     expect(migrated.project.assigneeOptions).toEqual([]);
     expect([...migrated.tasks].sort((left, right) => left.sortOrder - right.sortOrder).map(task => [
@@ -398,7 +398,7 @@ describe('Dexie 原子持久化', () => {
     ]);
   });
 
-  it('v7 到 v8 迁移保留自定义 priority 名称和 ID 并补齐标记', async () => {
+  it('v7 到 v9 迁移保留自定义 priority 名称和 ID 并补齐标记', async () => {
     const name = `priority-migration-${crypto.randomUUID()}`;
     const legacy = new Dexie(name);
     legacy.version(7).stores({
@@ -424,6 +424,32 @@ describe('Dexie 原子持久化', () => {
     expect(migrated.project.priorityOptions).toEqual([
       { id: 'priority-custom', name: '紧急', indicatorCount: 3, indicatorColor: '#f05252' },
     ]);
+  });
+
+  it('v8 到 v9 将最低放到较低之后并保留优先级 ID', async () => {
+    const name = `priority-order-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(8).stores({
+      projects: 'id',
+      nodes: 'id, projectId, &[projectId+version]',
+      edges: 'id, projectId',
+      branches: 'id, projectId',
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId',
+      archiveRoots: 'id',
+    });
+    await legacy.open();
+    const project = createProject('优先级顺序工程', '001').project;
+    const [highest, higher, normal, lower, lowest] = project.priorityOptions;
+    project.priorityOptions = [highest!, higher!, normal!, lowest!, lower!];
+    await legacy.table('projects').add(project);
+    legacy.close();
+
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    const migrated = await new ArchiveRepository(db).get(project.id);
+    expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
+    expect(migrated.project.priorityOptions.map(option => option.id)).toEqual([highest!.id, higher!.id, normal!.id, lower!.id, lowest!.id]);
   });
 
   it('当前 schema 保存/重开往返，配置快照显式排除额外属性和权限', async () => {
