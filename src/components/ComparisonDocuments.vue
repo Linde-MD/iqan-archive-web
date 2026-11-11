@@ -2,7 +2,8 @@
 import { computed, onUnmounted, ref, shallowRef } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
 import type { ArchiveLocation } from '../domain/model';
-import { mergeDocumentCandidates, type MergedDocumentCandidate } from '../domain/filenames';
+import { mergeDocumentCandidates, orderDocumentCandidates, type MergedDocumentCandidate } from '../domain/filenames';
+import type { VersionOrder } from '../domain/version-order';
 import { buildDocumentCopyUri, buildDocumentOpenUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, sameDirectory, type ArchiveRoots } from '../files/directories';
 import { deleteLocalDocumentCopy, scanDocumentDirectory, scanDocumentLocalDeletion, type DocumentDirectoryScan } from '../files/document-directories';
@@ -11,6 +12,7 @@ import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; archiveRoots: ArchiveRoots }>();
 const emit = defineEmits<{ busy: [value: boolean]; graph: [] }>();
+const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const directoryPanel = ref<InstanceType<typeof DocumentDirectoryPanel>>();
 const sourceStates = shallowRef<DocumentLocationStates>({
   shared: { status: 'idle', message: '尚未扫描', count: 0 },
@@ -38,6 +40,7 @@ const visibleFiles = computed(() => {
   const search = query.value.trim().toLocaleLowerCase();
   return files.value.filter(file => file.relativePath.toLocaleLowerCase().includes(search));
 });
+const sortedVisibleFiles = computed(() => orderDocumentCandidates(visibleFiles.value, versionOrder.value));
 
 function receiveScans(value: DocumentLocationStates) {
   sourceStates.value = value;
@@ -207,7 +210,10 @@ onUnmounted(() => { disposed = true; });
   <section class="panel document-workspace" aria-labelledby="document-title" :aria-busy="busy">
     <div class="section-heading">
       <div><p class="eyebrow">COMPARISON DOCUMENTS</p><h2 id="document-title">软件对比文档</h2></div>
-      <button class="secondary" :disabled="busy" @click="emit('graph')"><AppIcon name="branch" />版本图</button>
+      <div class="document-header-actions">
+        <button type="button" class="tool-button" :disabled="busy" :aria-label="`切换文档版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'"><AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span></button>
+        <button class="secondary" :disabled="busy" @click="emit('graph')"><AppIcon name="branch" />版本图</button>
+      </div>
     </div>
     <DocumentDirectoryPanel ref="directoryPanel" :repository="repository" :project-id="projectId" :project-name="projectName" :archive-roots="archiveRoots"
       :disabled="opening || copying || deleting" @results="receiveScans" @busy="directoryBusy" />
@@ -223,7 +229,7 @@ onUnmounted(() => { disposed = true; });
     <p v-else-if="!visibleFiles.length" class="form-help">{{ files.length ? '没有匹配的文档。' : '两个目录当前没有可显示的文档结果。' }}</p>
     <div v-if="visibleFiles.length" class="document-list-heading" aria-hidden="true"><span></span><span>文档</span><span>来源与操作</span></div>
     <ul v-if="visibleFiles.length" class="document-list" aria-label="软件对比文档列表">
-      <li v-for="file in visibleFiles" :key="file.relativePath" tabindex="0" :aria-label="file.relativePath"
+      <li v-for="file in sortedVisibleFiles" :key="file.relativePath" tabindex="0" :aria-label="file.relativePath"
         @keydown="onRowKeyDown($event, file)">
         <AppIcon name="file" />
         <div class="document-file"><strong>{{ file.fileName }}</strong><span>{{ file.relativePath }}</span></div>
@@ -248,6 +254,7 @@ onUnmounted(() => { disposed = true; });
 
 <style scoped>
 .document-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+.document-header-actions { display: flex; align-items: center; gap: 8px; }
 .document-filters input { flex: 1 1 240px; min-width: 0; }
 .document-filters label { margin: 0; }
 .document-filters span { color: var(--muted); font-variant-numeric: tabular-nums; }

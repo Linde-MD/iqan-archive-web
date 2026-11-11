@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
-import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, mergeDocumentCandidates, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
+import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, mergeDocumentCandidates, orderDocumentCandidates, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -172,6 +172,25 @@ describe('JSON 备份根目录策略', () => {
 });
 
 describe('软件对比文档版本匹配', () => {
+  it('按自然版本顺序切换文档最新在上和最旧在上', () => {
+    const documents = [
+      candidate('14798046800 V1.0-9 20250108软件对比文档.docx'),
+      candidate('14798046800 V1.0-2 20250101软件对比文档.docx'),
+      candidate('14798046800 V1.0-10 20250113软件对比文档.docx'),
+    ];
+
+    expect(orderDocumentCandidates(documents, 'newest').map(file => file.fileName)).toEqual([
+      '14798046800 V1.0-10 20250113软件对比文档.docx',
+      '14798046800 V1.0-9 20250108软件对比文档.docx',
+      '14798046800 V1.0-2 20250101软件对比文档.docx',
+    ]);
+    expect(orderDocumentCandidates(documents, 'oldest').map(file => file.fileName)).toEqual([
+      '14798046800 V1.0-2 20250101软件对比文档.docx',
+      '14798046800 V1.0-9 20250108软件对比文档.docx',
+      '14798046800 V1.0-10 20250113软件对比文档.docx',
+    ]);
+  });
+
   it('按相对路径合并共享和本地扫描结果并标出文件来源', () => {
     expect(mergeDocumentCandidates({
       local: [candidate('本地.docx', 'nested'), candidate('both.doc')],

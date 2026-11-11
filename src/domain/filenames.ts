@@ -1,5 +1,6 @@
 import { DomainError, normalizeVersion, requireCondition, type ArchiveLocation, type ProjectGraph } from './model';
 import { validateGraph, validateTransition } from './graph';
+import { compareVersions, type VersionOrder } from './version-order';
 
 export type EngineeringFileAvailability = 'local' | 'shared' | 'both' | 'none' | 'unknown';
 
@@ -54,6 +55,16 @@ export interface FileCandidate {
 
 export interface MergedDocumentCandidate extends FileCandidate {
   locations: ArchiveLocation[];
+}
+
+export function orderDocumentCandidates<T extends FileCandidate>(files: readonly T[], order: VersionOrder): T[] {
+  return [...files].sort((first, second) => {
+    const versionOrder = compareVersions(first.fileName, second.fileName);
+    if (versionOrder) return order === 'newest' ? -versionOrder : versionOrder;
+    if (first.relativePath < second.relativePath) return -1;
+    if (first.relativePath > second.relativePath) return 1;
+    return 0;
+  });
 }
 
 export function mergeDocumentCandidates(
