@@ -3,6 +3,37 @@ export type ArchiveLocation = 'shared' | 'local';
 export interface TaskOption {
   id: string;
   name: string;
+  indicatorCount?: number;
+  indicatorColor?: string;
+}
+
+export const DEFAULT_PRIORITY_PRESENTATIONS = [
+  { name: '最高', indicatorCount: 3, indicatorColor: '#f05252' },
+  { name: '较高', indicatorCount: 2, indicatorColor: '#f27ba5' },
+  { name: '普通', indicatorCount: 2, indicatorColor: '#eabf35' },
+  { name: '最低', indicatorCount: 1, indicatorColor: '#20bfa9' },
+  { name: '较低', indicatorCount: 1, indicatorColor: '#35b8ed' },
+] as const;
+
+export function createDefaultPriorityOptions(): TaskOption[] {
+  return DEFAULT_PRIORITY_PRESENTATIONS.map(presentation => ({ id: crypto.randomUUID(), ...presentation }));
+}
+
+export function createPriorityOption(name: string, index: number): TaskOption {
+  const presentation = DEFAULT_PRIORITY_PRESENTATIONS[index % DEFAULT_PRIORITY_PRESENTATIONS.length]!;
+  return { id: crypto.randomUUID(), name, indicatorCount: presentation.indicatorCount, indicatorColor: presentation.indicatorColor };
+}
+
+export function migratePriorityOptions(options: readonly TaskOption[]): TaskOption[] {
+  if (!options.length) return createDefaultPriorityOptions();
+  return options.map((option, index) => {
+    const presentation = DEFAULT_PRIORITY_PRESENTATIONS[index % DEFAULT_PRIORITY_PRESENTATIONS.length]!;
+    return {
+      ...option,
+      indicatorCount: option.indicatorCount ?? presentation.indicatorCount,
+      indicatorColor: option.indicatorColor ?? presentation.indicatorColor,
+    };
+  });
 }
 
 export interface TaskComment {
@@ -83,7 +114,7 @@ export interface ProjectGraph {
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 4;
+  schemaVersion: 5;
   graph: Omit<ProjectGraph, 'project' | 'branches'> & {
     project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision' | 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>;
     branches: Array<Omit<Branch, 'order'>>;
@@ -145,7 +176,7 @@ export function createProject(name: string, partNumber: string): ProjectGraph {
       typeOptions: [
         'Project Devel...', 'Series Mainte...', 'Field/After-...', 'CO Support', 'Bug/Issue', 'Technical Imp...', 'Internal',
       ].map(name => ({ id: crypto.randomUUID(), name })),
-      priorityOptions: [],
+      priorityOptions: createDefaultPriorityOptions(),
       assigneeOptions: [],
     },
     nodes: [], edges: [], branches: [], tasks: [],

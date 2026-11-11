@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { DragDropProvider, type DragEndEvent } from '@dnd-kit/vue';
+import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/vue';
 import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { moveTaskInBoard, tasksInLane } from '../domain/task-board';
-import type { Project, ProjectGraph, Task, TaskComment, TaskOption } from '../domain/model';
+import { createPriorityOption, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { renderMarkdown } from '../utils/markdown';
 import AppIcon from './AppIcon.vue';
@@ -47,6 +47,7 @@ const optionDraft = ref<TaskOption[]>([]);
 const optionDraftRevision = ref(-1);
 const dragSaving = ref(false);
 let subscription: { unsubscribe(): void } | undefined;
+let lastDragOverTarget: DragEndEvent['operation']['target'] | null = null;
 
 const taskDraftDirty = computed(() => !!taskDraft.value && JSON.stringify(taskDraft.value) !== taskDraftBaseline.value);
 const commentDraftDirty = computed(() => commentEditorOpen.value && commentText.value !== commentTextBaseline.value);
@@ -67,7 +68,7 @@ const dueDateInput = computed({
 });
 
 const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ?? []).map(option => [option.id, option.name])));
-const priorityNameById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option.name])));
+const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeNameById = computed(() => new Map((graph.value?.project.assigneeOptions ?? []).map(option => [option.id, option.name])));
 const taskMatches = computed(() => {
   const search = query.value.trim().toLocaleLowerCase();
@@ -111,7 +112,10 @@ function switchTask(taskId: string) {
   if (hasUnsavedTaskChanges.value && selectedTaskId.value !== taskId
     && !window.confirm('当前任务修改尚未保存。放弃修改并切换任务吗？')) return;
   const task = graph.value?.tasks.find(candidate => candidate.id === taskId);
-  if (task) setTaskDraft(task);
+  if (task) {
+    setTaskDraft(task);
+    void nextTick(() => document.getElementById('task-detail-page-title')?.focus({ preventScroll: true }));
+  }
 }
 
 function createTask(statusOptionId?: string | null) {
@@ -226,36 +230,72 @@ async function persistMove(taskId: string, statusOptionId: string | null, before
   }
 }
 
+function onDragStart(_event: DragStartEvent) {
+  lastDragOverTarget = null;
+}
+
+function onDragOver(event: DragOverEvent) {
+  const sourceId = event.operation.source ? String(event.operation.source.id) : '';
+  const target = event.operation.target;
+  if (target && String(target.id) !== sourceId) lastDragOverTarget = target;
+}
+
+function statusAtDropPoint(event?: Event): string | null | undefined {
+  if (!(event instanceof MouseEvent)) return undefined;
+  const lane = [...document.querySelectorAll<HTMLElement>('.task-lane')].find(element => {
+    const bounds = element.getBoundingClientRect();
+    return event.clientX >= bounds.left && event.clientX <= bounds.right
+      && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+  });
+  return lane ? lane.dataset.statusOptionId || null : undefined;
+}
+
 async function onDragEnd(event: DragEndEvent) {
-  if (event.canceled || !event.operation.target) return;
   const source = event.operation.source;
-  if (!source) return;
+  let target = event.operation.target;
+  if (event.canceled || !source) {
+    lastDragOverTarget = null;
+    return;
+  }
   const sourceTaskId = String(source.id);
+  if (target && String(target.id) === sourceTaskId && lastDragOverTarget) target = lastDragOverTarget;
+  lastDragOverTarget = null;
+  if (!target) return;
   const sourceTask = graph.value?.tasks.find(task => task.id === sourceTaskId);
   if (!sourceTask) return;
-  const target = event.operation.target;
+  const pointerStatusOptionId = statusAtDropPoint(event.nativeEvent);
   let targetStatusOptionId: string | null;
   let beforeTaskId: string | null = null;
   if (isSortableOperation(event.operation)) {
     const targetTaskId = String(target.id);
     const targetTask = graph.value?.tasks.find(task => task.id === targetTaskId);
     if (!targetTask) return;
-    targetStatusOptionId = targetTask.statusOptionId;
-    const targetLaneIndex = lanes.value.findIndex(lane => lane.status?.id === targetStatusOptionId);
-    const sourceLaneIndex = lanes.value.findIndex(lane => lane.status?.id === sourceTask.statusOptionId);
-    let targetLaneStart = lanes.value.slice(0, targetLaneIndex)
-      .reduce((count, lane) => count + lane.tasks.length, 0);
-    if (sourceLaneIndex >= 0 && sourceLaneIndex < targetLaneIndex) targetLaneStart--;
-    const destination = tasksInLane(graph.value!, targetStatusOptionId).filter(task => task.id !== sourceTaskId);
-    const sourceIndex = (source as typeof source & { index?: number }).index;
-    const insertionIndex = sourceIndex === undefined
-      ? destination.findIndex(task => task.id === targetTaskId)
-      : Math.max(0, Math.min(destination.length, sourceIndex - targetLaneStart));
-    beforeTaskId = destination[insertionIndex]?.id ?? null;
+    const targetData = target.data as { statusOptionId?: unknown } | undefined;
+    if (pointerStatusOptionId !== undefined) targetStatusOptionId = pointerStatusOptionId;
+    else if (targetData && 'statusOptionId' in targetData)
+      targetStatusOptionId = typeof targetData.statusOptionId === 'string' ? targetData.statusOptionId : null;
+    else targetStatusOptionId = targetTask.statusOptionId;
+    if (targetStatusOptionId !== sourceTask.statusOptionId) {
+      beforeTaskId = targetTaskId === sourceTaskId ? null : targetTaskId;
+    } else {
+      const targetLaneIndex = lanes.value.findIndex(lane => lane.status?.id === targetStatusOptionId);
+      const sourceLaneIndex = lanes.value.findIndex(lane => lane.status?.id === sourceTask.statusOptionId);
+      let targetLaneStart = lanes.value.slice(0, targetLaneIndex)
+        .reduce((count, lane) => count + lane.tasks.length, 0);
+      if (sourceLaneIndex >= 0 && sourceLaneIndex < targetLaneIndex) targetLaneStart--;
+      const destination = tasksInLane(graph.value!, targetStatusOptionId).filter(task => task.id !== sourceTaskId);
+      const sourceIndex = (source as typeof source & { index?: number }).index;
+      const insertionIndex = sourceIndex === undefined
+        ? destination.findIndex(task => task.id === targetTaskId)
+        : Math.max(0, Math.min(destination.length, sourceIndex - targetLaneStart));
+      beforeTaskId = destination[insertionIndex]?.id ?? null;
+    }
   } else {
     const data = target.data as { statusOptionId?: unknown } | undefined;
-    if (!data || !('statusOptionId' in data)) return;
-    targetStatusOptionId = typeof data.statusOptionId === 'string' ? data.statusOptionId : null;
+    if (pointerStatusOptionId !== undefined) targetStatusOptionId = pointerStatusOptionId;
+    else if (data && 'statusOptionId' in data)
+      targetStatusOptionId = typeof data.statusOptionId === 'string' ? data.statusOptionId : null;
+    else return;
   }
   if (beforeTaskId === sourceTaskId) return;
   await persistMove(sourceTaskId, targetStatusOptionId, beforeTaskId);
@@ -298,7 +338,9 @@ function addOption() {
     error.value = `${currentOptionLabel.value}名称不能重复。`;
     return;
   }
-  optionDraft.value.push({ id: crypto.randomUUID(), name });
+  optionDraft.value.push(optionKind.value === 'priority'
+    ? createPriorityOption(name, optionDraft.value.length)
+    : { id: crypto.randomUUID(), name });
   optionName.value = '';
   optionNameDrafts.value[optionKind.value] = '';
   error.value = '';
@@ -362,8 +404,15 @@ function beginNewComment() {
 
 function closeTaskDetails() {
   if (hasUnsavedTaskChanges.value && !window.confirm('放弃未保存的任务修改吗？')) return;
+  const taskId = selectedTaskId.value;
   taskDraft.value = null;
-  selectedTaskId.value = '';
+  taskDraftRevision.value = -1;
+  taskDraftBaseline.value = '';
+  void nextTick(() => {
+    const card = [...document.querySelectorAll<HTMLElement>('[data-task-card-id]')]
+      .find(element => element.dataset.taskCardId === taskId);
+    card?.querySelector<HTMLButtonElement>('.task-card-title')?.focus({ preventScroll: true });
+  });
 }
 
 function beginEditComment(comment: TaskComment) {
@@ -417,14 +466,16 @@ function formatTime(value: string): string {
 async function focusRequestedTask() {
   const targetId = props.focusTaskId;
   if (!targetId || !graph.value?.tasks.some(task => task.id === targetId)) return;
-  if (selectedTaskId.value !== targetId) {
-    const task = graph.value.tasks.find(item => item.id === targetId);
-    if (task) setTaskDraft(task);
-  }
+  if (hasUnsavedTaskChanges.value && !window.confirm('当前任务修改尚未保存。放弃修改并返回任务看板吗？')) return;
+  taskDraft.value = null;
+  taskDraftRevision.value = -1;
+  taskDraftBaseline.value = '';
+  selectedTaskId.value = targetId;
   await nextTick();
   const card = [...document.querySelectorAll<HTMLElement>('[data-task-card-id]')]
     .find(element => element.dataset.taskCardId === targetId);
   card?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  card?.querySelector<HTMLButtonElement>('.task-card-title')?.focus({ preventScroll: true });
 }
 
 watch([graph, () => props.focusTaskId], () => { void focusRequestedTask(); }, { flush: 'post' });
@@ -454,8 +505,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="panel task-board" aria-labelledby="task-board-title" :aria-busy="loading || saving">
-    <header class="task-board-header">
+  <section class="panel task-board" :aria-labelledby="taskDraft ? 'task-detail-page-title' : 'task-board-title'" :aria-busy="loading || saving">
+    <header v-if="!taskDraft" class="task-board-header">
       <div>
         <p class="eyebrow">PROJECT TASKS</p>
         <h2 id="task-board-title">{{ projectName }} · 任务看板</h2>
@@ -465,37 +516,41 @@ onUnmounted(() => {
         <button type="button" :disabled="loading || saving" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>
-    <div class="task-board-toolbar">
+    <header v-else class="task-board-detail-header">
+      <button type="button" class="secondary" :disabled="saving" @click="closeTaskDetails"><AppIcon name="chevron-left" />返回任务看板</button>
+      <div>
+        <p class="eyebrow">TASK DETAIL</p>
+        <h2 id="task-detail-page-title" tabindex="-1">{{ taskDraft.name || (taskDraft.id ? '任务详情' : '新建任务') }}</h2>
+      </div>
+    </header>
+    <div v-if="!taskDraft" class="task-board-toolbar">
       <label class="task-board-search-label" for="task-board-search">搜索任务</label>
       <input id="task-board-search" v-model="query" type="search" placeholder="任务名、Task ID 或负责人" :disabled="loading" />
       <span class="task-board-count">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
     </div>
-    <p v-if="loading" class="task-board-state" role="status">正在读取任务…</p>
-    <p v-else-if="!graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
-    <p v-else-if="!taskMatches.length" class="task-board-state">没有匹配的任务。</p>
+    <p v-if="!taskDraft && loading" class="task-board-state" role="status">正在读取任务…</p>
+    <p v-else-if="!taskDraft && !graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
+    <p v-else-if="!taskDraft && !taskMatches.length" class="task-board-state">没有匹配的任务。</p>
     <div v-if="error" class="task-board-message is-error" role="alert">{{ error }}</div>
     <div v-else-if="statusMessage" class="task-board-message" role="status">{{ statusMessage }}</div>
 
-    <div v-if="graph" class="task-board-layout" :class="{ 'has-details': !!taskDraft }">
+    <div v-if="graph && !taskDraft" class="task-board-layout">
       <div class="task-board-scroll">
-        <DragDropProvider @drag-end="onDragEnd">
+        <DragDropProvider @drag-start="onDragStart" @drag-over="onDragOver" @drag-end="onDragEnd">
           <div class="task-board-lanes">
             <TaskBoardLane
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
               :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :task-index-by-id="taskIndexById" :type-name-by-id="typeNameById"
-              :priority-name-by-id="priorityNameById" :assignee-name-by-id="assigneeNameById"
+              :priority-option-by-id="priorityOptionById" :assignee-name-by-id="assigneeNameById"
               :disabled="saving || taskDraftDirty"
               @open-task="switchTask" @add-task="createTask" @move-task="(taskId, beforeId) => persistMove(taskId, lane.status?.id ?? null, beforeId)"
             />
           </div>
         </DragDropProvider>
       </div>
+    </div>
 
-      <aside v-if="taskDraft" class="task-board-details" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-details-title">
-        <header class="task-details-heading">
-          <h3 id="task-details-title">{{ taskDraft.id ? '任务详情' : '新建任务' }}</h3>
-          <button type="button" class="secondary icon-button" aria-label="关闭任务详情" title="关闭任务详情" @click="closeTaskDetails"><AppIcon name="clear" /></button>
-        </header>
+    <section v-if="graph && taskDraft" class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
         <p v-if="taskDraftStale" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
         <form class="task-detail-form" @submit.prevent="submitTask">
           <label for="task-board-name">任务名 <span>必填</span></label>
@@ -515,7 +570,7 @@ onUnmounted(() => {
           <label for="task-board-priority">优先级</label>
           <select id="task-board-priority" v-model="taskDraft.priorityOptionId" :disabled="saving || taskDraftStale">
             <option :value="null">未设置</option>
-            <option v-for="option in graph.project.priorityOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
+            <option v-for="option in graph.project.priorityOptions" :key="option.id" :value="option.id" :style="{ color: option.indicatorColor }">{{ '!'.repeat(option.indicatorCount ?? 1) }} {{ option.name }}</option>
           </select>
                 <label for="task-board-assignee">负责人</label>
           <select id="task-board-assignee" v-model="taskDraft.assigneeId" :disabled="saving || taskDraftStale">
@@ -578,8 +633,7 @@ onUnmounted(() => {
             </div>
           </form>
         </section>
-      </aside>
-    </div>
+    </section>
   </section>
 
   <dialog ref="optionsDialog" class="task-options-dialog" aria-labelledby="task-options-title" @cancel.prevent="closeOptions">
@@ -593,8 +647,16 @@ onUnmounted(() => {
         <div><input id="task-option-name" v-model="optionName" :disabled="saving || optionDraftStale" @keydown.enter.prevent="addOption" /><button type="button" :disabled="saving || optionDraftStale || !optionName.trim()" @click="addOption"><AppIcon name="plus" />添加</button></div>
       </div>
       <ul class="task-option-list">
-        <li v-for="option in optionDraft" :key="option.id">
+        <li v-for="option in optionDraft" :key="option.id" :class="{ 'is-priority': optionKind === 'priority' }">
           <input v-model="option.name" :aria-label="`${currentOptionLabel}名称`" :disabled="saving || optionDraftStale" />
+          <div v-if="optionKind === 'priority'" class="priority-option-controls">
+            <select v-model.number="option.indicatorCount" :aria-label="`${option.name}的感叹号数量`" :disabled="saving || optionDraftStale">
+              <option :value="1">! × 1</option>
+              <option :value="2">! × 2</option>
+              <option :value="3">! × 3</option>
+            </select>
+            <input v-model="option.indicatorColor" type="color" :aria-label="`${option.name}的感叹号颜色`" :disabled="saving || optionDraftStale" />
+          </div>
           <span v-if="taskReferenceCount(option.id)" class="task-option-use-count">{{ taskReferenceCount(option.id) }} 个任务</span>
           <button type="button" class="secondary icon-button" :disabled="saving || optionDraftStale" :aria-label="`删除${currentOptionLabel} ${option.name}`" @click="removeOption(option.id)"><AppIcon name="trash" /></button>
         </li>
@@ -611,11 +673,15 @@ onUnmounted(() => {
 
 <style scoped>
 .task-board { min-width: 0; border-top: 2px solid #3b82f6; padding: 18px; }
-.task-board-header, .task-board-header-actions, .task-board-toolbar, .task-options-heading, .task-options-footer { display: flex; align-items: center; gap: 10px; }
+.task-board-header, .task-board-header-actions, .task-board-toolbar, .task-board-detail-header, .task-options-heading, .task-options-footer { display: flex; align-items: center; gap: 10px; }
 .task-board-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
 .task-board-header h2 { overflow-wrap: anywhere; }
 .task-board-header-actions { flex-wrap: wrap; }
 .task-board-header-actions button { min-height: 44px; }
+.task-board-detail-header { align-items: flex-start; gap: 16px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid #35445c; }
+.task-board-detail-header > button { flex: 0 0 auto; }
+.task-board-detail-header > div { min-width: 0; }
+.task-board-detail-header h2 { overflow-wrap: anywhere; }
 .task-board-toolbar { min-width: 0; margin-bottom: 12px; }
 .task-board-search-label { flex: 0 0 auto; margin: 0; }
 .task-board-toolbar input { flex: 1; min-width: 120px; margin: 0; }
@@ -624,13 +690,14 @@ onUnmounted(() => {
 .task-board-message { padding: 9px 11px; border: 1px solid #35445c; border-radius: 6px; background: #101a2a; }
 .task-board-message.is-error { border-color: #9c4a55; background: #2a1820; color: #ffd1d5; }
 .task-board-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
-.task-board-layout.has-details { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); align-items: start; }
 .task-board-scroll { display: block; min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-gutter: stable; }
 .task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; padding: 2px 2px 10px; }
-.task-board-details { position: sticky; top: 12px; min-width: 0; max-height: min(78vh, 840px); overflow: auto; padding: 12px; border: 1px solid #40516a; border-radius: 8px; background: #121c2d; scrollbar-gutter: stable; }
-.task-details-heading { position: sticky; z-index: 3; top: -12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -12px -12px 10px; padding: 8px 10px 8px 14px; border-bottom: 1px solid #35445c; background: #121c2d; }
-.task-details-heading h3 { margin: 0; }
+.task-detail-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); grid-template-rows: auto auto; gap: 0 24px; min-width: 0; padding-top: 14px; border-top: 1px solid #35445c; }
+.task-detail-view > .task-board-message { grid-column: 1 / -1; }
 .task-detail-form { min-width: 0; }
+.task-detail-view > .task-detail-form { grid-column: 1; grid-row: 1 / span 2; }
+.task-detail-view > .task-related-versions { grid-column: 2; grid-row: 1; }
+.task-detail-view > .task-comments { grid-column: 2; grid-row: 2; }
 .task-detail-form input, .task-detail-form select, .task-detail-form textarea { margin-bottom: 10px; }
 .task-detail-form textarea { width: 100%; min-height: 84px; resize: vertical; }
 .task-date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -673,19 +740,27 @@ onUnmounted(() => {
 .task-option-add button { min-height: 44px; }
 .task-option-list { display: grid; gap: 6px; max-height: 320px; overflow: auto; list-style: none; margin: 0; padding: 0; }
 .task-option-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto 44px; align-items: center; gap: 6px; }
+.task-option-list li.is-priority { grid-template-columns: minmax(0, 1fr) 112px auto 44px; }
 .task-option-list input { min-width: 0; margin: 0; }
+.priority-option-controls { display: flex; align-items: center; gap: 4px; }
+.priority-option-controls select { width: 68px; min-width: 68px; min-height: 40px; margin: 0; padding: 6px; font-size: 11px; }
+.priority-option-controls input[type="color"] { width: 40px; min-width: 40px; height: 40px; min-height: 40px; margin: 0; padding: 4px; }
 .task-option-list .icon-button { min-width: 44px; width: 44px; height: 44px; }
 .task-option-use-count, .task-option-empty { color: #afbdd2; font-size: 11px; }
 .task-option-empty { display: block !important; padding: 12px; text-align: center; }
 .task-options-footer { justify-content: flex-end; padding-top: 8px; border-top: 1px solid #35445c; }
 .task-options-footer button { min-height: 44px; }
 @media (max-width: 1100px) {
-  .task-board-layout.has-details { grid-template-columns: minmax(0, 1fr); }
-  .task-board-details { position: static; width: 100%; max-height: min(65vh, 680px); box-shadow: none; }
+  .task-detail-view { grid-template-columns: minmax(0, 1fr); }
+  .task-detail-view > .task-board-message,
+  .task-detail-view > .task-detail-form,
+  .task-detail-view > .task-related-versions,
+  .task-detail-view > .task-comments { grid-column: 1; grid-row: auto; }
 }
 @media (max-width: 560px) {
   .task-board { padding: 12px; }
   .task-board-header { align-items: flex-start; }
+  .task-board-detail-header { flex-direction: column; }
   .task-board-header-actions { width: 100%; }
   .task-board-header-actions button { flex: 1; }
   .task-board-toolbar { flex-wrap: wrap; }

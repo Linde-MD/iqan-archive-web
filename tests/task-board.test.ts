@@ -19,6 +19,40 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('拒绝无效的 priority 感叹号数量和颜色', () => {
+    const graph = createProject('优先级测试', '1479');
+    graph.project.priorityOptions[0]!.indicatorCount = 0;
+    expect(() => validateGraph(graph)).toThrow('感叹号数量必须为 1–3');
+    graph.project.priorityOptions[0]!.indicatorCount = 2;
+    graph.project.priorityOptions[0]!.indicatorColor = 'red';
+    expect(() => validateGraph(graph)).toThrow('颜色无效');
+  });
+
+  it('priority 名称、感叹号数量和颜色经 revision 事务持久化', async () => {
+    const db = new ArchiveDatabase(`priority-options-${crypto.randomUUID()}`);
+    try {
+      const repo = new ArchiveRepository(db);
+      const graph = await repo.create('优先级选项测试', '1479');
+      const options = graph.project.priorityOptions.map((option, index) => index === 0
+        ? { ...option, name: '紧急', indicatorCount: 1, indicatorColor: '#123456' }
+        : option);
+      const updated = await repo.saveTaskOptions(graph.project.id, graph.project.revision, {
+        statusOptions: graph.project.statusOptions,
+        typeOptions: graph.project.typeOptions,
+        priorityOptions: options,
+        assigneeOptions: graph.project.assigneeOptions,
+      });
+      expect(updated.project.revision).toBe(graph.project.revision + 1);
+      db.close();
+      await db.open();
+      const restored = await repo.get(graph.project.id);
+      expect(restored.project.priorityOptions).toHaveLength(5);
+      expect(restored.project.priorityOptions[0]).toMatchObject({ name: '紧急', indicatorCount: 1, indicatorColor: '#123456' });
+    } finally {
+      await db.delete();
+    }
+  });
+
   it('按泳道和持久顺序列出任务', () => {
     const graph = fixture();
     expect(tasksInLane(graph, graph.project.statusOptions[0]!.id).map(task => task.id)).toEqual(['a', 'b']);
@@ -57,7 +91,7 @@ describe('任务看板顺序变换', () => {
     const graph = fixture();
     const [backlog, pending] = graph.project.statusOptions;
     const assignee = { id: 'person-1', name: '工程师 A' };
-    const priority = { id: 'priority-high', name: '高' };
+    const priority = { id: 'priority-high', name: '高', indicatorCount: 2, indicatorColor: '#f05252' };
     graph.project.assigneeOptions = [assignee];
     graph.project.priorityOptions = [priority];
     graph.tasks[0]!.assigneeId = assignee.id;

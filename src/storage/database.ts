@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import { createProject, normalizeVersion, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
+import { createProject, migratePriorityOptions, normalizeVersion, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
 import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, updateTasks, updateTaskOptions, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
@@ -124,6 +124,12 @@ export class ArchiveDatabase extends Dexie {
             comments: [],
           });
         }
+      }
+    });
+    this.version(8).stores({ projects: 'id' }).upgrade(async transaction => {
+      const projects = transaction.table<Project>('projects');
+      for (const project of await projects.toArray()) {
+        await projects.put({ ...project, priorityOptions: migratePriorityOptions(project.priorityOptions ?? []) });
       }
     });
     this.on('ready', () => {
@@ -349,7 +355,7 @@ export class ArchiveRepository {
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = clean.project;
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       graph: {
         ...clean,
         project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },

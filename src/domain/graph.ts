@@ -28,6 +28,18 @@ export function validateGraph(graph: ProjectGraph): void {
   validateOptions(project.typeOptions, 'Type');
   validateOptions(project.priorityOptions, 'Priority');
   validateOptions(project.assigneeOptions, 'Assignee');
+  for (const option of project.priorityOptions) {
+    requireCondition(
+      Number.isSafeInteger(option.indicatorCount) && option.indicatorCount! >= 1 && option.indicatorCount! <= 3,
+      'TASK_PRIORITY_INDICATOR_COUNT',
+      `Priority ${option.name} 的感叹号数量必须为 1–3。`,
+    );
+    requireCondition(
+      typeof option.indicatorColor === 'string' && /^#[0-9a-f]{6}$/i.test(option.indicatorColor),
+      'TASK_PRIORITY_INDICATOR_COLOR',
+      `Priority ${option.name} 的颜色无效。`,
+    );
+  }
   for (const [label, items] of [
     ['版本', nodes], ['关系', edges], ['分支', branches], ['任务', tasks],
   ] as const) {

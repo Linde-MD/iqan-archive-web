@@ -15,7 +15,7 @@ afterEach(async () => { await Promise.all(databases.splice(0).map(db => db.delet
 function graphFixture(prefix = ''): ProjectGraph {
   const graph = createProject('测试工程', '001');
   const projectId = graph.project.id;
-  graph.project.priorityOptions = [{ id: `${prefix}priority-high`, name: '高' }];
+  graph.project.priorityOptions = [{ id: `${prefix}priority-high`, name: '高', indicatorCount: 3, indicatorColor: '#f05252' }];
   graph.project.assigneeOptions = [{ id: `${prefix}assignee-owner`, name: '负责人' }];
   const releasedAt = '2026-01-01T00:00:00.000Z';
   graph.nodes = [
@@ -50,7 +50,7 @@ function graphFixture(prefix = ''): ProjectGraph {
 
 function snapshot(graph: ProjectGraph): ProjectSnapshot {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     graph: {
       project: {
         id: graph.project.id, name: graph.project.name,
@@ -67,7 +67,7 @@ function snapshot(graph: ProjectGraph): ProjectSnapshot {
 }
 
 describe('项目 JSON 快照验证', () => {
-  it('解析 schemaVersion 4 并往返任务选项、日期和 Markdown 评论', () => {
+  it('解析 schemaVersion 5 并往返任务选项、日期和 Markdown 评论', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));
     expect(parsed).toEqual({
@@ -105,9 +105,36 @@ describe('项目 JSON 快照验证', () => {
       'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
     ]);
     expect(migrated.project.typeOptions).toHaveLength(7);
-    expect(migrated.project.priorityOptions).toEqual([]);
+    expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '最低', '较低']);
     expect(migrated.project.assigneeOptions).toEqual([]);
-    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3 和 4');
+    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4 和 5');
+  });
+
+  it('显式迁移 schemaVersion 4 的优先级名称并补齐标记；空列表安装默认档位', () => {
+    const graph = graphFixture();
+    const current = snapshot(graph);
+    const legacy = {
+      schemaVersion: 4,
+      graph: {
+        ...current.graph,
+        project: {
+          ...current.graph.project,
+          priorityOptions: [{ id: 'legacy-priority', name: '紧急' }],
+        },
+        tasks: current.graph.tasks.map(task => ({ ...task, priorityOptionId: 'legacy-priority' })),
+      },
+    };
+    const migrated = parseProjectSnapshot(legacy);
+    expect(migrated.project.priorityOptions).toEqual([
+      { id: 'legacy-priority', name: '紧急', indicatorCount: 3, indicatorColor: '#f05252' },
+    ]);
+
+    const emptyLegacy = structuredClone(legacy);
+    emptyLegacy.graph.project.priorityOptions = [];
+    (emptyLegacy.graph.tasks[0] as { priorityOptionId: string | null }).priorityOptionId = null;
+    expect(parseProjectSnapshot(emptyLegacy).project.priorityOptions.map(option => option.name)).toEqual([
+      '最高', '较高', '普通', '最低', '较低',
+    ]);
   });
 
   it('以分支数组顺序往返显示优先级，快照不暴露本地排序字段', () => {
@@ -124,7 +151,7 @@ describe('项目 JSON 快照验证', () => {
 
   it('拒绝未知版本、额外字段、错误类型、无效关系及不合法 Task ID', () => {
     const source = snapshot(graphFixture());
-    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3 和 4');
+    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4 和 5');
     expect(() => parseProjectSnapshot({ ...source, executable: 'no' })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, extra: true } })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, nodes: [{ ...source.graph.nodes[0], releasedAt: 12 }] } })).toThrow('文本或 null');
@@ -134,6 +161,12 @@ describe('项目 JSON 快照验证', () => {
     const missingTaskOption = structuredClone(source);
     missingTaskOption.graph.tasks[0]!.priorityOptionId = 'missing-option';
     expect(() => parseProjectSnapshot(missingTaskOption)).toThrow('priority 选项不存在');
+    const invalidPriorityCount = structuredClone(source);
+    invalidPriorityCount.graph.project.priorityOptions[0]!.indicatorCount = 4;
+    expect(() => parseProjectSnapshot(invalidPriorityCount)).toThrow('感叹号数量必须为 1–3');
+    const invalidPriorityColor = structuredClone(source);
+    invalidPriorityColor.graph.project.priorityOptions[0]!.indicatorColor = 'red';
+    expect(() => parseProjectSnapshot(invalidPriorityColor)).toThrow('颜色无效');
     const dangling = structuredClone(source);
     dangling.graph.edges[0]!.parentId = 'missing';
     expect(() => parseProjectSnapshot(dangling)).toThrow('不存在');
@@ -180,6 +213,7 @@ describe('项目 JSON 快照验证', () => {
     expect(second.graph.project.revision).toBe(0);
     expect(second.graph.nodes.map(node => node.id)).not.toContain('node-root');
     expect(second.graph.project.statusOptions.map(option => option.id)).not.toEqual(source.project.statusOptions.map(option => option.id));
+    expect(second.graph.project.priorityOptions[0]).toMatchObject({ indicatorCount: 3, indicatorColor: '#f05252' });
     expect(second.graph.tasks[0]!.statusOptionId).toBe(second.graph.project.statusOptions[0]!.id);
     expect(second.graph.tasks[0]!.comments[0]!.id).not.toBe(source.tasks[0]!.comments[0]!.id);
     expect(second.graph.edges[0]).toMatchObject({

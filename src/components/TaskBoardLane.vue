@@ -10,7 +10,7 @@ const props = defineProps<{
   selectedTaskId: string;
   taskIndexById: ReadonlyMap<string, number>;
   typeNameById: ReadonlyMap<string, string>;
-  priorityNameById: ReadonlyMap<string, string>;
+  priorityOptionById: ReadonlyMap<string, TaskOption>;
   assigneeNameById: ReadonlyMap<string, string>;
   disabled: boolean;
 }>();
@@ -40,6 +40,7 @@ function move(index: number, offset: -1 | 1) {
 <template>
   <section
     ref="lane" class="task-lane" :class="{ 'is-drop-target': isDropTarget }"
+    :data-status-option-id="status?.id ?? ''"
     :aria-label="`${status?.name ?? '未分组'}，${tasks.length} 个任务`"
   >
     <header class="task-lane-heading">
@@ -51,7 +52,9 @@ function move(index: number, offset: -1 | 1) {
         v-for="(task, index) in tasks" :key="task.id" :task="task" :index="taskIndexById.get(task.id) ?? index"
         group="task-board" :status-name="status?.name ?? '未分组'"
         :type-name="task.typeOptionId ? typeNameById.get(task.typeOptionId) ?? null : null"
-        :priority-name="task.priorityOptionId ? priorityNameById.get(task.priorityOptionId) ?? null : null"
+        :priority-name="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.name ?? null : null"
+        :priority-indicator-count="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorCount ?? null : null"
+        :priority-indicator-color="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorColor ?? null : null"
         :assignee-name="task.assigneeId ? assigneeNameById.get(task.assigneeId) ?? null : null"
         :selected="selectedTaskId === task.id"
         :disabled="disabled" :can-move-up="index > 0" :can-move-down="index < tasks.length - 1"

@@ -1,5 +1,5 @@
 import { validateGraph } from './graph';
-import { DomainError, normalizeExternalTaskId, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
+import { DomainError, migratePriorityOptions, normalizeExternalTaskId, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
 
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_SNAPSHOT_ENTITIES = 100_000;
@@ -65,7 +65,7 @@ export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
 
 export function parseProjectSnapshot(value: unknown): ProjectGraph {
   let root = record(value, '快照', ['schemaVersion', 'graph']);
-  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3 和 4 配置文件。');
+  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4 和 5 配置文件。');
   if (root.schemaVersion === 3) {
     const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
     requireCondition(Array.isArray(legacy.tasks), 'SNAPSHOT_TYPE', 'graph.tasks 必须为数组。');
@@ -111,6 +111,26 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       },
     };
   }
+  if (root.schemaVersion === 4) {
+    const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
+    const legacyProject = record(legacy.project, 'graph.project', [
+      'id', 'name', 'partNumber', 'revision', 'statusOptions', 'typeOptions', 'priorityOptions', 'assigneeOptions',
+    ]);
+    const priorityOptions = parseItems(legacyProject.priorityOptions, 'graph.project.priorityOptions', ['id', 'name'], item => ({
+      id: text(item.id, 'priority.id'),
+      name: text(item.name, 'priority.name'),
+    }));
+    root = {
+      schemaVersion: 5,
+      graph: {
+        ...legacy,
+        project: {
+          ...legacyProject,
+          priorityOptions: migratePriorityOptions(priorityOptions),
+        },
+      },
+    };
+  }
   const source = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
   requireCondition(
     Array.isArray(source.nodes) && Array.isArray(source.edges) &&
@@ -133,12 +153,20 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
   const entityCount = source.nodes.length + source.edges.length + source.branches.length + source.tasks.length
     + optionFields.reduce((count, field) => count + (project[field] as unknown[]).length, 0) + commentCount;
   requireCondition(entityCount <= MAX_SNAPSHOT_ENTITIES, 'SNAPSHOT_ENTITY_LIMIT', `配置实体超过 ${MAX_SNAPSHOT_ENTITIES} 个上限。`);
-  const parseOption = (item: JsonRecord, index: number): TaskOption => ({
-    id: text(item.id, `project option ${index}.id`),
-    name: text(item.name, `project option ${index}.name`),
-  });
-  const parseOptions = (field: 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'): TaskOption[] =>
-    parseItems(project[field], `graph.project.${field}`, ['id', 'name'], parseOption);
+  const parseOptions = (field: 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'): TaskOption[] => {
+    if (field === 'priorityOptions') {
+      return parseItems(project[field], `graph.project.${field}`, ['id', 'name', 'indicatorCount', 'indicatorColor'], (item, index) => ({
+        id: text(item.id, `project option ${index}.id`),
+        name: text(item.name, `project option ${index}.name`),
+        indicatorCount: safeInteger(item.indicatorCount, `project option ${index}.indicatorCount`),
+        indicatorColor: text(item.indicatorColor, `project option ${index}.indicatorColor`),
+      }));
+    }
+    return parseItems(project[field], `graph.project.${field}`, ['id', 'name'], (item, index) => ({
+      id: text(item.id, `project option ${index}.id`),
+      name: text(item.name, `project option ${index}.name`),
+    }));
+  };
   const graph: ProjectGraph = {
     project: {
       id: text(project.id, 'graph.project.id'),
