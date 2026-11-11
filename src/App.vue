@@ -75,6 +75,16 @@ function showError(cause: unknown) {
   void nextTick(() => errorHeading.value?.focus());
 }
 
+function receiveArchiveRoots(roots: ArchiveRoots) {
+  console.info('[archive-root]', {
+    event: 'app-roots-received',
+    sharedConfigured: Boolean(roots.shared),
+    localConfigured: Boolean(roots.local),
+  });
+  archiveRoots.value = roots;
+  archiveRootRevision.value++;
+}
+
 function openTaskBoard(taskId = '') {
   if (!activeProjectId.value) return;
   void router.push(taskId
@@ -432,7 +442,7 @@ onUnmounted(() => {
           <button type="button" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="importProjectFromMenu"><AppIcon name="upload" />导入恢复</button>
         </div>
       </details>
-      <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="archiveRoots = $event; archiveRootRevision++" @busy="rootBusy = $event" @error="showError" />
+      <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="receiveArchiveRoots" @busy="rootBusy = $event" @error="showError" />
       <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
     </div>
   </header>

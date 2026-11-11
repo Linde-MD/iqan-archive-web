@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
-import { checkPermission, chooseDirectory, type ArchiveRoots, type DirectoryHandle } from '../files/directories';
+import { checkPermission, chooseDirectory, sameDirectory, type ArchiveRoots } from '../files/directories';
 import { buildArchiveRootOpenUri } from '../domain/iqan-protocol';
 import AppIcon from './AppIcon.vue';
 
@@ -14,17 +14,42 @@ const message = ref('');
 const menu = ref<HTMLDetailsElement>();
 const menuTrigger = ref<HTMLElement>();
 
-async function operation(action: () => Promise<void>) {
+function diagnose(event: string, details: Record<string, unknown> = {}) {
+  console.info('[archive-root]', { event, ...details });
+}
+
+function errorDetails(cause: unknown) {
+  return {
+    errorName: cause instanceof Error ? cause.name : typeof cause,
+    ...(cause instanceof DOMException ? { errorCode: cause.code } : {}),
+    ...(cause instanceof Error && !(cause instanceof DOMException) ? { errorMessage: cause.message.slice(0, 240) } : {}),
+  };
+}
+
+async function operation(actionName: string, action: () => Promise<void>) {
   busy.value = true;
   emit('busy', true);
   message.value = '';
+  diagnose('operation-start', { action: actionName });
   try { await action(); }
-  catch (cause) { emit('error', cause); }
-  finally { busy.value = false; emit('busy', false); }
+  catch (cause) {
+    diagnose('operation-error', { action: actionName, ...errorDetails(cause) });
+    emit('error', cause);
+  }
+  finally {
+    diagnose('operation-end', { action: actionName });
+    busy.value = false;
+    emit('busy', false);
+  }
 }
 
 async function restore() {
-  await operation(async () => {
+  await operation('restore', async () => {
+    diagnose('restore-start', {
+      secureContext: window.isSecureContext,
+      directoryPickerAvailable: typeof window.showDirectoryPicker === 'function',
+      userAgent: navigator.userAgent,
+    });
     const [shared, local] = await Promise.all([
       props.repository.getArchiveRoot('shared'), props.repository.getArchiveRoot('local'),
     ]);
@@ -33,32 +58,67 @@ async function restore() {
       ...(local ? { local } : {}),
     };
     emit('roots', roots.value);
+    const permissionStates: Record<'shared' | 'local', string> = { shared: 'unavailable', local: 'unavailable' };
     for (const location of ['shared', 'local'] as const) {
-      permission.value[location] = roots.value[location]
-        ? await checkPermission(roots.value[location]!, false, 'readwrite') ? '读写已授权' : '需要读写授权'
-        : '未授权';
+      const root = roots.value[location];
+      const state = root ? await root.queryPermission({ mode: 'readwrite' }) : 'unavailable';
+      permissionStates[location] = state;
+      permission.value[location] = state === 'granted' ? '读写已授权' : root ? '需要读写授权' : '未授权';
     }
+    diagnose('restore-result', {
+      sharedConfigured: Boolean(shared), localConfigured: Boolean(local),
+      sharedPermission: permissionStates.shared, localPermission: permissionStates.local,
+    });
   });
 }
 
 async function chooseRoot(location: 'shared' | 'local') {
-  await operation(async () => {
+  await operation('choose-root', async () => {
+    diagnose('picker-start', {
+      location,
+      secureContext: window.isSecureContext,
+      directoryPickerAvailable: typeof window.showDirectoryPicker === 'function',
+      userActivationActive: navigator.userActivation?.isActive ?? null,
+    });
     const selected = await chooseDirectory('readwrite');
-    if (!selected) { message.value = '已取消选择，原设置未改变。'; return; }
-    if (!await checkPermission(selected, false, 'readwrite')) throw new Error('目录未获读写授权，原设置未改变。');
+    if (!selected) {
+      diagnose('picker-canceled', { location });
+      message.value = '已取消选择，原设置未改变。';
+      return;
+    }
+    let permissionState = await selected.queryPermission({ mode: 'readwrite' });
+    diagnose('permission-query-result', { location, permissionState });
+    if (permissionState !== 'granted') {
+      diagnose('permission-request-start', {
+        location,
+        userActivationActive: navigator.userActivation?.isActive ?? null,
+      });
+      permissionState = await selected.requestPermission({ mode: 'readwrite' });
+      diagnose('permission-request-result', { location, permissionState });
+    }
+    if (permissionState !== 'granted') throw new Error('目录未获读写授权，原设置未改变。');
+    diagnose('database-save-start', { location });
     await props.repository.setArchiveRoot(selected, location);
+    const saved = await props.repository.getArchiveRoot(location);
+    const identityMatches = saved
+      ? saved === selected ? true : selected.isSameEntry ? await sameDirectory(selected, saved) : null
+      : false;
+    diagnose('database-save-verified', { location, persisted: Boolean(saved), identityMatches });
+    if (!saved) throw new Error('目录权限已获准，但归档根目录写入后未能读取到记录。');
     roots.value = { ...roots.value, [location]: selected };
     permission.value[location] = '读写已授权';
     emit('roots', roots.value);
+    diagnose('roots-emitted', { sharedConfigured: Boolean(roots.value.shared), localConfigured: Boolean(roots.value.local) });
     message.value = `${location === 'shared' ? '共享' : '本地'}归档根目录已保存。`;
   });
 }
 
 async function authorize(location: 'shared' | 'local') {
-  await operation(async () => {
+  await operation('authorize', async () => {
     const root = roots.value[location];
     if (!root) throw new Error(`请先选择${location === 'shared' ? '共享' : '本地'}归档根目录。`);
     const granted = await checkPermission(root, true, 'readwrite');
+    diagnose('permission-request-result', { location, permissionState: granted ? 'granted' : 'not-granted' });
     permission.value[location] = granted ? '读写已授权' : '需要读写授权';
     if (!granted) throw new Error('根目录读写权限被拒绝，请重新授权或重新选择。');
     emit('roots', roots.value);
@@ -66,7 +126,7 @@ async function authorize(location: 'shared' | 'local') {
 }
 
 async function openRoot(location: 'shared' | 'local') {
-  await operation(async () => {
+  await operation('open-root', async () => {
     const root = roots.value[location];
     if (!root) throw new Error(`请先选择${location === 'shared' ? '共享' : '本地'}根目录。`);
     if (!await checkPermission(root, false, 'readwrite'))
@@ -86,7 +146,7 @@ function onOutsidePointerDown(event: PointerEvent) {
 }
 
 async function unbind(location: 'shared' | 'local') {
-  await operation(async () => {
+  await operation('unbind', async () => {
     await props.repository.db.archiveRoots.delete(location);
     const next = { ...roots.value };
     delete next[location];
@@ -98,6 +158,7 @@ async function unbind(location: 'shared' | 'local') {
 }
 
 onMounted(() => {
+  diagnose('component-mounted');
   window.addEventListener('pointerdown', onOutsidePointerDown, true);
   void restore();
 });
