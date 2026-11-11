@@ -177,9 +177,9 @@ describe('软件对比文档版本匹配', () => {
       local: [candidate('本地.docx', 'nested'), candidate('both.doc')],
       shared: [candidate('共享.docx'), candidate('both.doc')],
     })).toEqual([
-      { fileName: '共享.docx', relativePath: '共享.docx', locations: ['shared'] },
       { fileName: 'both.doc', relativePath: 'both.doc', locations: ['local', 'shared'] },
       { fileName: '本地.docx', relativePath: 'nested/本地.docx', locations: ['local'] },
+      { fileName: '共享.docx', relativePath: '共享.docx', locations: ['shared'] },
     ]);
   });
 

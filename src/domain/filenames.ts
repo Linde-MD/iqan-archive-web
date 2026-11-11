@@ -67,7 +67,11 @@ export function mergeDocumentCandidates(
       else merged.set(file.relativePath, { ...file, locations: [location] });
     }
   }
-  return [...merged.values()].sort((first, second) => first.relativePath.localeCompare(second.relativePath));
+  return [...merged.values()].sort((first, second) => {
+    if (first.relativePath < second.relativePath) return -1;
+    if (first.relativePath > second.relativePath) return 1;
+    return 0;
+  });
 }
 
 export function candidateDetails(graph: ProjectGraph, candidate: FileCandidate) {
