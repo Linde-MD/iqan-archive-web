@@ -66,14 +66,9 @@ declare global {
   }
 }
 
-export async function chooseDirectory(mode: 'read' | 'readwrite' = 'read'): Promise<DirectoryHandle | null> {
+export async function chooseDirectory(mode: 'read' | 'readwrite' = 'read'): Promise<DirectoryHandle> {
   requireCondition(window.isSecureContext && window.showDirectoryPicker, 'DIRECTORY_UNSUPPORTED', '当前浏览器不支持目录授权，请使用安全上下文中的 Chrome 或 Edge。');
-  try {
-    return await window.showDirectoryPicker({ mode });
-  } catch (cause) {
-    if (cause instanceof DOMException && cause.name === 'AbortError') return null;
-    throw cause;
-  }
+  return window.showDirectoryPicker({ mode });
 }
 
 export async function checkPermission(handle: DirectoryHandle, request = false, mode: 'read' | 'readwrite' = 'read'): Promise<boolean> {

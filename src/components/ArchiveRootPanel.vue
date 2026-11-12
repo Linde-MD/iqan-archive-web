@@ -13,16 +13,17 @@ const busy = ref(false);
 const message = ref('');
 const menu = ref<HTMLDetailsElement>();
 const menuTrigger = ref<HTMLElement>();
+let pickerAttempt = 0;
 
 function diagnose(event: string, details: Record<string, unknown> = {}) {
-  console.info('[archive-root]', { event, ...details });
+  console.info(`[archive-root] ${JSON.stringify({ timestamp: new Date().toISOString(), event, ...details })}`);
 }
 
 function errorDetails(cause: unknown) {
   return {
     errorName: cause instanceof Error ? cause.name : typeof cause,
     ...(cause instanceof DOMException ? { errorCode: cause.code } : {}),
-    ...(cause instanceof Error && !(cause instanceof DOMException) ? { errorMessage: cause.message.slice(0, 240) } : {}),
+    ...(cause instanceof Error ? { errorMessage: cause.message.slice(0, 240) } : {}),
   };
 }
 
@@ -30,14 +31,12 @@ async function operation(actionName: string, action: () => Promise<void>) {
   busy.value = true;
   emit('busy', true);
   message.value = '';
-  diagnose('operation-start', { action: actionName });
   try { await action(); }
   catch (cause) {
     diagnose('operation-error', { action: actionName, ...errorDetails(cause) });
     emit('error', cause);
   }
   finally {
-    diagnose('operation-end', { action: actionName });
     busy.value = false;
     emit('busy', false);
   }
@@ -45,11 +44,6 @@ async function operation(actionName: string, action: () => Promise<void>) {
 
 async function restore() {
   await operation('restore', async () => {
-    diagnose('restore-start', {
-      secureContext: window.isSecureContext,
-      directoryPickerAvailable: typeof window.showDirectoryPicker === 'function',
-      userAgent: navigator.userAgent,
-    });
     const [shared, local] = await Promise.all([
       props.repository.getArchiveRoot('shared'), props.repository.getArchiveRoot('local'),
     ]);
@@ -68,47 +62,73 @@ async function restore() {
     diagnose('restore-result', {
       sharedConfigured: Boolean(shared), localConfigured: Boolean(local),
       sharedPermission: permissionStates.shared, localPermission: permissionStates.local,
+      secureContext: window.isSecureContext,
+      directoryPickerAvailable: typeof window.showDirectoryPicker === 'function',
+      userAgent: navigator.userAgent,
     });
   });
 }
 
 async function chooseRoot(location: 'shared' | 'local') {
   await operation('choose-root', async () => {
+    const attempt = ++pickerAttempt;
+    const startedAt = performance.now();
+    const userActivationActive = navigator.userActivation?.isActive ?? null;
     diagnose('picker-start', {
+      attempt,
       location,
+      mode: 'readwrite',
       secureContext: window.isSecureContext,
       directoryPickerAvailable: typeof window.showDirectoryPicker === 'function',
-      userActivationActive: navigator.userActivation?.isActive ?? null,
+      userActivationActive,
+      pageVisible: document.visibilityState === 'visible',
+      pageFocused: document.hasFocus(),
+      userAgent: navigator.userAgent,
     });
-    const selected = await chooseDirectory('readwrite');
-    if (!selected) {
-      diagnose('picker-canceled', { location });
-      message.value = '已取消选择，原设置未改变。';
-      return;
+    let selected;
+    try {
+      selected = await chooseDirectory('readwrite');
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') {
+        diagnose('picker-abort', {
+          attempt, location, elapsedMs: Math.round(performance.now() - startedAt),
+          ...errorDetails(cause),
+          userActivationActiveAfter: navigator.userActivation?.isActive ?? null,
+          pageVisibleAfter: document.visibilityState === 'visible',
+          pageFocusedAfter: document.hasFocus(),
+        });
+        message.value = '目录选择已中止，原设置未改变。请重试并留意浏览器或系统的文件夹选择窗口。';
+        return;
+      }
+      throw cause;
     }
+    diagnose('picker-selected', {
+      attempt, location, elapsedMs: Math.round(performance.now() - startedAt),
+      entryKind: selected.kind,
+    });
     let permissionState = await selected.queryPermission({ mode: 'readwrite' });
-    diagnose('permission-query-result', { location, permissionState });
+    diagnose('permission-query-result', { attempt, location, permissionState });
     if (permissionState !== 'granted') {
       diagnose('permission-request-start', {
-        location,
+        attempt, location,
         userActivationActive: navigator.userActivation?.isActive ?? null,
       });
       permissionState = await selected.requestPermission({ mode: 'readwrite' });
-      diagnose('permission-request-result', { location, permissionState });
+      diagnose('permission-request-result', { attempt, location, permissionState });
     }
     if (permissionState !== 'granted') throw new Error('目录未获读写授权，原设置未改变。');
-    diagnose('database-save-start', { location });
+    diagnose('database-save-start', { attempt, location });
     await props.repository.setArchiveRoot(selected, location);
     const saved = await props.repository.getArchiveRoot(location);
     const identityMatches = saved
       ? saved === selected ? true : selected.isSameEntry ? await sameDirectory(selected, saved) : null
       : false;
-    diagnose('database-save-verified', { location, persisted: Boolean(saved), identityMatches });
+    diagnose('database-save-verified', { attempt, location, persisted: Boolean(saved), identityMatches });
     if (!saved) throw new Error('目录权限已获准，但归档根目录写入后未能读取到记录。');
     roots.value = { ...roots.value, [location]: selected };
     permission.value[location] = '读写已授权';
     emit('roots', roots.value);
-    diagnose('roots-emitted', { sharedConfigured: Boolean(roots.value.shared), localConfigured: Boolean(roots.value.local) });
+    diagnose('roots-emitted', { attempt, sharedConfigured: Boolean(roots.value.shared), localConfigured: Boolean(roots.value.local) });
     message.value = `${location === 'shared' ? '共享' : '本地'}归档根目录已保存。`;
   });
 }
@@ -158,7 +178,6 @@ async function unbind(location: 'shared' | 'local') {
 }
 
 onMounted(() => {
-  diagnose('component-mounted');
   window.addEventListener('pointerdown', onOutsidePointerDown, true);
   void restore();
 });
