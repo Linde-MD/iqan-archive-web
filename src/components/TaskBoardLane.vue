@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useDroppable } from '@dnd-kit/vue';
 import type { Task, TaskOption } from '../domain/model';
 import TaskBoardCard from './TaskBoardCard.vue';
@@ -26,6 +26,28 @@ const { isDropTarget } = useDroppable({
   element: lane,
   data: computed(() => ({ statusOptionId: props.status?.id ?? null })),
 });
+let pendingMovePositions: Map<string, number> | undefined;
+let pendingMoveTimeout: number | undefined;
+
+watch(() => props.tasks.map(task => task.id), (next, previous) => {
+  if (!pendingMovePositions || next.every((taskId, index) => taskId === previous[index])) return;
+  const previousPositions = pendingMovePositions;
+  pendingMovePositions = undefined;
+  if (pendingMoveTimeout !== undefined) window.clearTimeout(pendingMoveTimeout);
+  pendingMoveTimeout = undefined;
+  const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 1 : 240;
+  for (const card of lane.value?.querySelectorAll<HTMLElement>('[data-task-card-id]') ?? []) {
+    const taskId = card.dataset.taskCardId;
+    const previousTop = taskId ? previousPositions.get(taskId) : undefined;
+    if (previousTop === undefined) continue;
+    const offset = previousTop - card.getBoundingClientRect().top;
+    if (Math.abs(offset) < 1) continue;
+    card.animate(
+      [{ transform: `translateY(${offset}px)` }, { transform: 'translateY(0)' }],
+      { duration, easing: 'cubic-bezier(0.2, 0.75, 0.25, 1)' },
+    );
+  }
+}, { flush: 'post' });
 
 function move(index: number, offset: -1 | 1) {
   const task = props.tasks[index];
@@ -33,8 +55,24 @@ function move(index: number, offset: -1 | 1) {
   const beforeTaskId = offset < 0
     ? props.tasks[index - 1]?.id ?? task.id
     : props.tasks[index + 2]?.id ?? null;
-  if (beforeTaskId !== task.id) emit('moveTask', task.id, beforeTaskId);
+  if (beforeTaskId === task.id) return;
+  pendingMovePositions = new Map(
+    [...(lane.value?.querySelectorAll<HTMLElement>('[data-task-card-id]') ?? [])]
+      .flatMap(card => card.dataset.taskCardId
+        ? [[card.dataset.taskCardId, card.getBoundingClientRect().top] as const]
+        : []),
+  );
+  if (pendingMoveTimeout !== undefined) window.clearTimeout(pendingMoveTimeout);
+  pendingMoveTimeout = window.setTimeout(() => {
+    pendingMovePositions = undefined;
+    pendingMoveTimeout = undefined;
+  }, 5_000);
+  emit('moveTask', task.id, beforeTaskId);
 }
+
+onUnmounted(() => {
+  if (pendingMoveTimeout !== undefined) window.clearTimeout(pendingMoveTimeout);
+});
 </script>
 
 <template>
@@ -61,7 +99,7 @@ function move(index: number, offset: -1 | 1) {
         @open="emit('openTask', task.id)"
         @move-up="move(index, -1)" @move-down="move(index, 1)"
       />
-      <div v-if="!tasks.length" class="task-lane-empty">
+      <div v-if="!tasks.length" key="empty" class="task-lane-empty">
         <span>{{ isDropTarget ? '放开以移动任务' : '此泳道暂无任务' }}</span>
         <button type="button" class="secondary" :disabled="disabled" @click="emit('addTask', status?.id ?? null)">在此新建任务</button>
       </div>
