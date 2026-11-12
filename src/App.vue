@@ -76,12 +76,14 @@ function showError(cause: unknown) {
 }
 
 function receiveArchiveRoots(roots: ArchiveRoots) {
-  console.info(`[archive-root] ${JSON.stringify({
-    timestamp: new Date().toISOString(),
-    event: 'app-roots-received',
-    sharedConfigured: Boolean(roots.shared),
-    localConfigured: Boolean(roots.local),
-  })}`);
+  if (roots.shared || roots.local) {
+    console.info(`[archive-root] ${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      event: 'app-roots-received',
+      sharedConfigured: Boolean(roots.shared),
+      localConfigured: Boolean(roots.local),
+    })}`);
+  }
   archiveRoots.value = roots;
   archiveRootRevision.value++;
 }

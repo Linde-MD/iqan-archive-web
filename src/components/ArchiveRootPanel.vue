@@ -20,10 +20,19 @@ function diagnose(event: string, details: Record<string, unknown> = {}) {
 }
 
 function errorDetails(cause: unknown) {
+  const errorName = cause instanceof Error ? cause.name : typeof cause;
+  const possibleCauseZh = errorName === 'AbortError'
+    ? '用户或浏览器/Windows 文件选择器中止了请求；若已确认选择文件夹，请检查窗口是否仍打开并重试。'
+    : errorName === 'NotAllowedError'
+      ? '浏览器或站点策略未允许此操作；检查站点权限、用户手势和组织策略。'
+      : errorName === 'SecurityError'
+        ? '浏览器安全策略或用户手势要求阻止了此操作。'
+        : '检查下方浏览器错误信息，并确认目录/站点权限后重试。';
   return {
-    errorName: cause instanceof Error ? cause.name : typeof cause,
+    errorName,
     ...(cause instanceof DOMException ? { errorCode: cause.code } : {}),
     ...(cause instanceof Error ? { errorMessage: cause.message.slice(0, 240) } : {}),
+    possibleCauseZh,
   };
 }
 
@@ -77,7 +86,7 @@ async function chooseRoot(location: 'shared' | 'local') {
     diagnose('picker-start', {
       attempt,
       location,
-      mode: 'readwrite',
+      pickerMode: 'read',
       secureContext: window.isSecureContext,
       directoryPickerAvailable: typeof window.showDirectoryPicker === 'function',
       userActivationActive,
@@ -87,7 +96,7 @@ async function chooseRoot(location: 'shared' | 'local') {
     });
     let selected;
     try {
-      selected = await chooseDirectory('readwrite');
+      selected = await chooseDirectory('read');
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') {
         diagnose('picker-abort', {
@@ -107,28 +116,39 @@ async function chooseRoot(location: 'shared' | 'local') {
       entryKind: selected.kind,
     });
     let permissionState = await selected.queryPermission({ mode: 'readwrite' });
-    diagnose('permission-query-result', { attempt, location, permissionState });
+    diagnose('write-permission-check', { attempt, location, phase: 'query', permissionState });
     if (permissionState !== 'granted') {
-      diagnose('permission-request-start', {
+      diagnose('write-permission-check', {
         attempt, location,
+        phase: 'request',
         userActivationActive: navigator.userActivation?.isActive ?? null,
       });
       permissionState = await selected.requestPermission({ mode: 'readwrite' });
-      diagnose('permission-request-result', { attempt, location, permissionState });
+      diagnose('write-permission-check', { attempt, location, phase: 'request-result', permissionState });
     }
-    if (permissionState !== 'granted') throw new Error('目录未获读写授权，原设置未改变。');
-    diagnose('database-save-start', { attempt, location });
+    if (permissionState !== 'granted') {
+      diagnose('write-permission-denied', {
+        attempt, location, permissionState,
+        possibleCauseZh: '浏览器未授予读写权限；已选目录不会保存，请通过浏览器提示允许访问后重试。',
+      });
+      throw new Error('目录未获读写授权，原设置未改变。');
+    }
     await props.repository.setArchiveRoot(selected, location);
     const saved = await props.repository.getArchiveRoot(location);
     const identityMatches = saved
       ? saved === selected ? true : selected.isSameEntry ? await sameDirectory(selected, saved) : null
       : false;
-    diagnose('database-save-verified', { attempt, location, persisted: Boolean(saved), identityMatches });
-    if (!saved) throw new Error('目录权限已获准，但归档根目录写入后未能读取到记录。');
+    if (!saved) {
+      diagnose('database-save-failed', {
+        attempt, location, persisted: false, identityMatches,
+        possibleCauseZh: '读写权限已获得，但 IndexedDB 写入后未读回目录句柄；请检查浏览器存储权限/空间。',
+      });
+      throw new Error('目录权限已获准，但归档根目录写入后未能读取到记录。');
+    }
     roots.value = { ...roots.value, [location]: selected };
     permission.value[location] = '读写已授权';
     emit('roots', roots.value);
-    diagnose('roots-emitted', { attempt, sharedConfigured: Boolean(roots.value.shared), localConfigured: Boolean(roots.value.local) });
+    diagnose('root-saved', { attempt, location, persisted: true, identityMatches });
     message.value = `${location === 'shared' ? '共享' : '本地'}归档根目录已保存。`;
   });
 }
