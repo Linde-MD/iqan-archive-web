@@ -43,6 +43,7 @@ const commentEditorOpen = ref(false);
 const editingCommentId = ref<string | null>(null);
 const commentText = ref('');
 const commentTextBaseline = ref('');
+const taskDetailDialog = ref<HTMLDialogElement>();
 const optionsDialog = ref<HTMLDialogElement>();
 const optionKind = ref<OptionKind>('status');
 const optionName = ref('');
@@ -437,10 +438,10 @@ function closeTaskDetails() {
   });
 }
 
-watch([graph, () => props.detailTaskId], async ([current, detailId]) => {
+watch([graph, () => props.detailTaskId], async ([current, detailId], [, previousDetailId]) => {
   if (!current) return;
   if (detailId === 'new') {
-    if (!taskDraft.value || taskDraft.value.id) createTask(undefined, false);
+    if (!taskDraft.value || (previousDetailId !== 'new' && taskDraft.value.id)) createTask(undefined, false);
     return;
   }
   if (detailId) {
@@ -458,8 +459,6 @@ watch([graph, () => props.detailTaskId], async ([current, detailId]) => {
       }
       setTaskDraft(task);
     }
-    await nextTick();
-    document.getElementById('task-detail-page-title')?.focus({ preventScroll: true });
     return;
   }
   if (taskDraft.value) {
@@ -472,6 +471,18 @@ watch([graph, () => props.detailTaskId], async ([current, detailId]) => {
     taskDraftBaseline.value = '';
   }
 });
+
+watch(taskDraft, async draft => {
+  await nextTick();
+  const dialog = taskDetailDialog.value;
+  if (!dialog) return;
+  if (draft) {
+    if (!dialog.open) dialog.showModal();
+    document.getElementById('task-detail-page-title')?.focus({ preventScroll: true });
+  } else if (dialog.open) {
+    dialog.close();
+  }
+}, { flush: 'post' });
 
 watch([() => props.optionsOpen, graph], async ([open, current]) => {
   if (open) {
@@ -582,8 +593,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="panel task-board" :aria-labelledby="taskDraft ? 'task-detail-page-title' : 'task-board-title'" :aria-busy="loading || saving">
-    <header v-if="!taskDraft" class="task-board-header">
+  <section class="panel task-board" aria-labelledby="task-board-title" :aria-busy="loading || saving">
+    <header class="task-board-header">
       <div>
         <p class="eyebrow">PROJECT TASKS</p>
         <h2 id="task-board-title">{{ projectName }} · 任务看板</h2>
@@ -593,14 +604,7 @@ onUnmounted(() => {
         <button type="button" :disabled="loading || saving" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>
-    <header v-else class="task-board-detail-header">
-      <button type="button" class="secondary" :disabled="saving" @click="closeTaskDetails"><AppIcon name="chevron-left" />返回任务看板</button>
-      <div>
-        <p class="eyebrow">TASK DETAIL</p>
-        <h2 id="task-detail-page-title" tabindex="-1">{{ taskDraft.name || (taskDraft.id ? '任务详情' : '新建任务') }}</h2>
-      </div>
-    </header>
-    <div v-if="!taskDraft" class="task-board-toolbar">
+    <div class="task-board-toolbar">
       <label class="task-board-search-label" for="task-board-search-mode">筛选条件</label>
       <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading" aria-label="任务搜索条件">
         <option value="id">ID</option>
@@ -611,14 +615,14 @@ onUnmounted(() => {
         :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading" />
       <span class="task-board-count">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
     </div>
-    <p v-if="!taskDraft && taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
-    <p v-if="!taskDraft && loading" class="task-board-state" role="status">正在读取任务…</p>
-    <p v-else-if="!taskDraft && !graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
-    <p v-else-if="!taskDraft && !taskMatches.length" class="task-board-state">没有匹配的任务。</p>
-    <div v-if="error" class="task-board-message is-error" role="alert">{{ error }}</div>
-    <div v-else-if="statusMessage" class="task-board-message" role="status">{{ statusMessage }}</div>
+    <p v-if="taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
+    <p v-if="loading" class="task-board-state" role="status">正在读取任务…</p>
+    <p v-else-if="!graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
+    <p v-else-if="!taskMatches.length" class="task-board-state">没有匹配的任务。</p>
+    <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
+    <div v-else-if="statusMessage && !taskDraft" class="task-board-message" role="status">{{ statusMessage }}</div>
 
-    <div v-if="graph && !taskDraft" class="task-board-layout">
+    <div v-if="graph" class="task-board-layout">
       <div class="task-board-scroll">
         <DragDropProvider @drag-start="onDragStart" @drag-over="onDragOver" @drag-end="onDragEnd">
           <div class="task-board-lanes">
@@ -634,9 +638,24 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <section v-if="graph && taskDraft" class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
-        <p v-if="taskDraftStale" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
-        <form class="task-detail-form" @submit.prevent="submitTask">
+  </section>
+
+  <Teleport to="body">
+    <dialog v-if="graph && taskDraft" ref="taskDetailDialog" class="task-detail-dialog" aria-labelledby="task-detail-page-title" @cancel.prevent="closeTaskDetails" @click.self="closeTaskDetails">
+      <div class="task-detail-modal">
+        <header class="task-detail-modal-header">
+          <div>
+            <p class="eyebrow">{{ projectName }} · {{ taskDraft.id ? 'TASK DETAIL' : 'NEW TASK' }}</p>
+            <h2 id="task-detail-page-title" tabindex="-1">{{ taskDraft.name || (taskDraft.id ? '任务详情' : '新建任务') }}</h2>
+          </div>
+          <button type="button" class="secondary icon-button" aria-label="关闭任务详情" title="关闭任务详情" :disabled="saving" @click="closeTaskDetails"><AppIcon name="clear" /></button>
+        </header>
+        <section class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
+          <div class="task-detail-main-scroll">
+            <p v-if="taskDraftStale" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
+            <p v-if="error" class="task-board-message is-error" role="alert">{{ error }}</p>
+            <p v-else-if="statusMessage" class="task-board-message" role="status">{{ statusMessage }}</p>
+            <form class="task-detail-form" @submit.prevent="submitTask">
           <label for="task-board-name">任务名 <span>必填</span></label>
           <input id="task-board-name" v-model="taskDraft.name" required :disabled="saving || taskDraftStale" />
           <label for="task-board-external-id">Task ID <span>可选，1–16 位数字</span></label>
@@ -678,47 +697,52 @@ onUnmounted(() => {
             <button type="submit" :disabled="saving || taskDraftStale || commentDraftDirty || !taskDraft.name.trim()"><AppIcon name="check" />保存任务</button>
             <button v-if="taskDraft.id" type="button" class="danger" :disabled="saving || taskDraftStale" @click="deleteCurrentTask"><AppIcon name="trash" />删除任务</button>
           </div>
-        </form>
+            </form>
 
-        <section v-if="taskDraft.id" class="task-related-versions" aria-labelledby="task-related-title">
-          <header><h4 id="task-related-title">关联版本</h4><span>{{ graph.nodes.filter(node => node.taskId === taskDraft!.id).length }}</span></header>
-          <ul v-if="graph.nodes.some(node => node.taskId === taskDraft!.id)">
-            <li v-for="node in graph.nodes.filter(item => item.taskId === taskDraft!.id)" :key="node.id">
-              <button type="button" class="task-version-link" @click="emit('graph', node.id)">
-                <code>{{ node.version }}</code><span>{{ node.description || '（无改动说明）' }}</span><AppIcon name="arrow" />
-              </button>
-            </li>
-          </ul>
-          <p v-else class="form-help">此任务尚未关联版本。</p>
-        </section>
+            <section v-if="taskDraft.id" class="task-related-versions" aria-labelledby="task-related-title">
+              <header><h4 id="task-related-title">关联版本</h4><span>{{ graph.nodes.filter(node => node.taskId === taskDraft!.id).length }}</span></header>
+              <ul v-if="graph.nodes.some(node => node.taskId === taskDraft!.id)">
+                <li v-for="node in graph.nodes.filter(item => item.taskId === taskDraft!.id)" :key="node.id">
+                  <button type="button" class="task-version-link" @click="emit('graph', node.id)">
+                    <code>{{ node.version }}</code><span>{{ node.description || '（无改动说明）' }}</span><AppIcon name="arrow" />
+                  </button>
+                </li>
+              </ul>
+              <p v-else class="form-help">此任务尚未关联版本。</p>
+            </section>
+          </div>
 
-        <section v-if="taskDraft.id" class="task-comments" aria-labelledby="task-comments-title">
-          <header>
-            <h4 id="task-comments-title">评论</h4>
-            <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment"><AppIcon name="plus" />添加评论</button>
-          </header>
-          <ul v-if="taskDraft.comments.length" class="task-comment-list">
-            <li v-for="comment in taskDraft.comments" :key="comment.id" class="task-comment">
-              <div class="task-comment-meta"><time :datetime="comment.createdAt">{{ formatTime(comment.createdAt) }}</time><span v-if="comment.updatedAt !== comment.createdAt">已编辑 {{ formatTime(comment.updatedAt) }}</span></div>
-              <div class="markdown-content task-comment-content" v-html="renderMarkdown(comment.text)"></div>
-              <div class="task-comment-actions">
-                <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginEditComment(comment)"><AppIcon name="edit" />编辑</button>
-                <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" @click="deleteComment(comment)"><AppIcon name="trash" />删除</button>
+          <section v-if="taskDraft.id" class="task-comments" aria-labelledby="task-comments-title">
+            <header>
+              <div><p class="eyebrow">DISCUSSION</p><h4 id="task-comments-title">评论 <span>{{ taskDraft.comments.length }}</span></h4></div>
+              <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment"><AppIcon name="plus" />添加评论</button>
+            </header>
+            <ul v-if="taskDraft.comments.length" class="task-comment-list">
+              <li v-for="comment in taskDraft.comments" :key="comment.id" class="task-comment">
+                <div class="task-comment-meta"><time :datetime="comment.createdAt">{{ formatTime(comment.createdAt) }}</time><span v-if="comment.updatedAt !== comment.createdAt">已编辑 {{ formatTime(comment.updatedAt) }}</span></div>
+                <div class="markdown-content task-comment-content" v-html="renderMarkdown(comment.text)"></div>
+                <div class="task-comment-actions">
+                  <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" :aria-label="`编辑评论 ${formatTime(comment.createdAt)}`" @click="beginEditComment(comment)"><AppIcon name="edit" /></button>
+                  <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" :aria-label="`删除评论 ${formatTime(comment.createdAt)}`" @click="deleteComment(comment)"><AppIcon name="trash" /></button>
+                </div>
+              </li>
+            </ul>
+            <p v-else class="task-comments-empty">暂无评论</p>
+            <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
+              <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
+              <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving || taskDraftStale" />
+              <div class="task-comment-editor-actions">
+                <button type="submit" :disabled="saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
+                <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
               </div>
-            </li>
-          </ul>
-          <p v-else class="form-help">尚无评论。</p>
-          <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
-            <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
-            <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving || taskDraftStale" />
-            <div class="task-detail-actions">
-              <button type="submit" :disabled="saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
-              <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
-            </div>
-          </form>
+            </form>
+            <button v-else-if="taskDraft.comments.length" type="button" class="task-comment-composer" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment">输入新评论…</button>
+          </section>
+          <aside v-else class="task-comments-empty-note">保存任务后，可以在详情中继续添加评论和查看关联版本。</aside>
         </section>
-    </section>
-  </section>
+      </div>
+    </dialog>
+  </Teleport>
 
   <dialog ref="optionsDialog" class="task-options-dialog" aria-labelledby="task-options-title" @cancel.prevent="closeOptions">
     <form method="dialog" @submit.prevent>
@@ -757,15 +781,11 @@ onUnmounted(() => {
 
 <style scoped>
 .task-board { min-width: 0; border-top: 2px solid #3b82f6; padding: 18px; }
-.task-board-header, .task-board-header-actions, .task-board-toolbar, .task-board-detail-header, .task-options-heading, .task-options-footer { display: flex; align-items: center; gap: 10px; }
+.task-board-header, .task-board-header-actions, .task-board-toolbar, .task-options-heading, .task-options-footer { display: flex; align-items: center; gap: 10px; }
 .task-board-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
 .task-board-header h2 { overflow-wrap: anywhere; }
 .task-board-header-actions { flex-wrap: wrap; }
 .task-board-header-actions button { min-height: 44px; }
-.task-board-detail-header { align-items: flex-start; gap: 16px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid #35445c; }
-.task-board-detail-header > button { flex: 0 0 auto; }
-.task-board-detail-header > div { min-width: 0; }
-.task-board-detail-header h2 { overflow-wrap: anywhere; }
 .task-board-toolbar { min-width: 0; margin-bottom: 12px; }
 .task-board-search-label { flex: 0 0 auto; margin: 0; }
 .task-board-search-mode { flex: 0 0 132px; min-width: 0; margin: 0; }
@@ -777,20 +797,28 @@ onUnmounted(() => {
 .task-board-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .task-board-scroll { display: block; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; height: clamp(320px, calc(100dvh - 260px), 680px); padding: 2px 2px 10px; }
-.task-detail-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); grid-template-rows: auto auto; gap: 0 24px; min-width: 0; padding-top: 14px; border-top: 1px solid #35445c; }
-.task-detail-view > .task-board-message { grid-column: 1 / -1; }
-.task-detail-form { min-width: 0; }
-.task-detail-view > .task-detail-form { grid-column: 1; grid-row: 1 / span 2; }
-.task-detail-view > .task-related-versions { grid-column: 2; grid-row: 1; }
-.task-detail-view > .task-comments { grid-column: 2; grid-row: 2; }
-.task-detail-form input, .task-detail-form select, .task-detail-form textarea { margin-bottom: 10px; }
-.task-detail-form textarea { width: 100%; min-height: 84px; resize: vertical; }
-.task-date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.task-detail-dialog { width: min(1480px, calc(100vw - 48px)); height: min(920px, calc(100dvh - 48px)); max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid #52647e; border-radius: 8px; background: #101a2a; color: #eef4ff; box-shadow: 0 24px 80px #020617aa; }
+.task-detail-dialog::backdrop { background: #020617a8; backdrop-filter: blur(2px); }
+.task-detail-modal { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; min-width: 0; }
+.task-detail-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; padding: 14px 22px; border-bottom: 1px solid #35445c; background: #142137; }
+.task-detail-modal-header h2 { margin: 0; overflow-wrap: anywhere; font-size: 19px; }
+.task-detail-modal-header .eyebrow { margin-bottom: 4px; }
+.task-detail-modal-header .icon-button { flex: 0 0 44px; }
+.task-detail-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 34%); min-width: 0; min-height: 0; overflow: hidden; }
+.task-detail-main-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 22px clamp(18px, 3vw, 42px); }
+.task-detail-form { display: grid; grid-template-columns: minmax(140px, 190px) minmax(0, 1fr); align-content: start; align-items: center; gap: 12px 18px; min-width: 0; }
+.task-detail-form > label { margin: 0; color: #b6c4d8; }
+.task-detail-form input, .task-detail-form select, .task-detail-form textarea { min-width: 0; margin: 0; }
+.task-detail-form textarea { width: 100%; min-height: 132px; resize: vertical; }
+.task-date-grid { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.task-date-grid label { margin-bottom: 6px; }
 .task-date-grid input { padding: 9px 7px; font-size: 12px; }
-.task-detail-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin: 10px 0; }
+.task-detail-form #task-board-description { align-self: start; }
+.task-detail-form > .form-help { grid-column: 1 / -1; margin: 0; }
+.task-detail-actions { display: flex; grid-column: 1 / -1; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
 .task-detail-actions button { min-height: 44px; }
-.task-related-versions, .task-comments { margin-top: 14px; padding-top: 12px; border-top: 1px solid #35445c; }
-.task-related-versions > header, .task-comments > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.task-related-versions { margin-top: 26px; padding-top: 18px; border-top: 1px solid #35445c; }
+.task-related-versions > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .task-related-versions h4, .task-comments h4 { margin: 0; color: #eef4ff; font-size: 13px; }
 .task-related-versions > header > span { color: #afbdd2; font-size: 11px; }
 .task-related-versions ul, .task-comment-list { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
@@ -800,17 +828,29 @@ onUnmounted(() => {
 .task-version-link code { overflow: hidden; color: #b7d8ff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .task-version-link span { overflow: hidden; color: #c0cde0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .task-version-link .app-icon { width: 16px; height: 16px; }
+.task-comments { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid #35445c; background: #111b2c; }
+.task-comments > header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 10px; min-height: 74px; padding: 12px 16px; border-bottom: 1px solid #35445c; }
+.task-comments > header .eyebrow { margin: 0 0 3px; }
 .task-comments > header button { min-height: 44px; padding: 6px 9px; font-size: 11px; }
+.task-comments h4 { font-size: 15px; }
+.task-comments h4 span { margin-left: 4px; color: #9eafc5; font-size: 12px; font-weight: 500; }
+.task-comment-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; align-content: start; padding: 12px; }
+.task-comments-empty { display: grid; flex: 1 1 auto; place-items: center; min-height: 120px; margin: 0; color: #8fa0b8; font-size: 12px; }
+.task-comments-empty-note { display: grid; place-items: center; padding: 24px; border-left: 1px solid #35445c; color: #9eafc5; font-size: 12px; text-align: center; }
+.task-comment-composer { flex: 0 0 auto; min-height: 52px; margin: 10px 12px 12px; padding: 10px 12px; border: 1px solid #35445c; border-radius: 6px; background: #0c1523; color: #9eafc5; text-align: left; }
+.task-comment-composer:hover { border-color: #6684aa; color: #e6effc; }
 .task-comment-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; color: #afbdd2; font-size: 10px; font-variant-numeric: tabular-nums; }
 .task-comment-content { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
 .task-comment-content :deep(img) { display: none; }
 .task-comment-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .task-comment-actions button { min-height: 44px; padding: 5px 8px; font-size: 11px; }
-.task-comment-editor { margin-top: 10px; padding-top: 10px; border-top: 1px solid #35445c; }
+.task-comment-editor { flex: 0 0 auto; margin: 10px 12px 12px; padding: 10px; border: 1px solid #35445c; border-radius: 6px; background: #0c1523; }
 .task-comment-editor h5 { margin: 0 0 8px; font-size: 12px; }
 .task-comment-editor :deep(.markdown-editor-toolbar) { gap: 5px; }
 .task-comment-editor :deep(.markdown-editor-toolbar button) { min-width: 0; min-height: 44px; padding: 6px 10px; }
 .task-comment-editor :deep(.markdown-editor textarea) { min-height: 120px; margin: 0; }
+.task-comment-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.task-comment-editor-actions button { min-height: 44px; }
 .task-options-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(760px, calc(100dvh - 24px)); overflow: auto; padding: 18px; border: 1px solid #52647e; border-radius: 8px; background: #121c2d; color: #eef4ff; }
 .task-options-dialog::backdrop { background: #020617aa; }
 .task-options-dialog form { display: grid; gap: 12px; }
@@ -835,17 +875,20 @@ onUnmounted(() => {
 .task-option-empty { display: block !important; padding: 12px; text-align: center; }
 .task-options-footer { justify-content: flex-end; padding-top: 8px; border-top: 1px solid #35445c; }
 .task-options-footer button { min-height: 44px; }
-@media (max-width: 1100px) {
-  .task-detail-view { grid-template-columns: minmax(0, 1fr); }
-  .task-detail-view > .task-board-message,
-  .task-detail-view > .task-detail-form,
-  .task-detail-view > .task-related-versions,
-  .task-detail-view > .task-comments { grid-column: 1; grid-row: auto; }
+@media (max-width: 760px) {
+  .task-detail-dialog { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .task-detail-modal-header { min-height: 64px; padding: 10px 14px; }
+  .task-detail-modal-header h2 { font-size: 16px; }
+  .task-detail-view { display: flex; flex-direction: column; overflow-y: auto; }
+  .task-detail-main-scroll { flex: 0 0 auto; overflow: visible; padding: 16px; }
+  .task-comments { flex: 0 0 auto; min-height: 360px; border-top: 1px solid #35445c; border-left: 0; }
+  .task-comment-list { flex: 1 1 auto; }
+  .task-comments-empty { flex: 1 0 120px; }
+  .task-comments-empty-note { min-height: 240px; border-top: 1px solid #35445c; border-left: 0; }
 }
 @media (max-width: 560px) {
   .task-board { padding: 12px; }
   .task-board-header { align-items: flex-start; }
-  .task-board-detail-header { flex-direction: column; }
   .task-board-header-actions { width: 100%; }
   .task-board-header-actions button { flex: 1; }
   .task-board-toolbar { flex-wrap: wrap; }
@@ -853,5 +896,10 @@ onUnmounted(() => {
   .task-board-search-mode { flex: 1 1 110px; }
   .task-board-toolbar input { flex: 1 1 100%; order: 2; }
   .task-board-count { margin-left: auto; }
+  .task-detail-form { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  .task-detail-form > label:not(:first-child) { margin-top: 7px; }
+  .task-date-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .task-detail-actions { margin-top: 14px; }
+  .task-detail-actions button { flex: 1 1 100%; }
 }
 </style>

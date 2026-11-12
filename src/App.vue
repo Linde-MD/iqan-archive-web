@@ -113,7 +113,8 @@ function navigateTaskBoardChild(child: string[], action: 'push' | 'replace' | 'b
   if (!activeProjectId.value) return;
   if (action === 'back') {
     const previous = window.history.state?.back;
-    if (typeof previous === 'string' && previous.includes(`/projects/${encodeURIComponent(activeProjectId.value)}/tasks`)) {
+    const previousPath = typeof previous === 'string' ? previous.split('?')[0] : '';
+    if (previousPath === projectPath(activeProjectId.value, 'tasks')) {
       void router.back();
     } else {
       void router.replace(projectPath(activeProjectId.value, 'tasks'));
