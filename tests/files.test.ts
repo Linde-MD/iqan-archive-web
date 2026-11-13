@@ -3,10 +3,11 @@ import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, mergeDocumentCandidates, orderDocumentCandidates, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
+import { serializeProjectSnapshot } from '../src/domain/project-snapshot';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
-import { JSON_BACKUP_LOCATION, listJsonBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
+import { deleteProjectBackups, JSON_BACKUP_LOCATION, listImportJsonBackups, listJsonBackups, listProjectBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
 import { deleteLocalDocumentCopy, scanDocumentDirectories, scanDocumentDirectory, scanDocumentLocalDeletion } from '../src/files/document-directories';
 
 const databases: Dexie[] = [];
@@ -49,7 +50,7 @@ function writableDirectory(name: string, initial: Record<string, string> = {}, p
   const contents = new Map(Object.entries(initial));
   const makeFile = (fileName: string): FileHandle => ({
     kind: 'file', name: fileName,
-    async getFile() { return new File([contents.get(fileName) ?? ''], fileName); },
+    async getFile() { return new File([contents.get(fileName) ?? ''], fileName, { lastModified: 1234 }); },
     async createWritable() {
       let value = '';
       return {
@@ -69,6 +70,9 @@ function writableDirectory(name: string, initial: Record<string, string> = {}, p
       if (contents.has(fileName)) return makeFile(fileName);
       if (options?.create) { contents.set(fileName, ''); return makeFile(fileName); }
       throw new DOMException(`文件缺失：${fileName}`, 'NotFoundError');
+    },
+    async removeEntry(fileName) {
+      if (!contents.delete(fileName)) throw new DOMException('文件缺失', 'NotFoundError');
     },
   };
   return { handle, contents };
@@ -369,19 +373,105 @@ describe('统一归档根目录 JSON 文件', () => {
       .rejects.toThrow('授权已失效');
   });
 
-  it('导出在归档根目录创建唯一 JSON，遇到重名则换名，不覆盖旧备份', async () => {
-    const stamp = '261106-T12-00';
-    const baseName = `IQAN-项目-${stamp}`;
+  it('导入列表先按文件名匹配当前项目，再按修改时间倒序，首页只按时间排序', async () => {
+    const datedFile = (name: string, lastModified: number): FileHandle => ({
+      kind: 'file', name, async getFile() { return new File(['{}'], name, { lastModified }); },
+    });
+    const root = directory('root', [
+      datedFile('其他.json', 900),
+      datedFile('IQAN-项目A-旧.json', 100),
+      datedFile('IQAN-项目a-新.JSON', 300),
+      datedFile('项目A-相同时间.json', 300),
+      datedFile('项目A.txt', 1000),
+    ]);
+    expect((await listImportJsonBackups(root, '项目A')).map(item => item.name)).toEqual([
+      'IQAN-项目a-新.JSON', '项目A-相同时间.json', 'IQAN-项目A-旧.json', '其他.json',
+    ]);
+    expect((await listImportJsonBackups(root, '')).map(item => item.name)).toEqual([
+      '其他.json', 'IQAN-项目a-新.JSON', '项目A-相同时间.json', 'IQAN-项目A-旧.json',
+    ]);
+    expect((await listImportJsonBackups(root, 'json')).map(item => item.name)[0]).toBe('其他.json');
+  });
+
+  it('导入排序匹配导出时的安全文件名，元数据读取失败时拒绝不完整列表', async () => {
+    const repository = repo();
+    const project = await repository.create('甲/乙', '001');
+    const root = writableDirectory('root', { 'other.json': '{}', 'IQAN-甲_乙-2026-1106-T12-1.json': '{}' });
+    expect((await listImportJsonBackups(root.handle, project.project.name))[0]!.name)
+      .toBe('IQAN-甲_乙-2026-1106-T12-1.json');
+    const broken: FileHandle = { kind: 'file', name: 'broken.json', async getFile() { throw new Error('权限失效'); } };
+    await expect(listImportJsonBackups(directory('root', [file('ok.json'), broken]), '甲'))
+      .rejects.toThrow('读取 JSON 文件“broken.json”的修改时间失败：权限失效');
+  });
+
+  it('导出使用指定日期格式及连续编号创建唯一 JSON，不覆盖旧备份', async () => {
+    const stamp = '2026-1106-T12';
     const root = writableDirectory('IQAN_Archive', {
-      [`${baseName}.json`]: 'existing backup',
-      [`${baseName}-1.json`]: 'first duplicate',
+      [`IQAN-项目-${stamp}-1.json`]: 'existing backup',
+      [`IQAN-项目-${stamp}-2.json`]: 'first duplicate',
     });
     const name = await writeJsonBackup(root.handle, '项目', '{"schemaVersion":3}', new Date(2026, 10, 6, 12, 0));
-    expect(name).toBe(`${baseName}-2.json`);
-    expect(root.contents.get(`${baseName}.json`)).toBe('existing backup');
-    expect(root.contents.get(`${baseName}-1.json`)).toBe('first duplicate');
+    expect(name).toBe(`IQAN-项目-${stamp}-3.json`);
+    expect(root.contents.get(`IQAN-项目-${stamp}-1.json`)).toBe('existing backup');
+    expect(root.contents.get(`IQAN-项目-${stamp}-2.json`)).toBe('first duplicate');
     expect(root.contents.get(name)).toBe('{"schemaVersion":3}');
+
+    const emptyRoot = writableDirectory('IQAN_Archive');
+    expect(await writeJsonBackup(emptyRoot.handle, '项目', '{}', new Date(2026, 10, 6, 12, 0)))
+      .toBe(`IQAN-项目-${stamp}-1.json`);
     await expect(writeJsonBackup({ ...root.handle, async queryPermission() { return 'denied'; } }, '项目', '{}'))
+      .rejects.toThrow('读写授权已失效');
+  });
+
+  it('按项目 ID 和修改时间识别备份，保留其他项目和无法识别的 JSON', async () => {
+    const repository = repo();
+    const first = await repository.create('甲', '001');
+    const second = await repository.create('乙', '002');
+    const own = serializeProjectSnapshot(await repository.snapshot(first.project.id));
+    const other = serializeProjectSnapshot(await repository.snapshot(second.project.id));
+    const root = writableDirectory('root', { 'old.json': own, 'new.json': own, 'other.json': other, 'invalid.json': '{' });
+    const originalGetFile = root.handle.getFileHandle;
+    root.handle.getFileHandle = async (name, options) => {
+      const handle = await originalGetFile(name, options);
+      return { ...handle, async getFile() { return new File([root.contents.get(name)!], name, { lastModified: name === 'new.json' ? 2000 : 1000 }); } };
+    };
+    root.handle.values = async function* () {
+      for (const name of root.contents.keys()) yield await root.handle.getFileHandle(name);
+    };
+    const list = await listProjectBackups(root.handle, first.project.id);
+    expect(list.backups.map(item => item.name)).toEqual(['new.json', 'old.json']);
+    expect(list.unrecognized.map(item => item.name)).toEqual(['invalid.json']);
+    expect(await deleteProjectBackups(root.handle, first.project.id, list.backups.slice(1))).toBe(1);
+    expect([...root.contents.keys()]).toEqual(['new.json', 'other.json', 'invalid.json']);
+    await expect(deleteProjectBackups(root.handle, second.project.id, list.backups.slice(0, 1))).rejects.toThrow('不属于当前项目');
+    root.contents.set('new.json', 'changed');
+    await expect(deleteProjectBackups(root.handle, first.project.id, list.backups.slice(0, 1))).rejects.toThrow('已更改');
+  });
+
+  it('删除中途失败时报告已删和未删数量', async () => {
+    const repository = repo();
+    const project = await repository.create('甲', '001');
+    const own = serializeProjectSnapshot(await repository.snapshot(project.project.id));
+    const root = writableDirectory('root', { 'a.json': own, 'b.json': own });
+    const list = await listProjectBackups(root.handle, project.project.id);
+    const remove = root.handle.removeEntry!;
+    let attempts = 0;
+    root.handle.removeEntry = async name => {
+      if (++attempts === 2) throw new DOMException('拒绝访问', 'NotAllowedError');
+      await remove(name);
+    };
+    await expect(deleteProjectBackups(root.handle, project.project.id, list.backups)).rejects.toThrow('已删除 1 个备份，剩余 1 个未删除');
+    expect(root.contents.size).toBe(1);
+  });
+
+  it('修改时间相同时按文件名自然顺序识别最新备份', async () => {
+    const repository = repo();
+    const project = await repository.create('甲', '001');
+    const own = serializeProjectSnapshot(await repository.snapshot(project.project.id));
+    const root = writableDirectory('root', { 'backup-9.json': own, 'backup-10.json': own });
+    expect((await listProjectBackups(root.handle, project.project.id)).backups.map(item => item.name))
+      .toEqual(['backup-10.json', 'backup-9.json']);
+    await expect(deleteProjectBackups({ ...root.handle, async queryPermission() { return 'denied'; } }, project.project.id, []))
       .rejects.toThrow('读写授权已失效');
   });
 });

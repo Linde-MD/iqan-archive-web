@@ -240,6 +240,64 @@ describe('项目 JSON 快照验证', () => {
     expect(await repo.listProjects()).toHaveLength(4);
   });
 
+  it('按零件号预览并覆盖当前项目，保留目标 ID、递增修订且不改变其他项目', async () => {
+    const repo = repository();
+    const source = graphFixture();
+    const target = await repo.create('原项目', '001');
+    const other = await repo.create('测试工程', '002');
+    const preview = await repo.previewSnapshotRestore(source, target.project.id);
+    expect(preview.target?.id).toBe(target.project.id);
+    expect(preview.nameMatches.map(project => project.id)).toEqual([other.project.id]);
+    const result = await repo.restoreSnapshot(source, target.project.id, preview);
+    expect(result.project).toMatchObject({ id: target.project.id, name: source.project.name, revision: 1 });
+    expect(result.nodes).toHaveLength(source.nodes.length);
+    expect(result.nodes.every(node => node.projectId === target.project.id)).toBe(true);
+    expect(result.edges[0]!.parentId).toBe(result.nodes[0]!.id);
+    expect(await repo.get(other.project.id)).toEqual(other);
+    const stored = await repo.get(target.project.id);
+    expect(stored.project).toEqual(result.project);
+    expect(stored.nodes).toEqual(expect.arrayContaining(result.nodes));
+    expect(stored.edges).toEqual(expect.arrayContaining(result.edges));
+    expect(stored.branches).toEqual(expect.arrayContaining(result.branches));
+    expect(stored.tasks).toEqual(expect.arrayContaining(result.tasks));
+  });
+
+  it('项目页不匹配及多个零件号匹配时禁止覆盖，首页无匹配时新增', async () => {
+    const repo = repository();
+    const source = graphFixture();
+    const other = await repo.create('其他', '002');
+    const blocked = await repo.previewSnapshotRestore(source, other.project.id);
+    expect(blocked.blockedReason).toContain('不能在此项目页导入');
+    await expect(repo.restoreSnapshot(source, other.project.id, blocked)).rejects.toThrow('不能在此项目页导入');
+    const add = await repo.previewSnapshotRestore(source, '');
+    expect(add.target).toBeNull();
+    expect((await repo.restoreSnapshot(source, '', add)).project.id).toBe(source.project.id);
+    await repo.create('重复零件号', '001');
+    const duplicate = await repo.previewSnapshotRestore(source, '');
+    expect(duplicate.blockedReason).toContain('多个项目');
+    await expect(repo.restoreSnapshot(source, '', duplicate)).rejects.toThrow('多个项目');
+  });
+
+  it('预览后目标变化或匹配变化时拒绝导入，写入失败时原子回滚', async () => {
+    const repo = repository();
+    const source = graphFixture();
+    const target = await repo.create('原项目', '001');
+    const preview = await repo.previewSnapshotRestore(source, '');
+    await repo.setPartNumber(target.project.id, 0, '003');
+    await expect(repo.restoreSnapshot(source, '', preview)).rejects.toThrow('重新预览');
+    const updated = await repo.get(target.project.id);
+    await repo.setPartNumber(target.project.id, updated.project.revision, '001');
+    const before = await repo.get(target.project.id);
+    const fresh = await repo.previewSnapshotRestore(source, '');
+    await repo.setPartNumber(target.project.id, before.project.revision, '001');
+    await expect(repo.restoreSnapshot(source, '', fresh)).rejects.toThrow('重新预览');
+    const latest = await repo.get(target.project.id);
+    const latestPreview = await repo.previewSnapshotRestore(source, '');
+    repo.db.tasks.hook('creating', () => { throw new Error('模拟覆盖失败'); });
+    await expect(repo.restoreSnapshot(source, '', latestPreview)).rejects.toThrow('模拟覆盖失败');
+    expect(await repo.get(target.project.id)).toEqual(latest);
+  });
+
   it('不导入目录绑定，跨表写入失败时回滚全部实体', async () => {
     const repo = repository();
     const source = graphFixture();

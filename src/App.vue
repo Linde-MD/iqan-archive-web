@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { liveQuery } from 'dexie';
-import { ArchiveDatabase, ArchiveRepository } from './storage/database';
+import { ArchiveDatabase, ArchiveRepository, type SnapshotImportPlan } from './storage/database';
 import type { Project, ProjectGraph } from './domain/model';
 import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/project-snapshot';
 import type { VersionOrder } from './domain/version-order';
@@ -13,7 +13,7 @@ const TaskBoard = defineAsyncComponent(() => import('./components/TaskBoard.vue'
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
-import { JSON_BACKUP_LOCATION, listJsonBackups, writeJsonBackup } from './files/archive-json';
+import { deleteProjectBackups, JSON_BACKUP_LOCATION, listImportJsonBackups, listProjectBackups, writeJsonBackup, type ProjectBackupList } from './files/archive-json';
 import { parseWorkspaceLocation, projectOverlayPath, projectPath, type ProjectView } from './workspace-routes';
 
 const db = new ArchiveDatabase();
@@ -57,10 +57,17 @@ const versionOrder = ref<VersionOrder>('newest');
 const backupMenu = ref<HTMLDetailsElement | null>(null);
 const backupMenuTrigger = ref<HTMLElement | null>(null);
 const importConfirmButton = ref<HTMLButtonElement | null>(null);
-const importPreview = shallowRef<{ graph: ProjectGraph; fileName: string; conflict: boolean } | null>(null);
+const importPreview = shallowRef<{ graph: ProjectGraph; fileName: string; plan: SnapshotImportPlan; currentProjectId: string } | null>(null);
 const importFiles = ref<FileHandle[]>([]);
 const importFileName = ref('');
 const importPicker = ref<HTMLDialogElement>();
+const backupManager = ref<HTMLDialogElement>();
+const backupList = shallowRef<ProjectBackupList>({ backups: [], unrecognized: [] });
+const selectedBackups = ref<string[]>([]);
+const backupDeleteConfirming = ref(false);
+const backupDeleteCancel = ref<HTMLButtonElement>();
+const backupProjectId = ref('');
+const backupRoot = shallowRef<DirectoryHandle>();
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const workspaceBusy = computed(() => filesBusy.value || graphBusy.value || taskBoardBusy.value);
@@ -333,6 +340,68 @@ async function importProjectFromMenu() {
   await chooseImportFromRoot();
 }
 
+async function openBackupManager() {
+  if (backupMenu.value) backupMenu.value.open = false;
+  const projectId = activeProjectId.value;
+  const root = archiveRoots.value[JSON_BACKUP_LOCATION];
+  if (!projectId || !root) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    const currentRoot = await repository.getArchiveRoot(JSON_BACKUP_LOCATION);
+    if (!currentRoot || !(await sameDirectory(root, currentRoot))) throw new Error('共享根目录已更改，请重新打开备份管理。');
+    const result = await listProjectBackups(root, projectId);
+    if (activeProjectId.value !== projectId) throw new Error('当前项目已更改，请重新打开备份管理。');
+    backupProjectId.value = projectId;
+    backupRoot.value = root;
+    backupList.value = result;
+    selectedBackups.value = [];
+    backupDeleteConfirming.value = false;
+    await nextTick();
+    backupManager.value?.showModal();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function prepareBackupDeletion(selectOlder = false) {
+  if (selectOlder) selectedBackups.value = backupList.value.backups.slice(1).map(item => item.name);
+  if (!selectedBackups.value.length) return;
+  backupDeleteConfirming.value = true;
+  await nextTick();
+  backupDeleteCancel.value?.focus();
+}
+
+async function removeSelectedBackups() {
+  const selected = backupList.value.backups.filter(item => selectedBackups.value.includes(item.name));
+  if (!selected.length) return;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    const root = backupRoot.value;
+    const currentRoot = await repository.getArchiveRoot(JSON_BACKUP_LOCATION);
+    if (!root || !currentRoot || !(await sameDirectory(root, currentRoot))) throw new Error('共享根目录已更改，请重新打开备份管理。');
+    if (activeProjectId.value !== backupProjectId.value) throw new Error('当前项目已更改，请重新打开备份管理。');
+    const refreshed = await listProjectBackups(root, backupProjectId.value);
+    if (JSON.stringify(refreshed) !== JSON.stringify(backupList.value)) throw new Error('备份列表已发生变化，请重新打开备份管理并确认。');
+    const count = await deleteProjectBackups(root, backupProjectId.value, selected);
+    selectedBackups.value = [];
+    backupDeleteConfirming.value = false;
+    status.value = `已删除 ${count} 个 JSON 备份。`;
+    try {
+      backupList.value = await listProjectBackups(root, backupProjectId.value);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : '未知错误';
+      throw new Error(`已删除 ${count} 个备份，但刷新列表失败：${detail}`);
+    }
+  } catch (cause) {
+    backupManager.value?.close();
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
 function closeBackupMenu() {
   if (backupMenu.value) backupMenu.value.open = false;
   backupMenuTrigger.value?.focus();
@@ -343,18 +412,25 @@ function onBackupMenuOutsidePointerDown(event: PointerEvent) {
 }
 
 async function chooseImportFromRoot() {
-  error.value = ''; status.value = '';
+  saving.value = true; error.value = ''; status.value = '';
   try {
     const root = archiveRoots.value[JSON_BACKUP_LOCATION];
+    const projectId = activeProjectId.value;
+    const projectName = activeProject.value?.name ?? '';
     if (!root) throw new Error('请先选择共享根目录。');
     if (!await checkPermission(root, false, 'readwrite')) throw new Error('共享根目录读写授权已失效，请重新授权。');
-    const files = await listJsonBackups(root);
+    const files = await listImportJsonBackups(root, projectName);
+    const currentRoot = await repository.getArchiveRoot(JSON_BACKUP_LOCATION);
+    if (!currentRoot || !(await sameDirectory(root, currentRoot))) throw new Error('共享根目录已更改，请重新选择 JSON 备份。');
+    if (activeProjectId.value !== projectId || (activeProject.value?.name ?? '') !== projectName)
+      throw new Error('当前项目已更改，请重新选择 JSON 备份。');
     importFiles.value = files;
     if (!files.length) { status.value = '共享根目录中没有 JSON 备份。'; return; }
     importFileName.value = files[0]!.name;
     await nextTick();
     importPicker.value?.showModal();
   } catch (cause) { showError(cause); }
+  finally { saving.value = false; }
 }
 
 async function readImportFileFromRoot() {
@@ -371,11 +447,13 @@ async function readImportFileFromRoot() {
     if (!await checkPermission(rootAtRead, false, 'readwrite')) throw new Error('共享根目录读写授权已失效，请重新授权。');
     const file = await fileHandle.getFile();
     const graph = await readProjectSnapshotFile(file);
-    const conflict = await repository.inspectSnapshotImport(graph);
-    importPreview.value = { graph, fileName: file.name, conflict };
+    const currentProjectId = activeProjectId.value;
+    const plan = await repository.previewSnapshotRestore(graph, currentProjectId);
+    importPreview.value = { graph, fileName: file.name, plan, currentProjectId };
     importPicker.value?.close();
     await nextTick();
-    importConfirmButton.value?.focus();
+    if (plan.blockedReason) document.getElementById('import-preview-title')?.focus();
+    else importConfirmButton.value?.focus();
   } catch (cause) {
     showError(cause);
   } finally {
@@ -388,15 +466,16 @@ async function confirmImport() {
   if (!pending) return;
   saving.value = true; error.value = ''; status.value = '';
   try {
-    const result = await repository.importSnapshot(pending.graph);
+    if (activeProjectId.value !== pending.currentProjectId) throw new Error('当前项目已更改，请重新预览导入。');
+    const result = await repository.restoreSnapshot(pending.graph, pending.currentProjectId, pending.plan);
     importPreview.value = null;
     projectsCollapsed.value = false;
-    if (!activeProjectId.value) {
-      void router.push(projectPath(result.graph.project.id, 'files'));
-    }
-    status.value = result.copied
-      ? `配置已作为“${result.graph.project.name}”的独立副本导入；内部身份已重新生成。请从当前归档根目录扫描项目子目录。`
-      : `项目“${result.graph.project.name}”已恢复，请从当前归档根目录扫描项目子目录。`;
+    editingProject.value = null;
+    archiveRootRevision.value++;
+    void router.push(projectPath(result.project.id, 'files'));
+    status.value = pending.plan.target
+      ? `项目“${result.project.name}”已覆盖恢复，请从当前归档根目录扫描项目子目录。`
+      : `项目“${result.project.name}”已新增，请从当前归档根目录扫描项目子目录。`;
   } catch (cause) {
     showError(cause);
   } finally {
@@ -443,7 +522,8 @@ onUnmounted(() => {
         <summary ref="backupMenuTrigger" class="topbar-menu-trigger"><AppIcon name="folder" />JSON 备份</summary>
         <div class="topbar-menu-items">
           <button v-if="activeProject" type="button" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="exportProjectFromMenu"><AppIcon name="download" />导出 JSON</button>
-          <button type="button" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="importProjectFromMenu"><AppIcon name="upload" />导入恢复</button>
+          <button type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="importProjectFromMenu"><AppIcon name="upload" />导入恢复</button>
+          <button v-if="activeProject" type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="openBackupManager"><AppIcon name="folder" />管理备份</button>
         </div>
       </details>
       <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="receiveArchiveRoots" @busy="rootBusy = $event" @error="showError" />
@@ -471,11 +551,14 @@ onUnmounted(() => {
         <h3 id="import-preview-title" tabindex="-1">导入预览</h3>
         <p><strong>{{ importPreview.graph.project.name }}</strong> · 零件号 {{ importPreview.graph.project.partNumber }}</p>
         <p>文件：{{ importPreview.fileName }} · {{ importPreview.graph.nodes.length }} 个版本 · {{ importPreview.graph.edges.length }} 条父边 · {{ importPreview.graph.branches.length }} 个分支 · {{ importPreview.graph.tasks.length }} 个任务</p>
-        <p v-if="importPreview.conflict" class="form-help">检测到项目或内部 ID 冲突。确认后将作为独立副本导入并重新生成全部内部 ID，不覆盖现有项目。</p>
-        <p v-else class="form-help">未发现 ID 冲突；恢复时保留项目身份。若确认前出现冲突，系统会自动改为副本导入。</p>
+        <p v-if="importPreview.plan.nameMatches.length" class="form-help">同名项目：{{ importPreview.plan.nameMatches.map(project => `${project.name}（${project.partNumber}）`).join('、') }}。</p>
+        <p v-if="importPreview.plan.partMatches.length" class="form-help">零件号匹配：{{ importPreview.plan.partMatches.map(project => `${project.name}（${project.partNumber}）`).join('、') }}。</p>
+        <p v-if="importPreview.plan.blockedReason" role="alert">{{ importPreview.plan.blockedReason }}</p>
+        <p v-else-if="importPreview.plan.target" class="form-help">确认后将覆盖项目“{{ importPreview.plan.target.name }}”（零件号 {{ importPreview.plan.target.partNumber }}）的全部配置，未保存的编辑草稿也会丢失。其他项目和磁盘工程文件不变。</p>
+        <p v-else class="form-help">未匹配到已有零件号，确认后新增项目。</p>
         <p class="form-help">JSON 不含本地文件或目录授权；导入后沿用当前归档根目录，按项目名称定位两个子目录并分别扫描。缺失子目录不会自动创建。</p>
         <div class="backup-actions">
-          <button ref="importConfirmButton" type="button" :disabled="saving || filesBusy || graphBusy" @click="confirmImport"><AppIcon name="check" />{{ saving ? '正在导入…' : importPreview.conflict ? '导入为副本' : '恢复此项目' }}</button>
+          <button ref="importConfirmButton" type="button" :disabled="saving || workspaceBusy || !!importPreview.plan.blockedReason" @click="confirmImport"><AppIcon name="check" />{{ saving ? '正在导入…' : importPreview.plan.target ? '确认覆盖项目' : '确认新增项目' }}</button>
           <button type="button" class="secondary" :disabled="saving" @click="cancelImport">取消</button>
         </div>
     </section>
@@ -489,6 +572,34 @@ onUnmounted(() => {
       <div class="actions">
         <button type="button" :disabled="saving || !importFileName" @click="readImportFileFromRoot">预览导入</button>
         <button type="button" class="secondary" :disabled="saving" @click="importPicker?.close()">取消</button>
+      </div>
+    </dialog>
+    <dialog ref="backupManager" class="branch-move-dialog backup-manager" aria-labelledby="backup-manager-title" @close="backupDeleteConfirming = false; backupMenuTrigger?.focus()">
+      <h3 id="backup-manager-title">管理项目备份</h3>
+      <p>按文件修改时间排序，最新备份位于首位。一键清除会先选中其余备份，确认后永久删除。</p>
+      <p v-if="status" role="status">{{ status }}</p>
+      <p v-if="backupList.unrecognized.length" class="form-help">有 {{ backupList.unrecognized.length }} 个 JSON 无法识别，未列入备份或清理；其中可能包含当前项目的备份。</p>
+      <details v-if="backupList.unrecognized.length">
+        <summary>查看无法识别的 JSON</summary>
+        <ul><li v-for="item in backupList.unrecognized" :key="item.name">{{ item.name }}：{{ item.reason }}</li></ul>
+      </details>
+      <p v-if="!backupList.backups.length">没有可识别的当前项目备份。</p>
+      <ul v-else class="backup-list">
+        <li v-for="(backup, index) in backupList.backups" :key="backup.name" :class="{ 'is-selected': selectedBackups.includes(backup.name) }">
+          <label><input v-model="selectedBackups" type="checkbox" :value="backup.name" :disabled="saving"><span>{{ backup.name }}<small>{{ new Date(backup.lastModified).toLocaleString() }}{{ index === 0 ? ' · 最新' : '' }}{{ selectedBackups.includes(backup.name) ? ' · 已选中' : '' }}</small></span></label>
+        </li>
+      </ul>
+      <div v-if="backupDeleteConfirming" class="backup-delete-confirm" role="group" aria-labelledby="backup-delete-title">
+        <p id="backup-delete-title">确定永久删除上方选中的 {{ selectedBackups.length }} 个 JSON 备份吗？此操作无法撤销。</p>
+        <div class="actions">
+          <button ref="backupDeleteCancel" type="button" class="secondary" :disabled="saving" @click="backupDeleteConfirming = false">取消删除</button>
+          <button type="button" :disabled="saving || !selectedBackups.length" @click="removeSelectedBackups">{{ saving ? '正在删除…' : '确认删除' }}</button>
+        </div>
+      </div>
+      <div v-else class="actions">
+        <button type="button" :disabled="saving || backupList.backups.length < 2" @click="prepareBackupDeletion(true)">一键清除旧备份</button>
+        <button type="button" class="secondary" :disabled="saving || !selectedBackups.length" @click="prepareBackupDeletion()">删除选中（{{ selectedBackups.length }}）</button>
+        <button type="button" class="secondary" :disabled="saving" @click="backupManager?.close()">关闭</button>
       </div>
     </dialog>
     <div :class="['app-workspace', { 'has-project': activeProjectId, 'projects-collapsed': activeProjectId && projectsCollapsed }]">

@@ -33,6 +33,13 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
   };
 }
 
+export interface SnapshotImportPlan {
+  target: Project | null;
+  partMatches: Project[];
+  nameMatches: Project[];
+  blockedReason: string;
+}
+
 export class ArchiveDatabase extends Dexie {
   projects!: Table<Project, string>;
   nodes!: Table<VersionNode, string>;
@@ -375,6 +382,59 @@ export class ArchiveRepository {
   async inspectSnapshotImport(graph: ProjectGraph): Promise<boolean> {
     validateGraph(graph);
     return this.db.transaction('r', [...this.tables, this.db.directoryBindings], () => this.importHasConflict(graph));
+  }
+
+  private async planSnapshotImport(graph: ProjectGraph, currentProjectId: string): Promise<SnapshotImportPlan> {
+    const projects = await this.db.projects.toArray();
+    const partMatches = projects.filter(project => project.partNumber.trim() === graph.project.partNumber.trim())
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const nameMatches = projects.filter(project => project.name.trim() === graph.project.name.trim())
+      .sort((a, b) => a.id.localeCompare(b.id));
+    let blockedReason = '';
+    if (partMatches.length > 1) blockedReason = '多个项目的零件号相同，无法确定覆盖目标；请先解决重复零件号。';
+    else if (currentProjectId && partMatches[0]?.id !== currentProjectId)
+      blockedReason = '备份零件号未唯一匹配当前项目，不能在此项目页导入。';
+    return { target: partMatches.length === 1 ? partMatches[0]! : null, partMatches, nameMatches, blockedReason };
+  }
+
+  async previewSnapshotRestore(graph: ProjectGraph, currentProjectId: string): Promise<SnapshotImportPlan> {
+    validateGraph(graph);
+    return this.db.transaction('r', this.tables, () => this.planSnapshotImport(graph, currentProjectId));
+  }
+
+  async restoreSnapshot(graph: ProjectGraph, currentProjectId: string, preview: SnapshotImportPlan): Promise<ProjectGraph> {
+    validateGraph(graph);
+    return this.db.transaction('rw', [...this.tables, this.db.directoryBindings], async () => {
+      const current = await this.planSnapshotImport(graph, currentProjectId);
+      const signature = (plan: SnapshotImportPlan) => JSON.stringify({
+        blockedReason: plan.blockedReason,
+        partMatches: plan.partMatches.map(({ id, name, partNumber, revision }) => ({ id, name, partNumber, revision })),
+        nameMatches: plan.nameMatches.map(({ id, name, partNumber, revision }) => ({ id, name, partNumber, revision })),
+      });
+      requireCondition(!current.blockedReason, 'SNAPSHOT_TARGET', current.blockedReason);
+      requireCondition(signature(current) === signature(preview), 'SNAPSHOT_STALE', '项目或冲突情况已变化，请重新预览导入。');
+      const clean = configurationOnly(graph);
+      clean.project.engineeringDirectoryHint = '';
+      clean.project.wordDirectoryHint = '';
+      if (current.target) {
+        const imported = await this.remapImportedGraph(clean);
+        const projectId = current.target.id;
+        imported.project.id = projectId;
+        imported.project.revision = current.target.revision + 1;
+        for (const item of [...imported.nodes, ...imported.edges, ...imported.branches, ...imported.tasks]) item.projectId = projectId;
+        validateGraph(imported);
+        await this.write(imported);
+        return imported;
+      }
+      const imported = await this.importHasConflict(clean) ? await this.remapImportedGraph(clean) : clean;
+      validateGraph(imported);
+      await this.db.nodes.bulkAdd(imported.nodes);
+      await this.db.edges.bulkAdd(imported.edges);
+      await this.db.branches.bulkAdd(imported.branches);
+      await this.db.tasks.bulkAdd(imported.tasks);
+      await this.db.projects.add(imported.project);
+      return imported;
+    });
   }
 
   async importSnapshot(graph: ProjectGraph): Promise<{ graph: ProjectGraph; copied: boolean }> {
