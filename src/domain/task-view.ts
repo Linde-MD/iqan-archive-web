@@ -1,5 +1,6 @@
 import type { Branch, ProjectGraph, Task } from './model';
 import { GIT_GRAPH, type GitGraphEdge, type GitGraphLayout, type GitGraphRow } from './git-graph';
+import { compareTaskListIds } from './task-board';
 
 export interface TaskRun {
   id: string;
@@ -27,21 +28,7 @@ export interface TaskViewLayout extends Omit<GitGraphLayout, 'rows' | 'edges' | 
 }
 
 export function sortTasksByExternalId(tasks: readonly Task[]): Task[] {
-  return [...tasks].sort((left, right) => {
-    const leftId = left.externalTaskId?.trim() ?? '';
-    const rightId = right.externalTaskId?.trim() ?? '';
-    if (!leftId || !rightId) {
-      if (!leftId && rightId) return 1;
-      if (leftId && !rightId) return -1;
-      return left.name.localeCompare(right.name);
-    }
-    const normalizedLeft = leftId.replace(/^0+(?=\d)/, '');
-    const normalizedRight = rightId.replace(/^0+(?=\d)/, '');
-    return normalizedLeft.length - normalizedRight.length
-      || normalizedLeft.localeCompare(normalizedRight)
-      || leftId.localeCompare(rightId)
-      || left.name.localeCompare(right.name);
-  });
+  return [...tasks].sort(compareTaskListIds);
 }
 
 export function taskViewRuns(graph: ProjectGraph, layout: GitGraphLayout): TaskRun[] {

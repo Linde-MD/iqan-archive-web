@@ -31,16 +31,22 @@ function fixture() {
 }
 
 describe('分支内连续任务节点投影', () => {
-  it('按外部任务 ID 的数值顺序排序，无 ID 任务排在末尾', () => {
+  it('按外部任务 ID 数值倒序排列，保留大数字精度及无 ID 任务', () => {
     const graph = fixture();
-    graph.tasks.push({
-      id: 'task-ten', projectId: graph.project.id, parentTaskId: null, name: '任务 10', description: '', externalTaskId: '10',
-      statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
-      startDate: null, dueDate: null, sortOrder: 0, comments: [],
-    });
+    const base = graph.tasks[0]!;
+    graph.tasks[1]!.name = 'Z';
+    graph.tasks.push(
+      { ...base, id: 'task-ten', name: '任务 10', externalTaskId: '10' },
+      { ...base, id: 'task-big', name: '大编号', externalTaskId: '9007199254740993' },
+      { ...base, id: 'task-big-previous', name: '大编号前一项', externalTaskId: '9007199254740992' },
+      { ...base, id: 'task-one', name: '任务 1', externalTaskId: '1' },
+      { ...base, id: 'task-no-id', name: 'A', externalTaskId: null },
+    );
+    const original = graph.tasks.map(task => task.id);
     expect(sortTasksByExternalId(graph.tasks).map(task => task.id)).toEqual([
-      'task-a', 'task-empty', 'task-ten', 'task-b',
+      'task-big', 'task-big-previous', 'task-ten', 'task-empty', 'task-a', 'task-one', 'task-no-id', 'task-b',
     ]);
+    expect(graph.tasks.map(task => task.id)).toEqual(original);
   });
 
   it('只把同一轨道内连续且任务相同的版本组成任务段', () => {
