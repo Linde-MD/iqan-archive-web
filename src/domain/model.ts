@@ -104,6 +104,7 @@ export function orderedBranches(branches: readonly Branch[]): Branch[] {
 export interface Task {
   id: string;
   projectId: string;
+  parentTaskId: string | null;
   name: string;
   description: string;
   externalTaskId: string | null;
@@ -126,7 +127,7 @@ export interface ProjectGraph {
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 5;
+  schemaVersion: 6;
   graph: Omit<ProjectGraph, 'project' | 'branches'> & {
     project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision' | 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>;
     branches: Array<Omit<Branch, 'order'>>;

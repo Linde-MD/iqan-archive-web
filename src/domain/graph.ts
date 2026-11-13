@@ -48,6 +48,7 @@ export function validateGraph(graph: ProjectGraph): void {
   }
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
   const taskIds = new Set(tasks.map(task => task.id));
+  const taskMap = new Map(tasks.map(task => [task.id, task]));
   const optionIds = {
     status: new Set(project.statusOptions.map(option => option.id)),
     type: new Set(project.typeOptions.map(option => option.id)),
@@ -58,6 +59,7 @@ export function validateGraph(graph: ProjectGraph): void {
   const externalTaskIds = new Set<string>();
   const taskOrderKeys = new Set<string>();
   for (const task of tasks) {
+    requireCondition(task.parentTaskId === null || (typeof task.parentTaskId === 'string' && taskIds.has(task.parentTaskId)), 'TASK_PARENT_REFERENCE', '父任务不存在或不属于当前项目。');
     requireCondition(task.name.trim(), 'TASK_NAME', '任务名称不能为空。');
     const value = normalizeExternalTaskId(task.externalTaskId);
     requireCondition(value === task.externalTaskId, 'TASK_ID_NORMALIZATION', 'Task ID 必须先去除首尾空白，空值存为 null。');
@@ -83,6 +85,17 @@ export function validateGraph(graph: ProjectGraph): void {
       const updatedAt = Date.parse(comment.updatedAt);
       requireCondition(Number.isFinite(createdAt) && Number.isFinite(updatedAt) && updatedAt >= createdAt, 'TASK_COMMENT_TIME', '评论时间无效。');
     }
+  }
+  const visitedTasks = new Set<string>();
+  for (const task of tasks) {
+    const path = new Set<string>();
+    let current: Task | undefined = task;
+    while (current && !visitedTasks.has(current.id)) {
+      requireCondition(!path.has(current.id), 'TASK_PARENT_CYCLE', '任务父子关系不能成环。');
+      path.add(current.id);
+      current = current.parentTaskId === null ? undefined : taskMap.get(current.parentTaskId);
+    }
+    for (const id of path) visitedTasks.add(id);
   }
   for (const node of nodes) {
     requireCondition(node.version.trim() && node.version === node.version.trim(), 'VERSION', '版本号不能为空或含首尾空白。');
@@ -263,6 +276,7 @@ export function deleteTask(graph: ProjectGraph, taskId: string): ProjectGraph {
   requireCondition(graph.tasks.some(task => task.id === taskId), 'TASK_REFERENCE', '任务不存在。');
   const next = structuredClone(graph);
   next.tasks = next.tasks.filter(task => task.id !== taskId);
+  for (const task of next.tasks) if (task.parentTaskId === taskId) task.parentTaskId = null;
   for (const node of next.nodes) if (node.taskId === taskId) node.taskId = null;
   reindexTaskLanes(next.tasks);
   validateGraph(next);

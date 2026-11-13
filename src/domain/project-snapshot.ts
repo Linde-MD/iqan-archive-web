@@ -65,7 +65,7 @@ export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
 
 export function parseProjectSnapshot(value: unknown): ProjectGraph {
   let root = record(value, '快照', ['schemaVersion', 'graph']);
-  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4 和 5 配置文件。');
+  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5 || root.schemaVersion === 6, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4、5 和 6 配置文件。');
   if (root.schemaVersion === 3) {
     const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
     requireCondition(Array.isArray(legacy.tasks), 'SNAPSHOT_TYPE', 'graph.tasks 必须为数组。');
@@ -130,6 +130,14 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
         },
       },
     };
+  }
+  if (root.schemaVersion === 5) {
+    const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
+    const tasks = parseItems(legacy.tasks, 'graph.tasks', [
+      'id', 'projectId', 'name', 'description', 'externalTaskId', 'statusOptionId', 'typeOptionId', 'priorityOptionId',
+      'assigneeId', 'startDate', 'dueDate', 'sortOrder', 'comments',
+    ], item => ({ ...item, parentTaskId: null }));
+    root = { schemaVersion: 6, graph: { ...legacy, tasks } };
   }
   const source = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
   requireCondition(
@@ -205,11 +213,12 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       order: index,
     })),
     tasks: parseItems(source.tasks, 'graph.tasks', [
-      'id', 'projectId', 'name', 'description', 'externalTaskId', 'statusOptionId', 'typeOptionId', 'priorityOptionId',
+      'id', 'projectId', 'parentTaskId', 'name', 'description', 'externalTaskId', 'statusOptionId', 'typeOptionId', 'priorityOptionId',
       'assigneeId', 'startDate', 'dueDate', 'sortOrder', 'comments',
     ], item => ({
       id: text(item.id, 'task.id'),
       projectId: text(item.projectId, 'task.projectId'),
+      parentTaskId: nullableText(item.parentTaskId, 'task.parentTaskId'),
       name: text(item.name, 'task.name'),
       description: text(item.description, 'task.description'),
       externalTaskId: nullableText(item.externalTaskId, 'task.externalTaskId'),

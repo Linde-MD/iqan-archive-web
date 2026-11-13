@@ -10,10 +10,10 @@ function fixture() {
   const projectId = graph.project.id;
   const [backlog, pending] = graph.project.statusOptions;
   graph.tasks = [
-    { id: 'b', projectId, name: 'B', description: '', externalTaskId: null, statusOptionId: backlog!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 1, comments: [] },
-    { id: 'a', projectId, name: 'A', description: '', externalTaskId: null, statusOptionId: backlog!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
-    { id: 'c', projectId, name: 'C', description: '', externalTaskId: null, statusOptionId: pending!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
-    { id: 'u', projectId, name: 'Unassigned', description: '', externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
+    { id: 'b', projectId, parentTaskId: null, name: 'B', description: '', externalTaskId: null, statusOptionId: backlog!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 1, comments: [] },
+    { id: 'a', projectId, parentTaskId: null, name: 'A', description: '', externalTaskId: null, statusOptionId: backlog!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
+    { id: 'c', projectId, parentTaskId: null, name: 'C', description: '', externalTaskId: null, statusOptionId: pending!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
+    { id: 'u', projectId, parentTaskId: null, name: 'Unassigned', description: '', externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
   ];
   return graph;
 }
@@ -85,6 +85,26 @@ describe('任务看板顺序变换', () => {
     expect(() => validateGraph(removed)).not.toThrow();
   });
 
+  it('父子任务必须属于同项目且不能自关联或成环，删除父任务只解除直接子任务', () => {
+    const graph = fixture();
+    const a = graph.tasks.find(task => task.id === 'a')!;
+    const b = graph.tasks.find(task => task.id === 'b')!;
+    const c = graph.tasks.find(task => task.id === 'c')!;
+    b.parentTaskId = a.id;
+    c.parentTaskId = b.id;
+    expect(() => validateGraph(graph)).not.toThrow();
+    const removed = removeTask(graph, a.id);
+    expect(removed.tasks.find(task => task.id === 'b')!.parentTaskId).toBeNull();
+    expect(removed.tasks.find(task => task.id === 'c')!.parentTaskId).toBe(b.id);
+    expect(graph.tasks.find(task => task.id === 'b')!.parentTaskId).toBe(a.id);
+    a.parentTaskId = a.id;
+    expect(() => validateGraph(graph)).toThrow('成环');
+    a.parentTaskId = c.id;
+    expect(() => validateGraph(graph)).toThrow('成环');
+    a.parentTaskId = 'foreign-task';
+    expect(() => validateGraph(graph)).toThrow('父任务不存在');
+  });
+
   it('跨泳道移动、同泳道插入并重排来源与目标', () => {
     const graph = fixture();
     const backlogId = graph.project.statusOptions[0]!.id;
@@ -145,7 +165,7 @@ describe('任务看板顺序变换', () => {
       let graph = await repo.create('任务看板', '001');
       const [backlog, pending] = graph.project.statusOptions;
       const createTask = (id: string, sortOrder: number) => ({
-        id, projectId: graph.project.id, name: id, description: '', externalTaskId: null,
+        id, projectId: graph.project.id, parentTaskId: null, name: id, description: '', externalTaskId: null,
         statusOptionId: backlog!.id, typeOptionId: null, priorityOptionId: null, assigneeId: null,
         startDate: null, dueDate: null, sortOrder, comments: [],
       });
@@ -170,13 +190,40 @@ describe('任务看板顺序变换', () => {
     }
   });
 
+  it('父子关系持久化，成环写入被拒绝，删除父任务原子解除子任务', async () => {
+    const db = new ArchiveDatabase(`task-parent-${crypto.randomUUID()}`);
+    try {
+      const repo = new ArchiveRepository(db);
+      let graph = await repo.create('任务层级', '001');
+      const base = {
+        projectId: graph.project.id, parentTaskId: null, description: '', externalTaskId: null,
+        statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
+        startDate: null, dueDate: null, comments: [],
+      };
+      graph = await repo.saveTask(graph.project.id, graph.project.revision, { ...base, id: 'parent', name: '父', sortOrder: 0 });
+      graph = await repo.saveTask(graph.project.id, graph.project.revision, { ...base, id: 'child', name: '子', sortOrder: 1, parentTaskId: 'parent' });
+      const before = await repo.get(graph.project.id);
+      const parent = graph.tasks.find(task => task.id === 'parent')!;
+      await expect(repo.saveTask(graph.project.id, graph.project.revision, { ...parent, parentTaskId: 'child' })).rejects.toThrow('成环');
+      expect(await repo.get(graph.project.id)).toEqual(before);
+      graph = await repo.deleteTask(graph.project.id, graph.project.revision, 'parent');
+      expect(graph.tasks).toHaveLength(1);
+      expect(graph.tasks[0]!.parentTaskId).toBeNull();
+      db.close();
+      await db.open();
+      expect((await repo.get(graph.project.id)).tasks[0]!.parentTaskId).toBeNull();
+    } finally {
+      await db.delete();
+    }
+  });
+
   it('评论新增、编辑和删除经项目 revision 原子保存', async () => {
     const db = new ArchiveDatabase(`task-comments-${crypto.randomUUID()}`);
     try {
       const repo = new ArchiveRepository(db);
       const graph = await repo.create('评论测试', '002');
       const task = {
-        id: 'comment-task', projectId: graph.project.id, name: '有评论的任务', description: '', externalTaskId: null,
+        id: 'comment-task', projectId: graph.project.id, parentTaskId: null, name: '有评论的任务', description: '', externalTaskId: null,
         statusOptionId: graph.project.statusOptions[0]!.id, typeOptionId: null, priorityOptionId: null,
         assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [],
       };

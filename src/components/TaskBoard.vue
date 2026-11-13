@@ -104,6 +104,28 @@ const lanes = computed(() => {
 });
 const taskIndexById = computed(() => new Map(lanes.value.flatMap(lane => lane.tasks)
   .map((task, index) => [task.id, index] as const)));
+const parentTaskCandidates = computed(() => {
+  const tasks = graph.value?.tasks ?? [];
+  const draftId = taskDraft.value?.id;
+  const children = new Map<string, string[]>();
+  for (const task of tasks) {
+    if (!task.parentTaskId) continue;
+    const siblings = children.get(task.parentTaskId) ?? [];
+    siblings.push(task.id);
+    children.set(task.parentTaskId, siblings);
+  }
+  const excluded = new Set<string>();
+  const pending = draftId ? [draftId] : [];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (excluded.has(id)) continue;
+    excluded.add(id);
+    pending.push(...(children.get(id) ?? []));
+  }
+  return tasks.filter(task => !excluded.has(task.id));
+});
+const childTasks = computed(() => (graph.value?.tasks ?? [])
+  .filter(task => taskDraft.value?.id && task.parentTaskId === taskDraft.value.id));
 const optionDraftChanged = computed(() => {
   const current = graph.value?.project[optionKey.value] ?? [];
   return JSON.stringify(optionDraft.value) !== JSON.stringify(current);
@@ -140,7 +162,7 @@ function createTask(statusOptionId?: string | null, updateRoute = true) {
   const defaultStatus = current.project.statusOptions[0]?.id ?? null;
   const targetStatus = statusOptionId === undefined ? defaultStatus : statusOptionId;
   const task: Task = {
-    id: '', projectId: current.project.id, name: '', description: '', externalTaskId: null,
+    id: '', projectId: current.project.id, parentTaskId: null, name: '', description: '', externalTaskId: null,
     statusOptionId: targetStatus, typeOptionId: null, priorityOptionId: null, assigneeId: null,
     startDate: null, dueDate: null, sortOrder: tasksInLane(current, targetStatus).length, comments: [],
   };
@@ -211,7 +233,7 @@ async function submitTask() {
 async function deleteCurrentTask() {
   const current = graph.value;
   const task = taskDraft.value;
-  if (!current || !task?.id || !window.confirm(`删除“${task.name}”及其评论，并解除所有版本关联吗？版本图关系不会改变。`)) return;
+  if (!current || !task?.id || !window.confirm(`删除“${task.name}”及其评论，并解除所有版本关联吗？${childTasks.value.length} 个直接子任务将解除父任务关联，不会被删除。版本图关系不会改变。`)) return;
   saving.value = true;
   try {
     graph.value = await props.repository.deleteTask(props.projectId, current.project.revision, task.id);
@@ -660,6 +682,20 @@ onUnmounted(() => {
           <input id="task-board-name" v-model="taskDraft.name" required :disabled="saving || taskDraftStale" />
           <label for="task-board-external-id">Task ID <span>可选，1–16 位数字</span></label>
           <input id="task-board-external-id" v-model="taskDraft.externalTaskId" inputmode="numeric" placeholder="未设置" :disabled="saving || taskDraftStale" />
+          <label for="task-board-parent">父任务</label>
+          <select id="task-board-parent" v-model="taskDraft.parentTaskId" :disabled="saving || taskDraftStale">
+            <option :value="null">无父任务</option>
+            <option v-for="candidate in parentTaskCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.externalTaskId ? `${candidate.externalTaskId} · ` : '' }}{{ candidate.name }}</option>
+          </select>
+          <div v-if="taskDraft.id" class="task-child-list">
+            <span>子任务（{{ childTasks.length }}）</span>
+            <ul v-if="childTasks.length">
+              <li v-for="child in childTasks" :key="child.id">
+                <button type="button" class="secondary" :disabled="saving" @click="switchTask(child.id)">{{ child.externalTaskId ? `${child.externalTaskId} · ` : '' }}{{ child.name }}</button>
+              </li>
+            </ul>
+            <p v-else class="form-help">暂无子任务</p>
+          </div>
           <label for="task-board-status">Status</label>
           <select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="saving || taskDraftStale">
             <option :value="null">未分组</option>
@@ -815,6 +851,11 @@ onUnmounted(() => {
 .task-date-grid input { padding: 9px 7px; font-size: 12px; }
 .task-detail-form #task-board-description { align-self: start; }
 .task-detail-form > .form-help { grid-column: 1 / -1; margin: 0; }
+.task-child-list { grid-column: 1 / -1; min-width: 0; }
+.task-child-list > span { color: #b6c4d8; }
+.task-child-list ul { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 8px 0 0; padding: 0; }
+.task-child-list li { min-width: 0; max-width: 100%; }
+.task-child-list button { min-height: 44px; max-width: 100%; overflow-wrap: anywhere; }
 .task-detail-actions { display: flex; grid-column: 1 / -1; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
 .task-detail-actions button { min-height: 44px; }
 .task-related-versions { margin-top: 26px; padding-top: 18px; border-top: 1px solid #35445c; }

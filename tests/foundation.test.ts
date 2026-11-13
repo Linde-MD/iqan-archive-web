@@ -20,7 +20,7 @@ function fixture(): ProjectGraph {
 function task(graph: ProjectGraph, id: string, externalTaskId: string | null): Task {
   const sortOrder = graph.tasks.filter(candidate => candidate.statusOptionId === null).length;
   return {
-    id, projectId: graph.project.id, name: id, description: '', externalTaskId,
+    id, projectId: graph.project.id, parentTaskId: null, name: id, description: '', externalTaskId,
     statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
     startDate: null, dueDate: null, sortOrder, comments: [],
   };
@@ -340,9 +340,9 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v8 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v10 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(10).stores({ projects: 'id' });
+    future.db.version(11).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -382,6 +382,7 @@ describe('Dexie 原子持久化', () => {
     const db = new ArchiveDatabase(name);
     databases.push(db);
     const migrated = await new ArchiveRepository(db).get(project.project.id);
+    expect(migrated.tasks.every(task => task.parentTaskId === null)).toBe(true);
     expect(migrated.project.statusOptions.map(option => option.name)).toEqual([
       'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
     ]);
@@ -452,6 +453,29 @@ describe('Dexie 原子持久化', () => {
     expect(migrated.project.priorityOptions.map(option => option.id)).toEqual([highest!.id, higher!.id, normal!.id, lower!.id, lowest!.id]);
   });
 
+  it('v9 到 v10 为旧任务初始化父任务字段且保留其他数据', async () => {
+    const name = `parent-migration-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(9).stores({
+      projects: 'id',
+      nodes: 'id, projectId, &[projectId+version]',
+      edges: 'id, projectId',
+      branches: 'id, projectId',
+      tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId',
+      archiveRoots: 'id',
+    });
+    const graph = createProject('旧任务', '001');
+    const { parentTaskId: _parentTaskId, ...legacyTask } = task(graph, 'old', '001');
+    await legacy.table('projects').add(graph.project);
+    await legacy.table('tasks').add(legacyTask);
+    legacy.close();
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    const migrated = await new ArchiveRepository(db).get(graph.project.id);
+    expect(migrated.tasks).toEqual([{ ...legacyTask, parentTaskId: null }]);
+  });
+
   it('当前 schema 保存/重开往返，配置快照显式排除额外属性和权限', async () => {
     const repo = repository();
     let graph = await seed(repo);
@@ -463,7 +487,7 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes[0]).not.toHaveProperty('command');
     repo.db.close();
     await repo.db.open();
-    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(5);
+    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(6);
     const snapshot = (await repo.snapshot(graph.project.id)).graph;
     expect(snapshot.nodes).toEqual(stored.nodes);
     expect(snapshot.tasks).toEqual(stored.tasks);

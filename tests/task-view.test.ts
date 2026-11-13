@@ -7,9 +7,9 @@ function fixture() {
   const graph = createProject('任务视图', '123');
   const projectId = graph.project.id;
   graph.tasks = [
-    { id: 'task-a', projectId, name: '任务 A', description: '', externalTaskId: '001', statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
-    { id: 'task-b', projectId, name: '任务 B', description: '', externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
-    { id: 'task-empty', projectId, name: '空任务', description: '', externalTaskId: '2', statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
+    { id: 'task-a', projectId, parentTaskId: null, name: '任务 A', description: '', externalTaskId: '001', statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
+    { id: 'task-b', projectId, parentTaskId: null, name: '任务 B', description: '', externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
+    { id: 'task-empty', projectId, parentTaskId: null, name: '空任务', description: '', externalTaskId: '2', statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
   ];
   graph.nodes = [
     { id: 'a1', projectId, version: 'V1', description: '', taskId: 'task-a', releasedAt: '2026-01-01T00:00:00.000Z' },
@@ -34,7 +34,7 @@ describe('分支内连续任务节点投影', () => {
   it('按外部任务 ID 的数值顺序排序，无 ID 任务排在末尾', () => {
     const graph = fixture();
     graph.tasks.push({
-      id: 'task-ten', projectId: graph.project.id, name: '任务 10', description: '', externalTaskId: '10',
+      id: 'task-ten', projectId: graph.project.id, parentTaskId: null, name: '任务 10', description: '', externalTaskId: '10',
       statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
       startDate: null, dueDate: null, sortOrder: 0, comments: [],
     });

@@ -37,7 +37,7 @@ function graphFixture(prefix = ''): ProjectGraph {
     { id: `${prefix}branch-maintenance`, projectId, name: '维护线', description: '', color: '#166534', headId: `${prefix}node-b` },
   ];
   graph.tasks = [{
-    id: `${prefix}task-1`, projectId, name: '任务', description: '', externalTaskId: '001',
+    id: `${prefix}task-1`, projectId, parentTaskId: null, name: '任务', description: '', externalTaskId: '001',
     statusOptionId: graph.project.statusOptions[0]!.id,
     typeOptionId: graph.project.typeOptions[0]!.id,
     priorityOptionId: graph.project.priorityOptions[0]!.id,
@@ -50,7 +50,7 @@ function graphFixture(prefix = ''): ProjectGraph {
 
 function snapshot(graph: ProjectGraph): ProjectSnapshot {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     graph: {
       project: {
         id: graph.project.id, name: graph.project.name,
@@ -67,7 +67,7 @@ function snapshot(graph: ProjectGraph): ProjectSnapshot {
 }
 
 describe('项目 JSON 快照验证', () => {
-  it('解析 schemaVersion 5 并往返任务选项、日期和 Markdown 评论', () => {
+  it('解析 schemaVersion 6 并往返任务选项、日期和 Markdown 评论', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));
     expect(parsed).toEqual({
@@ -75,7 +75,34 @@ describe('项目 JSON 快照验证', () => {
       project: { ...graph.project, engineeringDirectoryHint: '', wordDirectoryHint: '' },
       branches: graph.branches.map((branch, order) => ({ ...branch, order })),
     });
+
     expect(parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(snapshot(graph))))).toEqual(parsed);
+  });
+
+  it('显式迁移 schemaVersion 5 的任务并拒绝新版缺失父任务字段', () => {
+    const current = snapshot(graphFixture());
+    const legacy = {
+      ...current,
+      schemaVersion: 5,
+      graph: {
+        ...current.graph,
+        tasks: current.graph.tasks.map(({ parentTaskId: _parentTaskId, ...task }) => task),
+      },
+    };
+    expect(parseProjectSnapshot(legacy).tasks[0]!.parentTaskId).toBeNull();
+    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 6 })).toThrow('字段');
+  });
+
+  it('快照往返保留父子关系并拒绝悬空引用及循环', () => {
+    const graph = graphFixture();
+    graph.tasks.push({ ...graph.tasks[0]!, id: 'child', name: '子任务', externalTaskId: null, sortOrder: 1, parentTaskId: 'task-1', comments: [] });
+    const source = snapshot(graph);
+    expect(parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(source))).tasks[1]!.parentTaskId).toBe('task-1');
+    source.graph.tasks[1]!.parentTaskId = 'missing';
+    expect(() => parseProjectSnapshot(source)).toThrow('父任务不存在');
+    source.graph.tasks[1]!.parentTaskId = 'task-1';
+    source.graph.tasks[0]!.parentTaskId = 'child';
+    expect(() => parseProjectSnapshot(source)).toThrow('成环');
   });
 
   it('显式迁移 schemaVersion 3，保留图与任务并为新字段设空值', () => {
@@ -107,7 +134,7 @@ describe('项目 JSON 快照验证', () => {
     expect(migrated.project.typeOptions).toHaveLength(7);
     expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(migrated.project.assigneeOptions).toEqual([]);
-    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4 和 5');
+    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5 和 6');
   });
 
   it('显式迁移 schemaVersion 4 的优先级名称并补齐标记；空列表安装默认档位', () => {
@@ -121,7 +148,7 @@ describe('项目 JSON 快照验证', () => {
           ...current.graph.project,
           priorityOptions: [{ id: 'legacy-priority', name: '紧急' }],
         },
-        tasks: current.graph.tasks.map(task => ({ ...task, priorityOptionId: 'legacy-priority' })),
+        tasks: current.graph.tasks.map(({ parentTaskId: _parentTaskId, ...task }) => ({ ...task, priorityOptionId: 'legacy-priority' })),
       },
     };
     const migrated = parseProjectSnapshot(legacy);
@@ -151,7 +178,7 @@ describe('项目 JSON 快照验证', () => {
 
   it('拒绝未知版本、额外字段、错误类型、无效关系及不合法 Task ID', () => {
     const source = snapshot(graphFixture());
-    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4 和 5');
+    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5 和 6');
     expect(() => parseProjectSnapshot({ ...source, executable: 'no' })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, extra: true } })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, nodes: [{ ...source.graph.nodes[0], releasedAt: 12 }] } })).toThrow('文本或 null');
@@ -203,6 +230,7 @@ describe('项目 JSON 快照验证', () => {
   it('导入时保留无冲突身份；ID 冲突时复制并重映射全部内部引用', async () => {
     const repo = repository();
     const source = graphFixture();
+    source.tasks.push({ ...source.tasks[0]!, id: 'child', name: '子任务', externalTaskId: null, sortOrder: 1, parentTaskId: 'task-1', comments: [] });
     const first = await repo.importSnapshot(source);
     expect(first.copied).toBe(false);
     expect(first.graph.project.id).toBe(source.project.id);
@@ -216,6 +244,7 @@ describe('项目 JSON 快照验证', () => {
     expect(second.graph.project.priorityOptions[0]).toMatchObject({ indicatorCount: 3, indicatorColor: '#f05252' });
     expect(second.graph.tasks[0]!.statusOptionId).toBe(second.graph.project.statusOptions[0]!.id);
     expect(second.graph.tasks[0]!.comments[0]!.id).not.toBe(source.tasks[0]!.comments[0]!.id);
+    expect(second.graph.tasks.find(task => task.name === '子任务')!.parentTaskId).toBe(second.graph.tasks[0]!.id);
     expect(second.graph.edges[0]).toMatchObject({
       projectId: second.graph.project.id,
       parentId: second.graph.nodes[0]!.id,
@@ -243,6 +272,7 @@ describe('项目 JSON 快照验证', () => {
   it('按零件号预览并覆盖当前项目，保留目标 ID、递增修订且不改变其他项目', async () => {
     const repo = repository();
     const source = graphFixture();
+    source.tasks.push({ ...source.tasks[0]!, id: 'child', name: '子任务', externalTaskId: null, sortOrder: 1, parentTaskId: 'task-1', comments: [] });
     const target = await repo.create('原项目', '001');
     const other = await repo.create('测试工程', '002');
     const preview = await repo.previewSnapshotRestore(source, target.project.id);
@@ -253,6 +283,7 @@ describe('项目 JSON 快照验证', () => {
     expect(result.nodes).toHaveLength(source.nodes.length);
     expect(result.nodes.every(node => node.projectId === target.project.id)).toBe(true);
     expect(result.edges[0]!.parentId).toBe(result.nodes[0]!.id);
+    expect(result.tasks.find(task => task.name === '子任务')!.parentTaskId).toBe(result.tasks[0]!.id);
     expect(await repo.get(other.project.id)).toEqual(other);
     const stored = await repo.get(target.project.id);
     expect(stored.project).toEqual(result.project);

@@ -145,6 +145,10 @@ export class ArchiveDatabase extends Dexie {
         await projects.put({ ...project, priorityOptions: orderPriorityOptions(project.priorityOptions ?? []) });
       }
     });
+    this.version(10).stores({ tasks: 'id, projectId, &[projectId+externalTaskId]' }).upgrade(async transaction => {
+      const tasks = transaction.table<Task>('tasks');
+      for (const task of await tasks.toArray()) await tasks.put({ ...task, parentTaskId: null });
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -368,7 +372,7 @@ export class ArchiveRepository {
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = clean.project;
     return {
-      schemaVersion: 5,
+      schemaVersion: 6,
       graph: {
         ...clean,
         project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },
@@ -526,6 +530,7 @@ export class ArchiveRepository {
         ...item,
         id: taskIds[index]!,
         projectId,
+        parentTaskId: item.parentTaskId === null ? null : taskIdMap.get(item.parentTaskId)!,
         statusOptionId: item.statusOptionId === null ? null : statusIdMap.get(item.statusOptionId)!,
         typeOptionId: item.typeOptionId === null ? null : typeIdMap.get(item.typeOptionId)!,
         priorityOptionId: item.priorityOptionId === null ? null : priorityIdMap.get(item.priorityOptionId)!,
