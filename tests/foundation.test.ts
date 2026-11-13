@@ -51,6 +51,13 @@ describe('领域基础', () => {
     expect(new Set(options.map(option => option.id)).size).toBe(5);
   });
 
+  it('新项目使用完整的默认任务类型', () => {
+    expect(createProject('类型工程', '123').project.typeOptions.map(option => option.name)).toEqual([
+      'Project Development', 'Series Maintenance', 'Field / After-sales Support',
+      'CO Support', 'Bug / Issue', 'Technical Improvement', 'Internal',
+    ]);
+  });
+
   it('不允许重复版本节点', () => {
     const graph = fixture();
     expect(() => validateGraph(graph)).not.toThrow();
@@ -340,9 +347,9 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v10 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v11 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(11).stores({ projects: 'id' });
+    future.db.version(12).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -474,6 +481,49 @@ describe('Dexie 原子持久化', () => {
     databases.push(db);
     const migrated = await new ArchiveRepository(db).get(graph.project.id);
     expect(migrated.tasks).toEqual([{ ...legacyTask, parentTaskId: null }]);
+  });
+
+  it('v10 到 v11 更新旧默认类型并保留任务关联、自定义类型和重名冲突', async () => {
+    const name = `task-type-migration-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(10).stores({
+      projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId',
+      branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId', archiveRoots: 'id',
+    });
+    const graph = createProject('旧类型工程', '001');
+    graph.project.revision = 8;
+    graph.project.typeOptions = [
+      { id: 'legacy-project', name: 'Project Devel...' },
+      { id: 'legacy-series', name: 'Series Mainte...' },
+      { id: 'legacy-field', name: 'Field/After-...' },
+      { id: 'legacy-bug', name: 'Bug/Issue' },
+      { id: 'legacy-technical', name: 'Technical Imp...' },
+      { id: 'existing', name: 'series maintenance' },
+      { id: 'custom', name: '用户自定义' },
+    ];
+    const oldTask = { ...task(graph, 'old', '001'), typeOptionId: 'legacy-project' };
+    await legacy.table('projects').add(graph.project);
+    await legacy.table('tasks').add(oldTask);
+    legacy.close();
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    const migrated = await new ArchiveRepository(db).get(graph.project.id);
+    expect(migrated.project.typeOptions).toEqual([
+      { id: 'legacy-project', name: 'Project Development' },
+      { id: 'legacy-series', name: 'Series Mainte...' },
+      { id: 'legacy-field', name: 'Field / After-sales Support' },
+      { id: 'legacy-bug', name: 'Bug / Issue' },
+      { id: 'legacy-technical', name: 'Technical Improvement' },
+      { id: 'existing', name: 'series maintenance' },
+      { id: 'custom', name: '用户自定义' },
+    ]);
+    expect(migrated.project.revision).toBe(9);
+    expect(migrated.tasks).toEqual([oldTask]);
+    validateGraph(migrated);
+    db.close();
+    await db.open();
+    expect((await new ArchiveRepository(db).get(graph.project.id)).project.revision).toBe(9);
   });
 
   it('当前 schema 保存/重开往返，配置快照显式排除额外属性和权限', async () => {

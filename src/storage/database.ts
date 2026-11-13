@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import { createProject, migratePriorityOptions, normalizeVersion, orderPriorityOptions, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
+import { createProject, migratePriorityOptions, migrateTaskTypeOptions, normalizeVersion, orderPriorityOptions, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
 import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, updateTasks, updateTaskOptions, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
@@ -148,6 +148,16 @@ export class ArchiveDatabase extends Dexie {
     this.version(10).stores({ tasks: 'id, projectId, &[projectId+externalTaskId]' }).upgrade(async transaction => {
       const tasks = transaction.table<Task>('tasks');
       for (const task of await tasks.toArray()) await tasks.put({ ...task, parentTaskId: null });
+    });
+    this.version(11).stores({ projects: 'id' }).upgrade(async transaction => {
+      const projects = transaction.table<Project>('projects');
+      for (const project of await projects.toArray()) {
+        const typeOptions = migrateTaskTypeOptions(project.typeOptions);
+        if (typeOptions.some((option, index) => option !== project.typeOptions[index])) {
+          requireCondition(Number.isSafeInteger(project.revision + 1), 'MIGRATION_REVISION', '项目修订号超出可用范围，类型名称升级已取消。');
+          await projects.put({ ...project, typeOptions, revision: project.revision + 1 });
+        }
+      }
     });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.

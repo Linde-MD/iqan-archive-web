@@ -7,6 +7,42 @@ export interface TaskOption {
   indicatorColor?: string;
 }
 
+export const DEFAULT_TASK_TYPE_NAMES = [
+  'Project Development',
+  'Series Maintenance',
+  'Field / After-sales Support',
+  'CO Support',
+  'Bug / Issue',
+  'Technical Improvement',
+  'Internal',
+] as const;
+
+const LEGACY_TASK_TYPE_NAMES = new Map([
+  ['Project Devel...', 'Project Development'],
+  ['Series Mainte...', 'Series Maintenance'],
+  ['Field/After-...', 'Field / After-sales Support'],
+  ['Bug/Issue', 'Bug / Issue'],
+  ['Technical Imp...', 'Technical Improvement'],
+]);
+
+export function createDefaultTaskTypeOptions(): TaskOption[] {
+  return DEFAULT_TASK_TYPE_NAMES.map(name => ({ id: crypto.randomUUID(), name }));
+}
+
+export function legacyTaskTypeNames(options: readonly TaskOption[]): string[] {
+  return options.filter(option => LEGACY_TASK_TYPE_NAMES.has(option.name)).map(option => option.name);
+}
+
+export function migrateTaskTypeOptions(options: readonly TaskOption[]): TaskOption[] {
+  const names = new Set(options.map(option => option.name.toLocaleLowerCase()));
+  return options.map(option => {
+    const updated = LEGACY_TASK_TYPE_NAMES.get(option.name);
+    if (!updated || names.has(updated.toLocaleLowerCase())) return option;
+    names.add(updated.toLocaleLowerCase());
+    return { ...option, name: updated };
+  });
+}
+
 export const DEFAULT_PRIORITY_PRESENTATIONS = [
   { name: '最高', indicatorCount: 3, indicatorColor: '#f05252' },
   { name: '较高', indicatorCount: 2, indicatorColor: '#f27ba5' },
@@ -186,9 +222,7 @@ export function createProject(name: string, partNumber: string): ProjectGraph {
         { id: crypto.randomUUID(), name: 'release pending' },
         { id: crypto.randomUUID(), name: 'Done' },
       ],
-      typeOptions: [
-        'Project Devel...', 'Series Mainte...', 'Field/After-...', 'CO Support', 'Bug/Issue', 'Technical Imp...', 'Internal',
-      ].map(name => ({ id: crypto.randomUUID(), name })),
+      typeOptions: createDefaultTaskTypeOptions(),
       priorityOptions: createDefaultPriorityOptions(),
       assigneeOptions: [],
     },

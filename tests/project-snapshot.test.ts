@@ -131,10 +131,21 @@ describe('项目 JSON 快照验证', () => {
     expect(migrated.project.statusOptions.map(option => option.name)).toEqual([
       'Backlog', 'Pending', 'In Progress', 'release pending', 'Done',
     ]);
-    expect(migrated.project.typeOptions).toHaveLength(7);
+    expect(migrated.project.typeOptions.map(option => option.name)).toEqual([
+      'Project Development', 'Series Maintenance', 'Field / After-sales Support',
+      'CO Support', 'Bug / Issue', 'Technical Improvement', 'Internal',
+    ]);
     expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(migrated.project.assigneeOptions).toEqual([]);
     expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5 和 6');
+  });
+
+  it('schemaVersion 6 快照保留用户保存的旧类型名称及任务关联', () => {
+    const graph = graphFixture();
+    graph.project.typeOptions[0]!.name = 'Project Devel...';
+    const parsed = parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(snapshot(graph))));
+    expect(parsed.project.typeOptions[0]).toEqual(graph.project.typeOptions[0]);
+    expect(parsed.tasks[0]!.typeOptionId).toBe(graph.project.typeOptions[0]!.id);
   });
 
   it('显式迁移 schemaVersion 4 的优先级名称并补齐标记；空列表安装默认档位', () => {

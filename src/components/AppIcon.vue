@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'chevron-left' | 'chevron-right' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'chevron-left' | 'chevron-right' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' | 'user' | 'calendar' | 'status' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -38,6 +38,9 @@ const paths = {
   cloud: 'M7 18h10a4 4 0 0 0 .4-8A6 6 0 0 0 6 9a4.5 4.5 0 0 0 1 9Z',
   computer: 'M3 4h18v13H3Z M8 21h8 M12 17v4',
   tasks: 'M9 6h12 M9 12h12 M9 18h12 M3 6l1.5 1.5L7 5 M3 12l1.5 1.5L7 11 M3 18l1.5 1.5L7 17',
+  user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M4.5 20a7.5 7.5 0 0 1 15 0',
+  calendar: 'M4 6h16v14H4Z M8 3v6 M16 3v6 M4 10h16',
+  status: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M8 12l3 3 5-6',
 };
 </script>
 

@@ -537,7 +537,7 @@ describe('项目事务及v3迁移', () => {
     const graph = await new ArchiveRepository(next).get(project.id);
     expect(graph.nodes).toEqual(nodes);
     expect(await next.directoryBindings.count()).toBe(0);
-    expect(next.backendDB().version).toBe(100);
+    expect(next.backendDB().version).toBe(110);
   });
   it('v1规范化碰撞拒绝升级且回滚，旧数据库可恢复', async () => {
     const { db, next, nodes } = await oldDatabase(true);
@@ -580,7 +580,7 @@ describe('项目事务及v3迁移', () => {
     expect(migrated.nodes).toEqual(graph.nodes);
     expect(migrated.edges).toEqual(graph.edges);
     expect(migrated.branches).toEqual(graph.branches.map((branch, order) => ({ ...branch, order })));
-    expect(next.backendDB().version).toBe(100);
+    expect(next.backendDB().version).toBe(110);
     expect(next.tables.map(table => table.name)).toContain('archiveRoots');
     expect(next.tables.map(table => table.name)).not.toContain('files');
     expect((await next.directoryBindings.get([graph.project.id, 'engineering']))?.handle.name).toBe('root');

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
 import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, tasksInLane } from '../src/domain/task-board';
+import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
 function fixture() {
@@ -19,6 +20,28 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('保存结果只更新提交后未再修改的字段，保留后续输入', () => {
+    const submitted = structuredClone(fixture().tasks[0]!);
+    submitted.name = ' 原始名称 ';
+    submitted.externalTaskId = ' 12 ';
+    const draft = structuredClone(submitted);
+    draft.name = '后续输入';
+    draft.description = '较新的说明';
+    draft.statusOptionId = 'new-status';
+    const saved = structuredClone(submitted);
+    saved.name = '原始名称';
+    saved.externalTaskId = '12';
+    saved.description = '旧说明';
+    saved.sortOrder = 5;
+    saved.comments = [{ id: 'comment', text: '内容', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }];
+    mergeSavedTaskDraft(draft, submitted, saved);
+    expect(draft).toMatchObject({
+      name: '后续输入', description: '较新的说明', statusOptionId: 'new-status',
+      externalTaskId: '12', sortOrder: 5, comments: saved.comments,
+    });
+    expect(draft.comments).not.toBe(saved.comments);
+  });
+
   it('按 Task ID 精确值或含端点的数字范围筛选，支持 16 位 ID', () => {
     const exact = parseTaskIdSearch('0007');
     expect(matchesTaskIdSearch('0007', exact)).toBe(true);

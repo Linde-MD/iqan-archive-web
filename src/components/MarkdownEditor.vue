@@ -6,6 +6,7 @@ defineProps<{
   modelValue: string;
   textareaId: string;
   disabled?: boolean;
+  readonly?: boolean;
 }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 const mode = ref<'edit' | 'preview'>('edit');
@@ -22,6 +23,7 @@ const mode = ref<'edit' | 'preview'>('edit');
       :id="textareaId"
       :value="modelValue"
       :disabled="disabled"
+      :readonly="readonly"
       rows="8"
       placeholder="支持换行与 Markdown 格式"
       @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"

@@ -44,7 +44,7 @@
 ## 4. 必要接口与数据
 
 - 存储接口使用异步读写并暴露可区分错误（不可用、配额不足、版本迁移失败、导入格式无效）。
-- Dexie.js 已在 SPEC-00 安装；当前数据库 v10 保存全局 `archiveRoots` 根目录句柄及项目任务看板字段，v7→v8 补 priority 标记，v8→v9 重排默认优先级，v9→v10 为旧任务补空父任务引用；保留旧 `directoryBindings` 表但当前授权流程不再读取/写入。v1 版本规范化冲突检测、`externalTaskId` 规则不变；旧 JSON schema 按显式迁移兼容。
+- Dexie.js 已在 SPEC-00 安装；当前数据库 v11 保存全局 `archiveRoots` 根目录句柄及项目任务看板字段，v7→v8 补 priority 标记，v8→v9 重排默认优先级，v9→v10 为旧任务补空父任务引用，v10→v11 更新无重名冲突的旧默认类型名称并保留引用，详见 SPEC-07；保留旧 `directoryBindings` 表但当前授权流程不再读取/写入。v1 版本规范化冲突检测、`externalTaskId` 规则不变；旧 JSON schema 按显式迁移兼容。
 - 数据 schema 迁移必须显式版本化，并保留恢复/备份策略。
 - 当前独立表：projects、nodes、edges、branches、tasks、旧 `directoryBindings`（兼容）、`archiveRoots`（全局根句柄）；数据库 v7 不持久化扫描关联。图数据按稳定 project ID 隔离；根目录是本机全局设置，不属于图或 JSON 配置。
 - 当前 JSON schemaVersion 6 包含项目元数据、版本节点/说明、父边、分支、任务看板选项/字段/评论、任务父子关系及放行状态；不包含统一根目录句柄、项目子目录路径、文档匹配结果或扫描缓存。schemaVersion 3/4 先迁移至 v5，再与 v5 一同迁移至 v6，旧任务父引用设为 null；schemaVersion 1/2 拒绝。旧应用不保证能读取新版快照。恢复后沿用本机根目录（如已授权），按项目名重新扫描子目录；未授权则重新选择根目录。布局偏好不加入 JSON。

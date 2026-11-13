@@ -1,5 +1,5 @@
 import { validateGraph } from './graph';
-import { DomainError, migratePriorityOptions, normalizeExternalTaskId, orderPriorityOptions, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
+import { createDefaultTaskTypeOptions, DomainError, migratePriorityOptions, normalizeExternalTaskId, orderPriorityOptions, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
 
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_SNAPSHOT_ENTITIES = 100_000;
@@ -83,9 +83,7 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
     const orderById = new Map(orderedTasks.map((task, sortOrder) => [task.id, sortOrder]));
     const makeOptions = (names: readonly string[]): TaskOption[] => names.map(name => ({ id: crypto.randomUUID(), name }));
     const statusOptions = makeOptions(['Backlog', 'Pending', 'In Progress', 'release pending', 'Done']);
-    const typeOptions = makeOptions([
-      'Project Devel...', 'Series Mainte...', 'Field/After-...', 'CO Support', 'Bug/Issue', 'Technical Imp...', 'Internal',
-    ]);
+    const typeOptions = createDefaultTaskTypeOptions();
     root = {
       schemaVersion: 4,
       graph: {

@@ -4,7 +4,8 @@ import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, tasksInLane, type TaskSearchMode } from '../domain/task-board';
-import { createPriorityOption, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
+import { mergeSavedTaskDraft } from '../domain/task-draft';
+import { createPriorityOption, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { renderMarkdown } from '../utils/markdown';
 import AppIcon from './AppIcon.vue';
@@ -43,7 +44,11 @@ const commentEditorOpen = ref(false);
 const editingCommentId = ref<string | null>(null);
 const commentText = ref('');
 const commentTextBaseline = ref('');
+const detailSidebar = ref<'comments' | 'versions'>('comments');
+const detailSection = ref<'information' | 'children'>('information');
 const taskDetailDialog = ref<HTMLDialogElement>();
+const taskDetailMainScroll = ref<HTMLDivElement>();
+const taskDetailView = ref<HTMLElement>();
 const optionsDialog = ref<HTMLDialogElement>();
 const optionKind = ref<OptionKind>('status');
 const optionName = ref('');
@@ -53,11 +58,14 @@ const optionDraftRevision = ref(-1);
 const dragSaving = ref(false);
 let subscription: { unsubscribe(): void } | undefined;
 let lastDragOverTarget: DragEndEvent['operation']['target'] | null = null;
+let descriptionSaveTimer: ReturnType<typeof setTimeout> | undefined;
+let autoSaveQueued = false;
 
 const taskDraftDirty = computed(() => !!taskDraft.value && JSON.stringify(taskDraft.value) !== taskDraftBaseline.value);
 const commentDraftDirty = computed(() => commentEditorOpen.value && commentText.value !== commentTextBaseline.value);
 const hasUnsavedTaskChanges = computed(() => taskDraftDirty.value || commentDraftDirty.value);
 const taskDraftStale = computed(() => !graph.value || taskDraftRevision.value !== graph.value.project.revision);
+const taskFieldsDisabled = computed(() => (taskDraftStale.value && !saving.value) || (saving.value && !taskDraft.value?.id));
 const optionDraftStale = computed(() => !graph.value || optionDraftRevision.value !== graph.value.project.revision);
 const optionKey = computed<OptionKey>(() => `${optionKind.value}Options` as OptionKey);
 const currentOptionLabel = computed(() => ({
@@ -73,6 +81,7 @@ const dueDateInput = computed({
 });
 
 const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ?? []).map(option => [option.id, option.name])));
+const legacyTypeNames = computed(() => legacyTaskTypeNames(graph.value?.project.typeOptions ?? []));
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeNameById = computed(() => new Map((graph.value?.project.assigneeOptions ?? []).map(option => [option.id, option.name])));
 const taskIdSearch = computed(() => parseTaskIdSearch(query.value));
@@ -134,6 +143,8 @@ const optionDraftChanged = computed(() => {
 watch(searchMode, () => { query.value = ''; });
 
 function setTaskDraft(task: Task) {
+  clearTimeout(descriptionSaveTimer);
+  autoSaveQueued = false;
   taskDraft.value = structuredClone(task);
   taskDraftRevision.value = graph.value?.project.revision ?? -1;
   taskDraftBaseline.value = JSON.stringify(taskDraft.value);
@@ -142,9 +153,12 @@ function setTaskDraft(task: Task) {
   editingCommentId.value = null;
   commentText.value = '';
   commentTextBaseline.value = '';
+  detailSidebar.value = 'comments';
+  detailSection.value = 'information';
 }
 
 function switchTask(taskId: string) {
+  if (saving.value) return;
   if (hasUnsavedTaskChanges.value && selectedTaskId.value !== taskId
     && !window.confirm('当前任务修改尚未保存。放弃修改并切换任务吗？')) return;
   const task = graph.value?.tasks.find(candidate => candidate.id === taskId);
@@ -156,9 +170,12 @@ function switchTask(taskId: string) {
 }
 
 function createTask(statusOptionId?: string | null, updateRoute = true) {
+  if (saving.value) return;
   if (hasUnsavedTaskChanges.value && !window.confirm('当前任务修改尚未保存。放弃修改并新建任务吗？')) return;
   const current = graph.value;
   if (!current) return;
+  clearTimeout(descriptionSaveTimer);
+  autoSaveQueued = false;
   const defaultStatus = current.project.statusOptions[0]?.id ?? null;
   const targetStatus = statusOptionId === undefined ? defaultStatus : statusOptionId;
   const task: Task = {
@@ -174,6 +191,8 @@ function createTask(statusOptionId?: string | null, updateRoute = true) {
   editingCommentId.value = null;
   commentText.value = '';
   commentTextBaseline.value = '';
+  detailSidebar.value = 'comments';
+  detailSection.value = 'information';
   if (updateRoute) emit('navigateChild', ['new']);
   void nextTick(() => document.getElementById('task-board-name')?.focus());
 }
@@ -184,6 +203,7 @@ function reportError(cause: unknown) {
 }
 
 async function saveTask(candidate: Task, successMessage: string) {
+  if (saving.value) return false;
   const current = graph.value;
   if (!current || taskDraftRevision.value !== current.project.revision) {
     error.value = '项目已在其他标签页更新。请重新读取任务后再保存。';
@@ -191,11 +211,14 @@ async function saveTask(candidate: Task, successMessage: string) {
     return false;
   }
   saving.value = true;
+  error.value = '';
+  let succeeded = false;
   try {
+    const submitted = structuredClone(toRaw(candidate));
     const taskId = candidate.id || crypto.randomUUID();
     const persistedTask = current.tasks.find(task => task.id === taskId);
     const persisted = await props.repository.saveTask(props.projectId, taskDraftRevision.value, {
-      ...structuredClone(toRaw(candidate)),
+      ...submitted,
       id: taskId,
       projectId: current.project.id,
       name: candidate.name.trim(),
@@ -205,17 +228,45 @@ async function saveTask(candidate: Task, successMessage: string) {
         : tasksInLane(current, candidate.statusOptionId).length,
     });
     const saved = persisted.tasks.find(task => task.id === taskId);
-    graph.value = persisted;
-    if (saved) setTaskDraft(saved);
+    if (!saved) throw new Error('保存后未找到任务，请重新读取项目。');
+    if (!graph.value || graph.value.project.revision <= persisted.project.revision) graph.value = persisted;
+    if (!submitted.id) {
+      setTaskDraft(saved);
+    } else if (taskDraft.value?.id === taskId) {
+      mergeSavedTaskDraft(taskDraft.value, submitted, saved);
+      taskDraftRevision.value = persisted.project.revision;
+      taskDraftBaseline.value = JSON.stringify(saved);
+    }
     error.value = '';
     statusMessage.value = successMessage;
+    succeeded = true;
     return true;
   } catch (cause) {
     reportError(cause);
     return false;
   } finally {
     saving.value = false;
+    if (succeeded && autoSaveQueued) {
+      autoSaveQueued = false;
+      void nextTick(() => requestAutoSave());
+    }
   }
+}
+
+async function requestAutoSave() {
+  if (!taskDraft.value?.id) return;
+  if (saving.value) {
+    autoSaveQueued = true;
+    return;
+  }
+  if (!taskDraftDirty.value) return;
+  autoSaveQueued = false;
+  await saveTask(taskDraft.value, '任务已自动保存。');
+}
+
+function scheduleDescriptionSave() {
+  clearTimeout(descriptionSaveTimer);
+  descriptionSaveTimer = setTimeout(() => { void requestAutoSave(); }, 800);
 }
 
 async function submitTask() {
@@ -227,6 +278,10 @@ async function submitTask() {
   const isNew = !taskDraft.value.id;
   if (await saveTask(taskDraft.value, '任务已保存。') && isNew && taskDraft.value?.id) {
     emit('navigateChild', ['detail', taskDraft.value.id], 'replace');
+    await nextTick();
+    taskDetailMainScroll.value?.scrollTo({ top: 0 });
+    taskDetailView.value?.scrollTo({ top: 0 });
+    document.getElementById('task-detail-page-title')?.focus({ preventScroll: true });
   }
 }
 
@@ -447,7 +502,10 @@ function beginNewComment() {
 }
 
 function closeTaskDetails() {
+  if (saving.value) return;
   if (hasUnsavedTaskChanges.value && !window.confirm('放弃未保存的任务修改吗？')) return;
+  clearTimeout(descriptionSaveTimer);
+  autoSaveQueued = false;
   const taskId = selectedTaskId.value;
   taskDraft.value = null;
   taskDraftRevision.value = -1;
@@ -460,8 +518,18 @@ function closeTaskDetails() {
   });
 }
 
+function openRelatedVersion(nodeId: string) {
+  if (saving.value) return;
+  if (hasUnsavedTaskChanges.value && !window.confirm('当前任务或评论修改尚未保存。放弃修改并打开版本图吗？')) return;
+  emit('graph', nodeId);
+}
+
 watch([graph, () => props.detailTaskId], async ([current, detailId], [, previousDetailId]) => {
   if (!current) return;
+  if (saving.value && taskDraft.value && detailId !== (taskDraft.value.id || 'new')) {
+    emit('navigateChild', taskDraft.value.id ? ['detail', taskDraft.value.id] : ['new'], 'replace');
+    return;
+  }
   if (detailId === 'new') {
     if (!taskDraft.value || (previousDetailId !== 'new' && taskDraft.value.id)) createTask(undefined, false);
     return;
@@ -469,6 +537,10 @@ watch([graph, () => props.detailTaskId], async ([current, detailId], [, previous
   if (detailId) {
     const task = current.tasks.find(candidate => candidate.id === detailId);
     if (!task) {
+      if (taskDraft.value?.id === detailId) {
+        error.value = '任务已在其他标签页删除，当前草稿仍保留，请复制所需内容后关闭。';
+        return;
+      }
       emit('navigateChild', [], 'replace');
       reportError(new Error('此任务不存在或已删除。'));
       return;
@@ -533,8 +605,8 @@ function beginEditComment(comment: TaskComment) {
 }
 
 async function saveComment() {
-  const current = taskDraft.value;
-  if (!current || !commentText.value.trim()) return;
+  if (!taskDraft.value || !commentText.value.trim()) return;
+  const current = structuredClone(toRaw(taskDraft.value));
   const now = new Date().toISOString();
   const comments = [...current.comments];
   if (editingCommentId.value) {
@@ -561,8 +633,8 @@ function cancelComment() {
 }
 
 async function deleteComment(comment: TaskComment) {
-  const current = taskDraft.value;
-  if (!current || !window.confirm('删除这条评论吗？')) return;
+  if (!taskDraft.value || !window.confirm('删除这条评论吗？')) return;
+  const current = structuredClone(toRaw(taskDraft.value));
   await saveTask({ ...current, comments: current.comments.filter(item => item.id !== comment.id) }, '评论已删除。');
 }
 
@@ -597,8 +669,7 @@ onMounted(() => {
       graph.value = value;
       loading.value = false;
       if (selectedTaskId.value && !value.tasks.some(task => task.id === selectedTaskId.value)) {
-        selectedTaskId.value = '';
-        taskDraft.value = null;
+        if (taskDraft.value?.id !== selectedTaskId.value) selectedTaskId.value = '';
       }
     },
     error: cause => {
@@ -609,6 +680,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  clearTimeout(descriptionSaveTimer);
   subscription?.unsubscribe();
   emit('busy', false);
 });
@@ -666,93 +738,94 @@ onUnmounted(() => {
     <dialog v-if="graph && taskDraft" ref="taskDetailDialog" class="task-detail-dialog" aria-labelledby="task-detail-page-title" @cancel.prevent="closeTaskDetails" @click.self="closeTaskDetails">
       <div class="task-detail-modal">
         <header class="task-detail-modal-header">
-          <div>
-            <p class="eyebrow">{{ projectName }} · {{ taskDraft.id ? 'TASK DETAIL' : 'NEW TASK' }}</p>
-            <h2 id="task-detail-page-title" tabindex="-1">{{ taskDraft.name || (taskDraft.id ? '任务详情' : '新建任务') }}</h2>
+          <div class="task-detail-heading">
+            <h2 id="task-detail-page-title" class="visually-hidden" tabindex="-1">{{ taskDraft.id ? '任务详情' : '新建任务' }}</h2>
+            <div class="task-heading-fields">
+              <span class="task-heading-icon"><AppIcon name="tasks" /></span>
+              <label class="visually-hidden" for="task-board-external-id">Task ID（可选，1–16 位数字）</label>
+              <input id="task-board-external-id" v-model="taskDraft.externalTaskId" form="task-detail-form" inputmode="numeric" placeholder="编号" title="点击编辑 Task ID" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @blur="requestAutoSave" />
+              <span class="task-heading-divider" aria-hidden="true"></span>
+              <label for="task-board-parent">父任务</label>
+              <select id="task-board-parent" v-model="taskDraft.parentTaskId" form="task-detail-form" :disabled="taskFieldsDisabled" @change="requestAutoSave">
+                <option :value="null">无父任务</option>
+                <option v-for="candidate in parentTaskCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.externalTaskId ? `${candidate.externalTaskId} · ` : '' }}{{ candidate.name }}</option>
+              </select>
+            </div>
           </div>
-          <button type="button" class="secondary icon-button" aria-label="关闭任务详情" title="关闭任务详情" :disabled="saving" @click="closeTaskDetails"><AppIcon name="clear" /></button>
+          <div class="task-header-actions">
+            <span v-if="saving || taskDraftDirty || statusMessage" class="task-save-status" role="status">{{ saving ? '保存中…' : taskDraftDirty ? '未保存' : statusMessage }}</span>
+            <button v-if="taskDraft.id" type="button" class="secondary icon-button" aria-label="删除任务" title="删除任务" :disabled="saving || taskDraftStale" @click="deleteCurrentTask"><AppIcon name="trash" /></button>
+            <button type="button" class="secondary icon-button" aria-label="关闭任务详情" title="关闭任务详情" :disabled="saving" @click="closeTaskDetails"><AppIcon name="clear" /></button>
+          </div>
         </header>
-        <section class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
-          <div class="task-detail-main-scroll">
-            <p v-if="taskDraftStale" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
+        <section ref="taskDetailView" class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
+          <div ref="taskDetailMainScroll" class="task-detail-main-scroll">
+            <p v-if="taskDraftStale && !saving" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
             <p v-if="error" class="task-board-message is-error" role="alert">{{ error }}</p>
-            <p v-else-if="statusMessage" class="task-board-message" role="status">{{ statusMessage }}</p>
-            <form class="task-detail-form" @submit.prevent="submitTask">
-          <label for="task-board-name">任务名 <span>必填</span></label>
-          <input id="task-board-name" v-model="taskDraft.name" required :disabled="saving || taskDraftStale" />
-          <label for="task-board-external-id">Task ID <span>可选，1–16 位数字</span></label>
-          <input id="task-board-external-id" v-model="taskDraft.externalTaskId" inputmode="numeric" placeholder="未设置" :disabled="saving || taskDraftStale" />
-          <label for="task-board-parent">父任务</label>
-          <select id="task-board-parent" v-model="taskDraft.parentTaskId" :disabled="saving || taskDraftStale">
-            <option :value="null">无父任务</option>
-            <option v-for="candidate in parentTaskCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.externalTaskId ? `${candidate.externalTaskId} · ` : '' }}{{ candidate.name }}</option>
-          </select>
-          <div v-if="taskDraft.id" class="task-child-list">
-            <span>子任务（{{ childTasks.length }}）</span>
-            <ul v-if="childTasks.length">
-              <li v-for="child in childTasks" :key="child.id">
-                <button type="button" class="secondary" :disabled="saving" @click="switchTask(child.id)">{{ child.externalTaskId ? `${child.externalTaskId} · ` : '' }}{{ child.name }}</button>
-              </li>
-            </ul>
-            <p v-else class="form-help">暂无子任务</p>
-          </div>
-          <label for="task-board-status">Status</label>
-          <select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="saving || taskDraftStale">
-            <option :value="null">未分组</option>
-            <option v-for="option in graph.project.statusOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
-          </select>
-          <label for="task-board-type">Type</label>
-          <select id="task-board-type" v-model="taskDraft.typeOptionId" :disabled="saving || taskDraftStale">
-            <option :value="null">未设置</option>
-            <option v-for="option in graph.project.typeOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
-          </select>
-          <label for="task-board-priority">优先级</label>
-          <select id="task-board-priority" v-model="taskDraft.priorityOptionId" :disabled="saving || taskDraftStale">
-            <option :value="null">未设置</option>
-            <option v-for="option in graph.project.priorityOptions" :key="option.id" :value="option.id" :style="{ color: option.indicatorColor }">{{ '!'.repeat(option.indicatorCount ?? 1) }} {{ option.name }}</option>
-          </select>
-                <label for="task-board-assignee">负责人</label>
-          <select id="task-board-assignee" v-model="taskDraft.assigneeId" :disabled="saving || taskDraftStale">
-            <option :value="null">未分配</option>
-            <option v-for="option in graph.project.assigneeOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
-          </select>
-          <div class="task-date-grid">
-            <div>
-              <label for="task-board-start">开始日期</label>
-              <input id="task-board-start" v-model="startDateInput" type="date" :max="dueDateInput || undefined" :disabled="saving || taskDraftStale" />
-            </div>
-            <div>
-              <label for="task-board-due">截止日期</label>
-              <input id="task-board-due" v-model="dueDateInput" type="date" :min="startDateInput || undefined" :disabled="saving || taskDraftStale" />
-            </div>
-          </div>
-          <label for="task-board-description">说明</label>
-          <textarea id="task-board-description" v-model="taskDraft.description" rows="3" :disabled="saving || taskDraftStale"></textarea>
-          <p v-if="commentDraftDirty" class="form-help">请先保存或取消未完成的评论，再保存任务字段。</p>
-          <div class="task-detail-actions">
-            <button type="submit" :disabled="saving || taskDraftStale || commentDraftDirty || !taskDraft.name.trim()"><AppIcon name="check" />保存任务</button>
-            <button v-if="taskDraft.id" type="button" class="danger" :disabled="saving || taskDraftStale" @click="deleteCurrentTask"><AppIcon name="trash" />删除任务</button>
-          </div>
+            <form id="task-detail-form" class="task-detail-form" @submit.prevent="submitTask" @change="requestAutoSave">
+              <label class="visually-hidden" for="task-board-name">任务名（必填）</label>
+              <input id="task-board-name" v-model="taskDraft.name" required placeholder="任务名称" title="点击编辑任务名" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @blur="requestAutoSave" />
+              <div class="task-fields-row task-summary-fields">
+                <div class="task-summary-field"><span class="task-field-icon is-status"><AppIcon name="status" /></span><div><label for="task-board-status">状态</label><select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="taskFieldsDisabled">
+                  <option :value="null">未分组</option><option v-for="option in graph.project.statusOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
+                </select></div></div>
+                <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="user" /></span><div><label for="task-board-assignee">负责人</label><select id="task-board-assignee" v-model="taskDraft.assigneeId" :disabled="taskFieldsDisabled">
+                  <option :value="null">未分配</option><option v-for="option in graph.project.assigneeOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
+                </select></div></div>
+                <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="calendar" /></span><div><label for="task-board-start">开始日期</label><div class="task-date-input"><span aria-hidden="true">{{ startDateInput || '年-月-日' }}</span><input id="task-board-start" v-model="startDateInput" type="date" lang="zh-CN" :max="dueDateInput || undefined" :disabled="taskFieldsDisabled" /></div></div></div>
+                <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="calendar" /></span><div><label for="task-board-due">截止日期</label><div class="task-date-input"><span aria-hidden="true">{{ dueDateInput || '年-月-日' }}</span><input id="task-board-due" v-model="dueDateInput" type="date" lang="zh-CN" :min="startDateInput || undefined" :disabled="taskFieldsDisabled" /></div></div></div>
+              </div>
+              <div class="task-content-tabs" role="group" aria-label="任务内容">
+                <button type="button" :aria-pressed="detailSection === 'information'" @click="detailSection = 'information'"><AppIcon name="tasks" />任务信息</button>
+                <button type="button" :aria-pressed="detailSection === 'children'" @click="detailSection = 'children'"><AppIcon name="branch" />子任务 <span>{{ childTasks.length }}</span></button>
+              </div>
+              <div v-show="detailSection === 'information'" class="task-info-panel">
+              <div class="task-fields-row task-fields-secondary">
+                <div><label for="task-board-priority">优先级</label><div class="task-priority-control">
+                  <span class="task-priority-value" aria-hidden="true"><span v-if="taskDraft.priorityOptionId" class="task-priority-indicator" :style="{ color: priorityOptionById.get(taskDraft.priorityOptionId)?.indicatorColor }">{{ '!'.repeat(priorityOptionById.get(taskDraft.priorityOptionId)?.indicatorCount ?? 1) }}</span>{{ taskDraft.priorityOptionId ? priorityOptionById.get(taskDraft.priorityOptionId)?.name : '未设置' }}</span>
+                  <span class="task-priority-chevron" aria-hidden="true"></span>
+                  <select id="task-board-priority" v-model="taskDraft.priorityOptionId" :disabled="taskFieldsDisabled">
+                  <option :value="null">未设置</option>
+                  <option v-for="option in graph.project.priorityOptions" :key="option.id" :value="option.id">{{ '!'.repeat(option.indicatorCount ?? 1) }} {{ option.name }}</option>
+                </select></div></div>
+                <div><label for="task-board-type">类型</label><select id="task-board-type" v-model="taskDraft.typeOptionId" :disabled="taskFieldsDisabled">
+                  <option :value="null">未设置</option>
+                  <option v-for="option in graph.project.typeOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
+                </select><p v-if="legacyTypeNames.length" class="task-legacy-type-notice" role="status">仍有旧类型名称：{{ legacyTypeNames.join('、') }}。请在“管理选项”中检查并修改。</p></div>
+              </div>
+              <div class="task-description-field"><label for="task-board-description">说明</label>
+                <textarea id="task-board-description" v-model="taskDraft.description" rows="6" placeholder="添加任务说明…" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @input="scheduleDescriptionSave"></textarea>
+              </div>
+              </div>
+              <div v-show="detailSection === 'children'" class="task-child-list">
+                <ul v-if="childTasks.length"><li v-for="child in childTasks" :key="child.id">
+                  <button type="button" :disabled="saving" @click="switchTask(child.id)"><AppIcon name="status" /><code v-if="child.externalTaskId">{{ child.externalTaskId }}</code><span>{{ child.name }}</span><AppIcon name="chevron-right" /></button>
+                </li></ul>
+                <p v-else class="task-child-empty">{{ taskDraft.id ? '暂无子任务' : '创建任务后可关联子任务' }}</p>
+              </div>
+              <div v-if="!taskDraft.id || (error && !taskDraftStale)" class="task-detail-actions">
+                <button type="submit" :disabled="saving || taskDraftStale || commentDraftDirty || !taskDraft.name.trim()"><AppIcon name="check" />{{ taskDraft.id ? '重试保存' : '创建任务' }}</button>
+              </div>
             </form>
-
-            <section v-if="taskDraft.id" class="task-related-versions" aria-labelledby="task-related-title">
+          </div>
+          <aside v-if="taskDraft.id" class="task-detail-sidebar">
+            <div class="task-sidebar-tabs" role="group" aria-label="任务侧栏">
+              <button type="button" class="secondary" :aria-pressed="detailSidebar === 'comments'" @click="detailSidebar = 'comments'">评论（{{ taskDraft.comments.length }}）</button>
+              <button type="button" class="secondary" :aria-pressed="detailSidebar === 'versions'" @click="detailSidebar = 'versions'">关联软件版本（{{ graph.nodes.filter(node => node.taskId === taskDraft!.id).length }}）</button>
+            </div>
+            <section v-show="detailSidebar === 'versions'" class="task-related-versions" aria-labelledby="task-related-title">
               <header><h4 id="task-related-title">关联版本</h4><span>{{ graph.nodes.filter(node => node.taskId === taskDraft!.id).length }}</span></header>
               <ul v-if="graph.nodes.some(node => node.taskId === taskDraft!.id)">
                 <li v-for="node in graph.nodes.filter(item => item.taskId === taskDraft!.id)" :key="node.id">
-                  <button type="button" class="task-version-link" @click="emit('graph', node.id)">
+                  <button type="button" class="task-version-link" :disabled="saving" @click="openRelatedVersion(node.id)">
                     <code>{{ node.version }}</code><span>{{ node.description || '（无改动说明）' }}</span><AppIcon name="arrow" />
                   </button>
                 </li>
               </ul>
               <p v-else class="form-help">此任务尚未关联版本。</p>
             </section>
-          </div>
-
-          <section v-if="taskDraft.id" class="task-comments" aria-labelledby="task-comments-title">
-            <header>
-              <div><p class="eyebrow">DISCUSSION</p><h4 id="task-comments-title">评论 <span>{{ taskDraft.comments.length }}</span></h4></div>
-              <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment"><AppIcon name="plus" />添加评论</button>
-            </header>
+          <section v-show="detailSidebar === 'comments'" class="task-comments" aria-labelledby="task-comments-title">
+            <h4 id="task-comments-title" class="visually-hidden">评论</h4>
             <ul v-if="taskDraft.comments.length" class="task-comment-list">
               <li v-for="comment in taskDraft.comments" :key="comment.id" class="task-comment">
                 <div class="task-comment-meta"><time :datetime="comment.createdAt">{{ formatTime(comment.createdAt) }}</time><span v-if="comment.updatedAt !== comment.createdAt">已编辑 {{ formatTime(comment.updatedAt) }}</span></div>
@@ -766,14 +839,15 @@ onUnmounted(() => {
             <p v-else class="task-comments-empty">暂无评论</p>
             <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
               <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
-              <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving || taskDraftStale" />
+              <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving" :readonly="taskDraftStale" />
               <div class="task-comment-editor-actions">
                 <button type="submit" :disabled="saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
                 <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
               </div>
             </form>
-            <button v-else-if="taskDraft.comments.length" type="button" class="task-comment-composer" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment">输入新评论…</button>
+            <button v-else type="button" class="task-comment-composer" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment">添加评论…</button>
           </section>
+          </aside>
           <aside v-else class="task-comments-empty-note">保存任务后，可以在详情中继续添加评论和查看关联版本。</aside>
         </section>
       </div>
@@ -836,29 +910,83 @@ onUnmounted(() => {
 .task-detail-dialog { width: min(1480px, calc(100vw - 48px)); height: min(920px, calc(100dvh - 48px)); max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid #52647e; border-radius: 8px; background: #101a2a; color: #eef4ff; box-shadow: 0 24px 80px #020617aa; }
 .task-detail-dialog::backdrop { background: #020617a8; backdrop-filter: blur(2px); }
 .task-detail-modal { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; min-width: 0; }
-.task-detail-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; padding: 14px 22px; border-bottom: 1px solid #35445c; background: #142137; }
-.task-detail-modal-header h2 { margin: 0; overflow-wrap: anywhere; font-size: 19px; }
-.task-detail-modal-header .eyebrow { margin-bottom: 4px; }
-.task-detail-modal-header .icon-button { flex: 0 0 44px; }
+.task-detail-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 60px; padding: 6px 24px; border-bottom: 1px solid #27364d; background: #121c2d; }
+.task-header-actions { display: flex; align-items: center; flex-shrink: 0; }
+.task-header-actions .icon-button { flex: 0 0 44px; color: #afbdd2; }
+.task-header-actions .icon-button:hover { background: #203047; color: #eef4ff; }
+.task-save-status { padding: 0 8px; color: #afbdd2; font-size: 12px; white-space: nowrap; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.task-detail-heading { flex: 1; min-width: 0; }
+.task-heading-fields { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-heading-icon { display: grid; flex: 0 0 28px; width: 28px; height: 28px; place-items: center; border-radius: 6px; background: #203c3b; color: #8fe6c9; }
+.task-heading-icon .app-icon { width: 16px; height: 16px; }
+.task-heading-fields label { flex-shrink: 0; margin: 0; color: #afbdd2; font-size: 12px; }
+.task-heading-fields input, .task-heading-fields select { width: auto; min-width: 0; min-height: 44px; margin: 0; padding: 8px; border: 1px solid transparent; background-color: transparent; color: #dce8f9; }
+.task-heading-fields input:hover, .task-heading-fields select:hover { border-color: #52647e; background-color: #1d2b42; }
+.task-heading-fields #task-board-external-id { flex: 0 1 100px; width: 100px; font-family: monospace; font-weight: 700; color: #d6ebff; }
+.task-heading-fields #task-board-parent { flex: 0 1 260px; max-width: 260px; }
+.task-heading-divider { flex: 0 0 1px; height: 20px; background: #35445c; }
 .task-detail-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 34%); min-width: 0; min-height: 0; overflow: hidden; }
-.task-detail-main-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 22px clamp(18px, 3vw, 42px); }
-.task-detail-form { display: grid; grid-template-columns: minmax(140px, 190px) minmax(0, 1fr); align-content: start; align-items: center; gap: 12px 18px; min-width: 0; }
-.task-detail-form > label { margin: 0; color: #b6c4d8; }
-.task-detail-form input, .task-detail-form select, .task-detail-form textarea { min-width: 0; margin: 0; }
-.task-detail-form textarea { width: 100%; min-height: 132px; resize: vertical; }
-.task-date-grid { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.task-date-grid label { margin-bottom: 6px; }
-.task-date-grid input { padding: 9px 7px; font-size: 12px; }
-.task-detail-form #task-board-description { align-self: start; }
-.task-detail-form > .form-help { grid-column: 1 / -1; margin: 0; }
-.task-child-list { grid-column: 1 / -1; min-width: 0; }
-.task-child-list > span { color: #b6c4d8; }
-.task-child-list ul { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 8px 0 0; padding: 0; }
-.task-child-list li { min-width: 0; max-width: 100%; }
-.task-child-list button { min-height: 44px; max-width: 100%; overflow-wrap: anywhere; }
-.task-detail-actions { display: flex; grid-column: 1 / -1; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
-.task-detail-actions button { min-height: 44px; }
-.task-related-versions { margin-top: 26px; padding-top: 18px; border-top: 1px solid #35445c; }
+.task-detail-main-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px clamp(20px, 3vw, 42px) 40px; }
+.task-detail-form { display: grid; align-content: start; gap: 24px; min-width: 0; }
+.task-detail-form #task-board-name { min-height: 48px; margin: 0; padding: 7px 10px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #eef4ff; font-size: 22px; font-weight: 700; }
+.task-detail-form #task-board-name:hover { border-color: #52647e; background: #1d2b42; }
+.task-fields-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; }
+.task-fields-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.task-fields-row > div { min-width: 0; }
+.task-detail-form label { margin-bottom: 4px; color: #afbdd2; font-size: 12px; }
+.task-detail-form input, .task-detail-form select, .task-detail-form textarea { width: 100%; min-width: 0; margin: 0; color: #eef4ff; }
+.task-summary-field { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.task-summary-field > div { flex: 1; min-width: 0; }
+.task-field-icon { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border: 1px solid #52647e; border-radius: 50%; color: #b7c8de; }
+.task-field-icon.is-status { border-color: #6ee7b7; color: #6ee7b7; }
+.task-field-icon .app-icon { width: 19px; height: 19px; }
+.task-summary-field select, .task-summary-field input { min-height: 44px; padding: 6px; border-color: transparent; background-color: transparent; font-size: 12px; }
+.task-summary-field select:hover, .task-summary-field input:hover { border-color: #52647e; background-color: #1d2b42; }
+.task-date-input { position: relative; display: flex; align-items: center; min-height: 44px; padding: 6px; border: 1px solid transparent; border-radius: 6px; color: #eef4ff; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.task-date-input:hover { border-color: #52647e; background: #1d2b42; }
+.task-date-input:focus-within { outline: 3px solid #7dd3fc; outline-offset: 3px; }
+.task-date-input input { position: absolute; inset: 0; height: 100%; opacity: 0; cursor: pointer; }
+.task-date-input:focus-within span { visibility: hidden; }
+.task-date-input:focus-within input { opacity: 1; background: #1d2b42; }
+.task-date-input input:disabled { cursor: not-allowed; }
+.task-date-input:has(input:disabled) { color: #8290a6; }
+.task-fields-secondary select option { background: #121c2d; }
+.task-content-tabs { display: flex; gap: 22px; border-bottom: 1px solid #35445c; }
+.task-content-tabs button, .task-sidebar-tabs button { display: inline-flex; align-items: center; gap: 7px; width: auto; min-height: 48px; margin: 0 0 -1px; padding: 8px 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: #afbdd2; font-size: 13px; font-weight: 500; }
+.task-content-tabs button:hover, .task-sidebar-tabs button:hover { background: transparent; color: #eef4ff; }
+.task-content-tabs button[aria-pressed="true"], .task-sidebar-tabs button[aria-pressed="true"] { border-bottom-color: #60a5fa; color: #a7d2ff; }
+.task-content-tabs .app-icon { width: 17px; height: 17px; }
+.task-content-tabs span { color: #afbdd2; }
+.task-info-panel { display: grid; gap: 28px; }
+.task-fields-secondary select { min-height: 44px; padding: 7px; border-color: transparent; background-color: transparent; }
+.task-fields-secondary select:hover { border-color: #52647e; background-color: #1d2b42; }
+.task-legacy-type-notice { margin: 4px 0 0; color: #fcd34d; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.task-detail-form textarea { min-height: 180px; padding: 12px; resize: vertical; border: 1px solid #35445c; border-radius: 6px; background: #0e1828; font: inherit; line-height: 1.65; }
+.task-priority-control { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 7px; border: 1px solid transparent; border-radius: 6px; }
+.task-priority-control:hover { border-color: #52647e; background: #1d2b42; }
+.task-priority-control:focus-within { outline: 3px solid #7dd3fc; outline-offset: 3px; }
+.task-priority-value { min-width: 0; overflow-wrap: anywhere; color: #eef4ff; }
+.task-priority-indicator { margin-right: 5px; font-weight: 700; }
+.task-priority-chevron { flex: 0 0 7px; height: 7px; margin: -4px 5px 0 0; border-right: 1px solid #eef4ff; border-bottom: 1px solid #eef4ff; transform: rotate(45deg); }
+.task-priority-control select { position: absolute; inset: 0; height: 100%; opacity: 0; cursor: pointer; }
+.task-priority-control:has(select:disabled) { opacity: .6; }
+.task-priority-control select:disabled { cursor: not-allowed; }
+.task-detail-form > .form-help { margin: 0; }
+.task-child-list { min-width: 0; }
+.task-child-list ul { display: grid; list-style: none; margin: 0; padding: 0; }
+.task-child-list li { min-width: 0; border-bottom: 1px solid #27364d; }
+.task-child-list button { display: flex; justify-content: flex-start; gap: 12px; width: 100%; min-height: 52px; padding: 6px 10px; border: 0; background: transparent; color: #eef4ff; text-align: left; }
+.task-child-list button:hover { background: #1d2b42; }
+.task-child-list button span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.task-child-list button code { color: #b7d8ff; }
+.task-child-list .app-icon { width: 18px; height: 18px; color: #afbdd2; }
+.task-child-empty { margin: 16px 0; color: #afbdd2; }
+.task-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.task-detail-actions button { width: auto; min-height: 44px; }
+.task-detail-sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid #35445c; background: #111b2c; }
+.task-sidebar-tabs { display: flex; gap: 20px; flex-wrap: wrap; padding: 0 18px; border-bottom: 1px solid #35445c; }
+.task-related-versions { min-height: 0; overflow: auto; padding: 16px; }
 .task-related-versions > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .task-related-versions h4, .task-comments h4 { margin: 0; color: #eef4ff; font-size: 13px; }
 .task-related-versions > header > span { color: #afbdd2; font-size: 11px; }
@@ -869,12 +997,7 @@ onUnmounted(() => {
 .task-version-link code { overflow: hidden; color: #b7d8ff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .task-version-link span { overflow: hidden; color: #c0cde0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .task-version-link .app-icon { width: 16px; height: 16px; }
-.task-comments { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid #35445c; background: #111b2c; }
-.task-comments > header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 10px; min-height: 74px; padding: 12px 16px; border-bottom: 1px solid #35445c; }
-.task-comments > header .eyebrow { margin: 0 0 3px; }
-.task-comments > header button { min-height: 44px; padding: 6px 9px; font-size: 11px; }
-.task-comments h4 { font-size: 15px; }
-.task-comments h4 span { margin-left: 4px; color: #9eafc5; font-size: 12px; font-weight: 500; }
+.task-comments { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .task-comment-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; align-content: start; padding: 12px; }
 .task-comments-empty { display: grid; flex: 1 1 auto; place-items: center; min-height: 120px; margin: 0; color: #8fa0b8; font-size: 12px; }
 .task-comments-empty-note { display: grid; place-items: center; padding: 24px; border-left: 1px solid #35445c; color: #9eafc5; font-size: 12px; text-align: center; }
@@ -891,7 +1014,7 @@ onUnmounted(() => {
 .task-comment-editor :deep(.markdown-editor-toolbar button) { min-width: 0; min-height: 44px; padding: 6px 10px; }
 .task-comment-editor :deep(.markdown-editor textarea) { min-height: 120px; margin: 0; }
 .task-comment-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.task-comment-editor-actions button { min-height: 44px; }
+.task-comment-editor-actions button { width: auto; min-height: 44px; }
 .task-options-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(760px, calc(100dvh - 24px)); overflow: auto; padding: 18px; border: 1px solid #52647e; border-radius: 8px; background: #121c2d; color: #eef4ff; }
 .task-options-dialog::backdrop { background: #020617aa; }
 .task-options-dialog form { display: grid; gap: 12px; }
@@ -918,11 +1041,11 @@ onUnmounted(() => {
 .task-options-footer button { min-height: 44px; }
 @media (max-width: 760px) {
   .task-detail-dialog { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
-  .task-detail-modal-header { min-height: 64px; padding: 10px 14px; }
-  .task-detail-modal-header h2 { font-size: 16px; }
+  .task-detail-modal-header { min-height: 60px; padding: 6px 12px; }
   .task-detail-view { display: flex; flex-direction: column; overflow-y: auto; }
   .task-detail-main-scroll { flex: 0 0 auto; overflow: visible; padding: 16px; }
-  .task-comments { flex: 0 0 auto; min-height: 360px; border-top: 1px solid #35445c; border-left: 0; }
+  .task-detail-sidebar { flex: 0 0 auto; min-height: 360px; border-top: 1px solid #35445c; border-left: 0; }
+  .task-comments { min-height: 300px; }
   .task-comment-list { flex: 1 1 auto; }
   .task-comments-empty { flex: 1 0 120px; }
   .task-comments-empty-note { min-height: 240px; border-top: 1px solid #35445c; border-left: 0; }
@@ -937,10 +1060,13 @@ onUnmounted(() => {
   .task-board-search-mode { flex: 1 1 110px; }
   .task-board-toolbar input { flex: 1 1 100%; order: 2; }
   .task-board-count { margin-left: auto; }
-  .task-detail-form { grid-template-columns: minmax(0, 1fr); gap: 7px; }
-  .task-detail-form > label:not(:first-child) { margin-top: 7px; }
-  .task-date-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .task-fields-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .task-fields-secondary { grid-template-columns: minmax(0, 1fr); }
   .task-detail-actions { margin-top: 14px; }
-  .task-detail-actions button { flex: 1 1 100%; }
+  .task-heading-fields { gap: 4px; }
+  .task-heading-fields #task-board-external-id { flex-basis: 60px; width: 60px; }
+  .task-heading-fields #task-board-parent { flex: 1 1 90px; }
+  .task-heading-fields label:not(.visually-hidden) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .task-save-status { max-width: 62px; overflow-wrap: anywhere; font-size: 11px; white-space: normal; }
 }
 </style>
