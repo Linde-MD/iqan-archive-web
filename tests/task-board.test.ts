@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
-import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, tasksInLane } from '../src/domain/task-board';
+import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
 import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
@@ -20,6 +20,56 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('新任务编号按项目全部编号数值递增，忽略空值和前导零，不丢失精度', () => {
+    const graph = fixture();
+    expect(suggestNextTaskId([])).toBe('1');
+    expect(suggestNextTaskId(graph.tasks)).toBe('1');
+    graph.tasks[0]!.externalTaskId = '002';
+    graph.tasks[1]!.externalTaskId = '2';
+    expect(suggestNextTaskId(graph.tasks)).toBe('3');
+    graph.tasks[2]!.externalTaskId = '9007199254740992';
+    expect(suggestNextTaskId(graph.tasks)).toBe('9007199254740993');
+    graph.tasks[2]!.externalTaskId = '9999999999999998';
+    expect(suggestNextTaskId(graph.tasks)).toBe('9999999999999999');
+    graph.tasks[2]!.externalTaskId = '9999999999999999';
+    expect(suggestNextTaskId(graph.tasks)).toBeNull();
+  });
+
+  it('新建任务编号必填且格式有效、同项目文本唯一，允许选择未使用编号', () => {
+    const graph = fixture();
+    graph.tasks[0]!.externalTaskId = '9999999999999999';
+    graph.tasks[1]!.externalTaskId = '002';
+    expect(validateNewTaskId(graph.tasks, ' 2 ')).toBe('2');
+    expect(() => validateNewTaskId(graph.tasks, null)).toThrow('必须填写');
+    expect(() => validateNewTaskId(graph.tasks, '  ')).toThrow('必须填写');
+    expect(() => validateNewTaskId(graph.tasks, 'a')).toThrow('只能填写数字');
+    expect(() => validateNewTaskId(graph.tasks, '10000000000000000')).toThrow('16');
+    expect(() => validateNewTaskId(graph.tasks, '002')).toThrow('已被其他任务使用');
+  });
+
+  it('并发创建时旧 revision 不得覆盖新编号，已保存任务可保留空编号', async () => {
+    const db = new ArchiveDatabase(`task-number-${crypto.randomUUID()}`);
+    try {
+      const repo = new ArchiveRepository(db);
+      const graph = await repo.create('任务编号', '001');
+      const base = {
+        projectId: graph.project.id, parentTaskId: null, description: '', externalTaskId: '1',
+        statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
+        startDate: null, dueDate: null, sortOrder: 0, comments: [],
+      };
+      const saved = await repo.saveTask(graph.project.id, graph.project.revision, { ...base, id: 'a', name: 'A' });
+      await expect(repo.saveTask(graph.project.id, graph.project.revision, { ...base, id: 'b', name: 'B' }))
+        .rejects.toThrow('其他标签页已更新');
+      await expect(repo.saveTask(graph.project.id, saved.project.revision, { ...base, id: 'b', name: 'B' }))
+        .rejects.toThrow('已被其他任务使用');
+      const cleared = await repo.saveTask(graph.project.id, saved.project.revision, { ...saved.tasks[0]!, externalTaskId: null });
+      expect(cleared.tasks).toHaveLength(1);
+      expect((await repo.get(graph.project.id)).tasks[0]!.externalTaskId).toBeNull();
+    } finally {
+      await db.delete();
+    }
+  });
+
   it('工作项列表数值倒序，支持大整数、前导零和无编号，并不改变原数据', () => {
     const graph = fixture();
     const [b, a, c, u] = graph.tasks;

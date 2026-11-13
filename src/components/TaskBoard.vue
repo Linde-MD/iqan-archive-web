@@ -3,7 +3,7 @@ import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStart
 import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
-import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, tasksInLane, type TaskSearchMode } from '../domain/task-board';
+import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
@@ -45,6 +45,8 @@ const selectedTaskId = ref('');
 const taskDraft = ref<Task | null>(null);
 const taskDraftRevision = ref(-1);
 const taskDraftBaseline = ref('');
+const taskIdError = ref('');
+const taskIdOverflow = ref(false);
 const commentEditorOpen = ref(false);
 const editingCommentId = ref<string | null>(null);
 const commentText = ref('');
@@ -172,6 +174,8 @@ function setTaskDraft(task: Task) {
   clearTimeout(descriptionSaveTimer);
   autoSaveQueued = false;
   taskDraft.value = structuredClone(task);
+  taskIdError.value = '';
+  taskIdOverflow.value = false;
   taskDraftRevision.value = graph.value?.project.revision ?? -1;
   taskDraftBaseline.value = JSON.stringify(taskDraft.value);
   selectedTaskId.value = task.id;
@@ -204,12 +208,17 @@ function createTask(statusOptionId?: string | null, updateRoute = true) {
   autoSaveQueued = false;
   const defaultStatus = current.project.statusOptions[0]?.id ?? null;
   const targetStatus = statusOptionId === undefined ? defaultStatus : statusOptionId;
+  const suggestedId = suggestNextTaskId(current.tasks);
   const task: Task = {
-    id: '', projectId: current.project.id, parentTaskId: null, name: '', description: '', externalTaskId: null,
+    id: '', projectId: current.project.id, parentTaskId: null, name: '', description: '', externalTaskId: suggestedId,
     statusOptionId: targetStatus, typeOptionId: null, priorityOptionId: null, assigneeId: null,
     startDate: null, dueDate: null, sortOrder: tasksInLane(current, targetStatus).length, comments: [],
   };
   taskDraft.value = task;
+  taskIdError.value = '';
+  taskIdOverflow.value = suggestedId === null;
+  error.value = '';
+  statusMessage.value = '';
   taskDraftRevision.value = current.project.revision;
   taskDraftBaseline.value = JSON.stringify(task);
   selectedTaskId.value = '';
@@ -235,6 +244,17 @@ async function saveTask(candidate: Task, successMessage: string) {
     error.value = '项目已在其他标签页更新。请重新读取任务后再保存。';
     statusMessage.value = '';
     return false;
+  }
+  if (!candidate.id) {
+    try {
+      validateNewTaskId(current.tasks, candidate.externalTaskId);
+      taskIdError.value = '';
+    } catch (cause) {
+      taskIdError.value = cause instanceof Error ? cause.message : 'Task ID 验证失败，请重试。';
+      await nextTick();
+      document.getElementById('task-board-external-id')?.focus();
+      return false;
+    }
   }
   saving.value = true;
   error.value = '';
@@ -789,8 +809,8 @@ onUnmounted(() => {
             <h2 id="task-detail-page-title" class="visually-hidden" tabindex="-1">{{ taskDraft.id ? '任务详情' : '新建任务' }}</h2>
             <div class="task-heading-fields">
               <span class="task-heading-icon"><AppIcon name="tasks" /></span>
-              <label class="visually-hidden" for="task-board-external-id">Task ID（可选，1–16 位数字）</label>
-              <input id="task-board-external-id" v-model="taskDraft.externalTaskId" form="task-detail-form" inputmode="numeric" placeholder="编号" title="点击编辑 Task ID" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @blur="requestAutoSave" />
+              <label class="visually-hidden" for="task-board-external-id">Task ID（{{ taskDraft.id ? '可选' : '必填' }}，1–16 位数字）</label>
+              <input id="task-board-external-id" v-model="taskDraft.externalTaskId" form="task-detail-form" inputmode="numeric" placeholder="编号" title="点击编辑 Task ID" :aria-required="!taskDraft.id" :aria-invalid="!!taskIdError" :aria-describedby="taskIdError ? 'task-id-error' : taskIdOverflow ? 'task-id-overflow' : undefined" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @input="taskIdError = ''" @blur="requestAutoSave" />
               <span class="task-heading-divider" aria-hidden="true"></span>
               <label for="task-board-parent">父任务</label>
               <select id="task-board-parent" v-model="taskDraft.parentTaskId" form="task-detail-form" :disabled="taskFieldsDisabled" @change="requestAutoSave">
@@ -808,6 +828,8 @@ onUnmounted(() => {
         <section ref="taskDetailView" class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
           <div ref="taskDetailMainScroll" class="task-detail-main-scroll">
             <p v-if="taskDraftStale && !saving" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
+            <p v-if="taskIdOverflow && !taskDraft.id" id="task-id-overflow" class="task-board-message" role="status">已有 Task ID 达到 16 位上限，无法自动编号，请手工填写未使用的编号。</p>
+            <p v-if="taskIdError" id="task-id-error" class="task-board-message is-error" role="alert">{{ taskIdError }}</p>
             <p v-if="error" class="task-board-message is-error" role="alert">{{ error }}</p>
             <form id="task-detail-form" class="task-detail-form" @submit.prevent="submitTask" @change="requestAutoSave">
               <label class="visually-hidden" for="task-board-name">任务名（必填）</label>

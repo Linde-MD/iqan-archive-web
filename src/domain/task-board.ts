@@ -1,5 +1,5 @@
 import { validateGraph } from './graph';
-import { requireCondition, type ProjectGraph, type Task } from './model';
+import { normalizeExternalTaskId, requireCondition, type ProjectGraph, type Task } from './model';
 
 export type TaskSearchMode = 'id' | 'keyword' | 'assignee';
 
@@ -14,6 +14,24 @@ function compareNumericIds(left: string, right: string): number {
   const normalizedRight = right.replace(/^0+(?=\d)/, '');
   return normalizedLeft.length - normalizedRight.length
     || (normalizedLeft < normalizedRight ? -1 : normalizedLeft > normalizedRight ? 1 : 0);
+}
+
+export function suggestNextTaskId(tasks: readonly Task[]): string | null {
+  let maximum = '0';
+  for (const task of tasks) {
+    if (task.externalTaskId !== null && compareNumericIds(task.externalTaskId, maximum) > 0) {
+      maximum = task.externalTaskId;
+    }
+  }
+  const next = (BigInt(maximum) + 1n).toString();
+  return next.length <= 16 ? next : null;
+}
+
+export function validateNewTaskId(tasks: readonly Task[], value: string | null): string {
+  const normalized = normalizeExternalTaskId(value);
+  requireCondition(normalized !== null, 'TASK_ID_REQUIRED', '新建任务必须填写 Task ID。');
+  requireCondition(!tasks.some(task => task.externalTaskId === normalized), 'DUPLICATE_TASK_ID', `Task ID 已被其他任务使用：${normalized}`);
+  return normalized;
 }
 
 export function parseTaskIdSearch(query: string): TaskIdSearch {
