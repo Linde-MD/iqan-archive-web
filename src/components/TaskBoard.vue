@@ -3,9 +3,10 @@ import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStart
 import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
-import { createPriorityOption, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
+import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { renderMarkdown } from '../utils/markdown';
 import AppIcon from './AppIcon.vue';
@@ -31,6 +32,7 @@ const emit = defineEmits<{
 }>();
 
 const graph = shallowRef<ProjectGraph>();
+const router = useRouter();
 const loading = ref(true);
 const saving = ref(false);
 const error = ref('');
@@ -63,6 +65,11 @@ const optionNameDrafts = ref<Record<OptionKind, string>>({ status: '', type: '',
 const optionDraft = ref<TaskOption[]>([]);
 const optionDraftRevision = ref(-1);
 const dragSaving = ref(false);
+const quickTask = ref<{ statusId: string | null; name: string; revision: number } | null>(null);
+const quickError = ref('');
+const quickConflict = ref(false);
+const quickStale = computed(() => !!quickTask.value && (quickConflict.value || graph.value?.project.revision !== quickTask.value.revision));
+let removeQuickRouteGuard: (() => void) | undefined;
 let subscription: { unsubscribe(): void } | undefined;
 let lastDragOverTarget: DragEndEvent['operation']['target'] | null = null;
 let descriptionSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -114,13 +121,17 @@ const lanes = computed(() => {
   const current = graph.value;
   if (!current) return [];
   const visibleTaskIds = new Set(taskMatches.value.map(task => task.id));
-  return [
+  const result = [
     ...current.project.statusOptions.map(status => ({
       status,
       tasks: tasksInLane(current, status.id).filter(task => visibleTaskIds.has(task.id)),
     })),
     { status: null, tasks: tasksInLane(current, null).filter(task => visibleTaskIds.has(task.id)) },
   ];
+  if (quickTask.value?.statusId && !current.project.statusOptions.some(option => option.id === quickTask.value?.statusId)) {
+    result.push({ status: { id: quickTask.value.statusId, name: '已删除的泳道' }, tasks: [] });
+  }
+  return result;
 });
 const taskIndexById = computed(() => new Map(lanes.value.flatMap(lane => lane.tasks)
   .map((task, index) => [task.id, index] as const)));
@@ -230,6 +241,79 @@ function createTask(statusOptionId?: string | null, updateRoute = true) {
   detailSection.value = 'information';
   if (updateRoute) emit('navigateChild', ['new']);
   void nextTick(() => document.getElementById('task-board-name')?.focus());
+}
+
+function startQuickTask(statusId: string | null) {
+  if (!graph.value || saving.value || quickTask.value || hasUnsavedTaskChanges.value) return;
+  quickTask.value = {
+    statusId, name: '', revision: graph.value.project.revision,
+  };
+  quickError.value = '';
+  quickConflict.value = false;
+  error.value = '';
+  statusMessage.value = '';
+}
+
+function cancelQuickTask() {
+  if (saving.value) return;
+  quickTask.value = null;
+  quickError.value = '';
+  quickConflict.value = false;
+}
+
+async function refreshQuickTask() {
+  if (!quickTask.value || saving.value) return;
+  saving.value = true;
+  try {
+    const refreshed = await props.repository.get(props.projectId);
+    graph.value = refreshed;
+    if (quickTask.value.statusId !== null && !refreshed.project.statusOptions.some(option => option.id === quickTask.value?.statusId)) {
+      quickError.value = '该泳道已被删除，请复制任务名称后取消并选择其他泳道。';
+      return;
+    }
+    quickTask.value.revision = refreshed.project.revision;
+    quickConflict.value = false;
+    quickError.value = '';
+    statusMessage.value = '已重新读取项目，请再次确认创建任务。';
+  } catch (cause) {
+    quickError.value = cause instanceof Error ? cause.message : '重新读取项目失败，请重试。';
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function submitQuickTask() {
+  const draft = quickTask.value;
+  const current = graph.value;
+  if (!draft || !current || saving.value) return;
+  if (current.project.revision !== draft.revision) {
+    quickError.value = '项目已在其他标签页更新，请先重新读取项目。';
+    return;
+  }
+  try {
+    if (!draft.name.trim()) throw new Error('请填写任务名称。');
+    const externalTaskId = suggestNextTaskId(current.tasks);
+    if (externalTaskId === null) throw new Error('Task ID 已达到自动编号上限。请复制任务名称，取消后通过“新建任务”手工填写未使用的编号。');
+    const laneTasks = tasksInLane(current, draft.statusId);
+    const sortOrder = (laneTasks[laneTasks.length - 1]?.sortOrder ?? -1) + 1;
+    const task: Task = {
+      id: crypto.randomUUID(), projectId: current.project.id, parentTaskId: null,
+      name: draft.name.trim(), description: '', externalTaskId,
+      statusOptionId: draft.statusId, typeOptionId: null, priorityOptionId: null, assigneeId: null,
+      startDate: null, dueDate: null, sortOrder, comments: [],
+    };
+    saving.value = true;
+    quickError.value = '';
+    const persisted = await props.repository.saveTask(props.projectId, draft.revision, task);
+    graph.value = persisted;
+    quickTask.value = null;
+    statusMessage.value = `任务“${task.name}”已创建。${taskMatches.value.some(candidate => candidate.id === task.id) ? '' : '当前筛选隐藏了新任务，请清除筛选查看。'}`;
+  } catch (cause) {
+    if (cause instanceof DomainError && cause.code === 'STALE_REVISION') quickConflict.value = true;
+    quickError.value = cause instanceof Error ? cause.message : '创建任务失败，请重试。';
+  } finally {
+    saving.value = false;
+  }
 }
 
 function reportError(cause: unknown) {
@@ -720,9 +804,16 @@ async function focusRequestedTask() {
 }
 
 watch([graph, () => props.focusTaskId], () => { void focusRequestedTask(); }, { flush: 'post' });
-watch(saving, value => emit('busy', value), { immediate: true });
+watch([saving, quickTask], ([isSaving, draft]) => emit('busy', isSaving || !!draft), { immediate: true });
 
 onMounted(() => {
+  removeQuickRouteGuard = router.beforeEach(() => {
+    if (saving.value) return false;
+    if (!quickTask.value) return true;
+    if (quickTask.value.name.trim() && !window.confirm('泳道中的新任务尚未保存，放弃后离开吗？')) return false;
+    cancelQuickTask();
+    return true;
+  });
   subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
     next: value => {
       graph.value = value;
@@ -741,6 +832,7 @@ onMounted(() => {
 onUnmounted(() => {
   clearTimeout(descriptionSaveTimer);
   subscription?.unsubscribe();
+  removeQuickRouteGuard?.();
   emit('busy', false);
 });
 </script>
@@ -753,26 +845,26 @@ onUnmounted(() => {
         <h2 id="task-board-title">{{ projectName }} · 任务管理</h2>
       </div>
       <div class="task-board-header-actions">
-        <button type="button" class="secondary" :disabled="loading || saving || hasUnsavedTaskChanges" @click="openOptions()"><AppIcon name="edit" />管理选项</button>
-        <button type="button" :disabled="loading || saving" @click="createTask()"><AppIcon name="plus" />新建任务</button>
+        <button type="button" class="secondary" :disabled="loading || saving || hasUnsavedTaskChanges || !!quickTask" @click="openOptions()"><AppIcon name="edit" />管理选项</button>
+        <button type="button" :disabled="loading || saving || !!quickTask" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>
     <div class="task-view-controls">
       <div class="task-view-switch" role="group" aria-label="任务视图">
         <button type="button" :aria-pressed="taskView === 'board'" @click="taskView = 'board'">看板</button>
-        <button id="task-list-view" type="button" :aria-pressed="taskView === 'list'" @click="taskView = 'list'">工作项列表</button>
+        <button id="task-list-view" type="button" :disabled="!!quickTask" :aria-pressed="taskView === 'list'" @click="taskView = 'list'">工作项列表</button>
       </div>
       <label v-if="taskView === 'list'" class="task-nesting-toggle"><input v-model="nestedTasks" type="checkbox" />显示父子嵌套</label>
     </div>
     <div class="task-board-toolbar">
       <label class="task-board-search-label" for="task-board-search-mode">筛选条件</label>
-      <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading" aria-label="任务搜索条件">
+      <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading || !!quickTask" aria-label="任务搜索条件">
         <option value="id">ID</option>
         <option value="keyword">关键字</option>
         <option value="assignee">负责人</option>
       </select>
       <input id="task-board-search" v-model="query" type="search" :aria-label="searchMode === 'id' ? 'Task ID 精确值或范围' : searchMode === 'assignee' ? '负责人名称' : '任务关键字'"
-        :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading" />
+        :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading || !!quickTask" />
       <span class="task-board-count">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
     </div>
     <p v-if="taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
@@ -791,8 +883,11 @@ onUnmounted(() => {
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
               :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :task-index-by-id="taskIndexById" :type-name-by-id="typeNameById"
               :priority-option-by-id="priorityOptionById" :assignee-name-by-id="assigneeNameById"
-              :disabled="saving || taskDraftDirty"
-              @open-task="switchTask" @add-task="createTask" @move-task="(taskId, beforeId) => persistMove(taskId, lane.status?.id ?? null, beforeId)"
+              :disabled="saving || taskDraftDirty || !!quickTask" :saving="saving"
+              :quick-task="quickTask && quickTask.statusId === (lane.status?.id ?? null) ? quickTask : null"
+              :quick-error="quickError" :quick-stale="quickStale"
+              @open-task="switchTask" @add-task="startQuickTask" @submit-quick="submitQuickTask" @cancel-quick="cancelQuickTask" @refresh-quick="refreshQuickTask"
+              @move-task="(taskId, beforeId) => persistMove(taskId, lane.status?.id ?? null, beforeId)"
             />
           </div>
         </DragDropProvider>
