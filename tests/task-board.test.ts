@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
-import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, tasksInLane } from '../src/domain/task-board';
+import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, tasksInLane } from '../src/domain/task-board';
 import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
@@ -20,6 +20,54 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('工作项列表数值倒序，支持大整数、前导零和无编号，并不改变原数据', () => {
+    const graph = fixture();
+    const [b, a, c, u] = graph.tasks;
+    b!.externalTaskId = '9007199254740993';
+    a!.externalTaskId = '9007199254740992';
+    c!.externalTaskId = '0002';
+    const snapshot = structuredClone(graph);
+    const rows = projectTaskList(graph.tasks, new Set(graph.tasks.map(task => task.id)), false, new Set(), false, new Set());
+    expect(rows.map(row => row.task.id)).toEqual(['b', 'a', 'c', 'u']);
+    expect(graph).toEqual(snapshot);
+  });
+
+  it('相同数值的编号按原始文本稳定区分，空编号按任务名及稳定 ID 排序', () => {
+    const graph = fixture();
+    const [b, a, c, u] = graph.tasks;
+    b!.externalTaskId = '2'; a!.externalTaskId = '002';
+    c!.name = '相同'; u!.name = '相同';
+    expect([...graph.tasks].sort(compareTaskListIds).map(task => task.id)).toEqual(['a', 'b', 'c', 'u']);
+  });
+
+  it('父子列表逐层按编号排序、可折叠且独立任务位于顶层', () => {
+    const graph = fixture();
+    const [b, a, c, u] = graph.tasks;
+    a!.externalTaskId = '20';
+    b!.externalTaskId = '2'; b!.parentTaskId = a!.id;
+    c!.externalTaskId = '50'; c!.parentTaskId = a!.id;
+    u!.externalTaskId = '30';
+    const ids = new Set(graph.tasks.map(task => task.id));
+    const collapsed = projectTaskList(graph.tasks, ids, true, new Set(), false, new Set());
+    expect(collapsed.map(row => [row.task.id, row.depth, row.hasChildren])).toEqual([['u', 0, false], ['a', 0, true]]);
+    const expanded = projectTaskList(graph.tasks, ids, true, new Set(['a']), false, new Set());
+    expect(expanded.map(row => [row.task.id, row.depth])).toEqual([['u', 0], ['a', 0], ['c', 1], ['b', 1]]);
+    const flat = projectTaskList(graph.tasks, ids, false, new Set(), false, new Set());
+    expect(flat.map(row => row.task.id)).toEqual(['c', 'u', 'a', 'b']);
+  });
+
+  it('筛选子任务时保留祖先路径、自动展开且支持临时折叠', () => {
+    const graph = fixture();
+    const [b, a, c] = graph.tasks;
+    b!.parentTaskId = a!.id; c!.parentTaskId = b!.id;
+    const rows = projectTaskList(graph.tasks, new Set(['c']), true, new Set(), true, new Set());
+    expect(rows.map(row => [row.task.id, row.depth, row.matches, row.expanded])).toEqual([
+      ['a', 0, false, true], ['b', 1, false, true], ['c', 2, true, false],
+    ]);
+    expect(projectTaskList(graph.tasks, new Set(['c']), true, new Set(), true, new Set(['a'])).map(row => row.task.id)).toEqual(['a']);
+    expect(projectTaskList(graph.tasks, new Set(), true, new Set(), true, new Set())).toEqual([]);
+  });
+
   it('保存结果只更新提交后未再修改的字段，保留后续输入', () => {
     const submitted = structuredClone(fixture().tasks[0]!);
     submitted.name = ' 原始名称 ';

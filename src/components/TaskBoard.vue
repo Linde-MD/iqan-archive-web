@@ -3,7 +3,7 @@ import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStart
 import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
-import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, tasksInLane, type TaskSearchMode } from '../domain/task-board';
+import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, tasksInLane, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
@@ -11,6 +11,7 @@ import { renderMarkdown } from '../utils/markdown';
 import AppIcon from './AppIcon.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import TaskBoardLane from './TaskBoardLane.vue';
+import TaskList from './TaskList.vue';
 
 type OptionKey = 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions';
 type OptionKind = 'status' | 'type' | 'priority' | 'assignee';
@@ -36,6 +37,10 @@ const error = ref('');
 const statusMessage = ref('');
 const query = ref('');
 const searchMode = ref<TaskSearchMode>('keyword');
+const taskView = ref<'board' | 'list'>('board');
+const nestedTasks = ref(true);
+const expandedTaskIds = ref(new Set<string>());
+const collapsedSearchTaskIds = ref(new Set<string>());
 const selectedTaskId = ref('');
 const taskDraft = ref<Task | null>(null);
 const taskDraftRevision = ref(-1);
@@ -99,6 +104,10 @@ const taskMatches = computed(() => {
     return `${task.name} ${task.description}`.toLocaleLowerCase().includes(search);
   });
 });
+const listRows = computed(() => projectTaskList(
+  graph.value?.tasks ?? [], new Set(taskMatches.value.map(task => task.id)), nestedTasks.value,
+  expandedTaskIds.value, !!query.value.trim(), collapsedSearchTaskIds.value,
+));
 const lanes = computed(() => {
   const current = graph.value;
   if (!current) return [];
@@ -141,6 +150,23 @@ const optionDraftChanged = computed(() => {
 });
 
 watch(searchMode, () => { query.value = ''; });
+watch([query, searchMode], () => { collapsedSearchTaskIds.value = new Set(); });
+
+function toggleListTask(id: string) {
+  const row = listRows.value.find(item => item.task.id === id);
+  if (!row) return;
+  if (query.value.trim()) {
+    const collapsed = new Set(collapsedSearchTaskIds.value);
+    if (row.expanded) collapsed.add(id);
+    else collapsed.delete(id);
+    collapsedSearchTaskIds.value = collapsed;
+  } else {
+    const expanded = new Set(expandedTaskIds.value);
+    if (row.expanded) expanded.delete(id);
+    else expanded.add(id);
+    expandedTaskIds.value = expanded;
+  }
+}
 
 function setTaskDraft(task: Task) {
   clearTimeout(descriptionSaveTimer);
@@ -512,6 +538,17 @@ function closeTaskDetails() {
   taskDraftBaseline.value = '';
   emit('navigateChild', [], 'back');
   void nextTick(() => {
+    if (taskView.value === 'list') {
+      const row = [...document.querySelectorAll<HTMLElement>('[data-task-list-id]')]
+        .find(element => element.dataset.taskListId === taskId);
+      const title = row?.querySelector<HTMLButtonElement>('.task-list-title');
+      if (title) {
+        title.focus({ preventScroll: true });
+        return;
+      }
+      document.getElementById('task-list-view')?.focus({ preventScroll: true });
+      return;
+    }
     const card = [...document.querySelectorAll<HTMLElement>('[data-task-card-id]')]
       .find(element => element.dataset.taskCardId === taskId);
     card?.querySelector<HTMLButtonElement>('.task-card-title')?.focus({ preventScroll: true });
@@ -653,6 +690,8 @@ async function focusRequestedTask() {
   taskDraftRevision.value = -1;
   taskDraftBaseline.value = '';
   selectedTaskId.value = targetId;
+  taskView.value = 'board';
+  if (!taskMatches.value.some(task => task.id === targetId)) query.value = '';
   await nextTick();
   const card = [...document.querySelectorAll<HTMLElement>('[data-task-card-id]')]
     .find(element => element.dataset.taskCardId === targetId);
@@ -691,13 +730,20 @@ onUnmounted(() => {
     <header class="task-board-header">
       <div>
         <p class="eyebrow">PROJECT TASKS</p>
-        <h2 id="task-board-title">{{ projectName }} · 任务看板</h2>
+        <h2 id="task-board-title">{{ projectName }} · 任务管理</h2>
       </div>
       <div class="task-board-header-actions">
         <button type="button" class="secondary" :disabled="loading || saving || hasUnsavedTaskChanges" @click="openOptions()"><AppIcon name="edit" />管理选项</button>
         <button type="button" :disabled="loading || saving" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>
+    <div class="task-view-controls">
+      <div class="task-view-switch" role="group" aria-label="任务视图">
+        <button type="button" :aria-pressed="taskView === 'board'" @click="taskView = 'board'">看板</button>
+        <button id="task-list-view" type="button" :aria-pressed="taskView === 'list'" @click="taskView = 'list'">工作项列表</button>
+      </div>
+      <label v-if="taskView === 'list'" class="task-nesting-toggle"><input v-model="nestedTasks" type="checkbox" />显示父子嵌套</label>
+    </div>
     <div class="task-board-toolbar">
       <label class="task-board-search-label" for="task-board-search-mode">筛选条件</label>
       <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading" aria-label="任务搜索条件">
@@ -716,7 +762,8 @@ onUnmounted(() => {
     <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
     <div v-else-if="statusMessage && !taskDraft" class="task-board-message" role="status">{{ statusMessage }}</div>
 
-    <div v-if="graph" class="task-board-layout">
+    <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
+    <div v-if="graph && taskView === 'board'" class="task-board-layout">
       <div class="task-board-scroll">
         <DragDropProvider @drag-start="onDragStart" @drag-over="onDragOver" @drag-end="onDragEnd">
           <div class="task-board-lanes">
@@ -896,6 +943,13 @@ onUnmounted(() => {
 .task-board-header h2 { overflow-wrap: anywhere; }
 .task-board-header-actions { flex-wrap: wrap; }
 .task-board-header-actions button { min-height: 44px; }
+.task-view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
+.task-view-switch { display: flex; gap: 4px; padding: 3px; border: 1px solid #35445c; border-radius: 7px; background: #101a2a; }
+.task-view-switch button { min-height: 44px; padding: 8px 14px; border: 1px solid transparent; background: transparent; color: #afbdd2; }
+.task-view-switch button:hover { background: #253650; color: #eef4ff; }
+.task-view-switch button[aria-pressed="true"] { border-color: #52647e; background: #1d2b42; color: #eef4ff; }
+.task-nesting-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; color: #eef4ff; cursor: pointer; }
+.task-nesting-toggle input { width: 18px; height: 18px; margin: 0; accent-color: #60a5fa; }
 .task-board-toolbar { min-width: 0; margin-bottom: 12px; }
 .task-board-search-label { flex: 0 0 auto; margin: 0; }
 .task-board-search-mode { flex: 0 0 132px; min-width: 0; margin: 0; }

@@ -34,6 +34,7 @@ Map these roles to the semantic CSS variables in `src/style.css`. Keep normal te
 
 ## Layout and components
 
+- Task management offers a board and a compact work-item table, using the same dark surfaces. Size the ID column for at least six digits or the longest project ID, keep columns stable when expanding tasks, preserve unbroken IDs and dates, and allow local horizontal scrolling when needed. Use labeled, keyboard-operable expand buttons for hierarchy; retain full task names and text status cues.
 - Task details use a quiet header with editable ID and parent task, a separate title and a compact row of icon-led status, assignee, and date fields. Underlined tabs switch task information and subtasks; the side panel switches comments and linked versions without discarding drafts. Keep feedback unobtrusive but explicit, and stack the main content and side panel on narrow screens.
 - Keep the project list as a persistent desktop rail beside the active file or graph workspace; stack regions on narrow screens.
 - Present one global archive-root control for browser directory authorization. Derive separate engineering and document directories per project; keep each scan project-scoped. JSON backup import/export uses the root directory directly, while handles and paths stay out of JSON.

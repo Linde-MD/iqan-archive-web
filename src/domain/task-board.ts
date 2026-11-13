@@ -40,6 +40,76 @@ export function matchesTaskIdSearch(taskId: string | null, search: TaskIdSearch)
   return false;
 }
 
+export interface TaskListRow {
+  task: Task;
+  depth: number;
+  hasChildren: boolean;
+  expanded: boolean;
+  matches: boolean;
+}
+
+export function compareTaskListIds(left: Task, right: Task): number {
+  if (left.externalTaskId === null && right.externalTaskId !== null) return 1;
+  if (left.externalTaskId !== null && right.externalTaskId === null) return -1;
+  const numeric = left.externalTaskId !== null && right.externalTaskId !== null
+    ? compareNumericIds(right.externalTaskId, left.externalTaskId) : 0;
+  return numeric || (left.externalTaskId ?? '').localeCompare(right.externalTaskId ?? '')
+    || left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
+}
+
+export function projectTaskList(
+  tasks: readonly Task[],
+  matchedIds: ReadonlySet<string>,
+  nested: boolean,
+  expandedIds: ReadonlySet<string>,
+  filterActive: boolean,
+  collapsedFilterIds: ReadonlySet<string>,
+): TaskListRow[] {
+  if (!nested) {
+    return tasks.filter(task => matchedIds.has(task.id)).sort(compareTaskListIds)
+      .map(task => ({ task, depth: 0, hasChildren: false, expanded: false, matches: true }));
+  }
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const included = new Set(matchedIds);
+  const autoExpanded = new Set<string>();
+  if (filterActive) {
+    for (const id of matchedIds) {
+      let parentId = byId.get(id)?.parentTaskId ?? null;
+      while (parentId && !autoExpanded.has(parentId)) {
+        const parent = byId.get(parentId);
+        if (!parent) break;
+        included.add(parentId);
+        autoExpanded.add(parentId);
+        parentId = parent.parentTaskId;
+      }
+    }
+  }
+  const children = new Map<string | null, Task[]>();
+  for (const task of tasks) {
+    if (!included.has(task.id)) continue;
+    const siblings = children.get(task.parentTaskId) ?? [];
+    siblings.push(task);
+    children.set(task.parentTaskId, siblings);
+  }
+  for (const siblings of children.values()) siblings.sort(compareTaskListIds);
+  const rows: TaskListRow[] = [];
+  const pending = (children.get(null) ?? []).map(task => ({ task, depth: 0 })).reverse();
+  while (pending.length) {
+    const { task, depth } = pending.pop()!;
+    const descendants = children.get(task.id) ?? [];
+    const expanded = filterActive
+      ? (autoExpanded.has(task.id) || expandedIds.has(task.id)) && !collapsedFilterIds.has(task.id)
+      : expandedIds.has(task.id);
+    rows.push({ task, depth, hasChildren: descendants.length > 0, expanded, matches: matchedIds.has(task.id) });
+    if (expanded) {
+      for (let index = descendants.length - 1; index >= 0; index--) {
+        pending.push({ task: descendants[index]!, depth: depth + 1 });
+      }
+    }
+  }
+  return rows;
+}
+
 export function tasksInLane(graph: ProjectGraph, statusOptionId: string | null): Task[] {
   return graph.tasks
     .filter(task => task.statusOptionId === statusOptionId)
