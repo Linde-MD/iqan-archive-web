@@ -9,7 +9,7 @@ function fixture(): ProjectGraph {
   const graph = createProject('测试工程', '14798046801');
   const p = graph.project.id;
   graph.nodes = ['R', 'A', 'B', 'M', 'D', 'S'].map(id => ({
-    id, projectId: p, version: id, description: '', taskId: null, releasedAt: null,
+    id, projectId: p, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
   }));
   graph.edges = [['R', 'A'], ['R', 'B'], ['A', 'M'], ['B', 'M'], ['M', 'D'], ['B', 'S']].map(([parentId, childId], index) => ({
     id: `e${index}`, projectId: p, parentId: parentId!, childId: childId!,
@@ -347,9 +347,9 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v11 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v12 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(12).stores({ projects: 'id' });
+    future.db.version(13).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -537,7 +537,7 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes[0]).not.toHaveProperty('command');
     repo.db.close();
     await repo.db.open();
-    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(6);
+    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(7);
     const snapshot = (await repo.snapshot(graph.project.id)).graph;
     expect(snapshot.nodes).toEqual(stored.nodes);
     expect(snapshot.tasks).toEqual(stored.tasks);

@@ -19,11 +19,11 @@ function graphFixture(prefix = ''): ProjectGraph {
   graph.project.assigneeOptions = [{ id: `${prefix}assignee-owner`, name: '负责人' }];
   const releasedAt = '2026-01-01T00:00:00.000Z';
   graph.nodes = [
-    { id: `${prefix}node-root`, projectId, version: 'R', description: '根版本', taskId: null, releasedAt },
-    { id: `${prefix}node-a`, projectId, version: 'A', description: '', taskId: null, releasedAt },
-    { id: `${prefix}node-b`, projectId, version: 'B', description: '', taskId: null, releasedAt },
-    { id: `${prefix}node-merge`, projectId, version: 'M', description: '合并版本', taskId: `${prefix}task-1`, releasedAt },
-    { id: `${prefix}node-next`, projectId, version: 'D', description: '后续版本', taskId: null, releasedAt: null },
+    { id: `${prefix}node-root`, projectId, version: 'R', description: '根版本', taskId: null, releasedAt, testingAt: null },
+    { id: `${prefix}node-a`, projectId, version: 'A', description: '', taskId: null, releasedAt, testingAt: null },
+    { id: `${prefix}node-b`, projectId, version: 'B', description: '', taskId: null, releasedAt, testingAt: null },
+    { id: `${prefix}node-merge`, projectId, version: 'M', description: '合并版本', taskId: `${prefix}task-1`, releasedAt, testingAt: null },
+    { id: `${prefix}node-next`, projectId, version: 'D', description: '后续版本', taskId: null, releasedAt: null, testingAt: null },
   ];
   graph.edges = [
     [`${prefix}node-root`, `${prefix}node-a`],
@@ -50,7 +50,7 @@ function graphFixture(prefix = ''): ProjectGraph {
 
 function snapshot(graph: ProjectGraph): ProjectSnapshot {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     graph: {
       project: {
         id: graph.project.id, name: graph.project.name,
@@ -67,7 +67,7 @@ function snapshot(graph: ProjectGraph): ProjectSnapshot {
 }
 
 describe('项目 JSON 快照验证', () => {
-  it('解析 schemaVersion 6 并往返任务选项、日期和 Markdown 评论', () => {
+  it('解析 schemaVersion 7 并往返任务选项、日期和 Markdown 评论', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));
     expect(parsed).toEqual({
@@ -86,6 +86,7 @@ describe('项目 JSON 快照验证', () => {
       schemaVersion: 5,
       graph: {
         ...current.graph,
+        nodes: current.graph.nodes.map(({ testingAt: _testingAt, ...node }) => node),
         tasks: current.graph.tasks.map(({ parentTaskId: _parentTaskId, ...task }) => task),
       },
     };
@@ -112,6 +113,7 @@ describe('项目 JSON 快照验证', () => {
       schemaVersion: 3,
       graph: {
         ...current.graph,
+        nodes: current.graph.nodes.map(({ testingAt: _testingAt, ...node }) => node),
         project: {
           id: graph.project.id, name: graph.project.name,
           partNumber: graph.project.partNumber, revision: graph.project.revision,
@@ -137,7 +139,7 @@ describe('项目 JSON 快照验证', () => {
     ]);
     expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(migrated.project.assigneeOptions).toEqual([]);
-    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5 和 6');
+    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5、6 和 7');
   });
 
   it('schemaVersion 6 快照保留用户保存的旧类型名称及任务关联', () => {
@@ -155,6 +157,7 @@ describe('项目 JSON 快照验证', () => {
       schemaVersion: 4,
       graph: {
         ...current.graph,
+        nodes: current.graph.nodes.map(({ testingAt: _testingAt, ...node }) => node),
         project: {
           ...current.graph.project,
           priorityOptions: [{ id: 'legacy-priority', name: '紧急' }],
@@ -189,7 +192,7 @@ describe('项目 JSON 快照验证', () => {
 
   it('拒绝未知版本、额外字段、错误类型、无效关系及不合法 Task ID', () => {
     const source = snapshot(graphFixture());
-    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5 和 6');
+    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5、6 和 7');
     expect(() => parseProjectSnapshot({ ...source, executable: 'no' })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, extra: true } })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, nodes: [{ ...source.graph.nodes[0], releasedAt: 12 }] } })).toThrow('文本或 null');

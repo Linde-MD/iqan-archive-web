@@ -7,7 +7,7 @@ function graph(edges: [string, string][]) {
   const g = createProject('工程', '123');
   const p = g.project.id;
   const ids = [...new Set(edges.flat())];
-  g.nodes = ids.map(id => ({ id, projectId: p, version: id, description: '', taskId: null, releasedAt: null }));
+  g.nodes = ids.map(id => ({ id, projectId: p, version: id, description: '', taskId: null, releasedAt: null, testingAt: null }));
   g.edges = edges.map(([parentId, childId], index) => ({ id: `e${index}`, projectId: p, parentId: parentId!, childId: childId! }));
   return g;
 }

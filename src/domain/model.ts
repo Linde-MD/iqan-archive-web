@@ -111,6 +111,7 @@ export interface VersionNode {
   description: string;
   taskId: string | null;
   releasedAt: string | null;
+  testingAt: string | null;
 }
 
 export interface Edge {
@@ -163,7 +164,7 @@ export interface ProjectGraph {
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 6;
+  schemaVersion: 7;
   graph: Omit<ProjectGraph, 'project' | 'branches'> & {
     project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision' | 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>;
     branches: Array<Omit<Branch, 'order'>>;

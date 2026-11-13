@@ -158,7 +158,7 @@ onUnmounted(() => subscription?.unsubscribe());
       <div class="version-files-scroll" tabindex="0" role="region" aria-label="版本与自动关联文件，可滚动">
       <ul class="version-list">
         <li v-for="node in versionRows" :key="node.id">
-          <div class="version-file-heading"><code>{{ node.version }}</code><span :class="['release-label', { released: node.releasedAt }]">{{ node.releasedAt ? '已放行' : '未放行' }}</span></div>
+          <div class="version-file-heading"><code>{{ node.version }}</code><span :class="['release-label', { released: node.releasedAt, testing: !node.releasedAt && node.testingAt }]">{{ node.releasedAt ? '已放行' : node.testingAt ? '放行测试中' : '未放行' }}</span></div>
           <ul class="source-file-list">
             <li v-for="file in node.files" :key="file.relativePath" class="source-file-row">
               <AppIcon name="file" />

@@ -9,7 +9,7 @@ function fixture() {
   const graph = createProject('批量关联', '1479');
   graph.nodes = ['V1.0-10', 'V1.0-2', 'V1.0-1', 'V1.0-3'].map((version, index) => ({
     id: `n${index}`, projectId: graph.project.id, version,
-    description: '保留说明', taskId: null, releasedAt: null,
+    description: '保留说明', taskId: null, releasedAt: null, testingAt: null,
   }));
   graph.branches = [{
     id: 'main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'n0',

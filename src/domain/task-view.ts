@@ -7,10 +7,11 @@ export interface TaskRun {
   branch: Branch;
   nodeIds: string[];
   releasedCount: number;
+  testingCount: number;
   releaseState: 'none' | 'partial' | 'all';
 }
 
-type PendingTaskRun = Omit<TaskRun, 'releasedCount' | 'releaseState'>;
+type PendingTaskRun = Omit<TaskRun, 'releasedCount' | 'testingCount' | 'releaseState'>;
 
 export interface TaskViewRow extends GitGraphRow {
   key: string;
@@ -77,10 +78,15 @@ export function taskViewRuns(graph: ProjectGraph, layout: GitGraphLayout): TaskR
   return runs.map(run => {
     const releasedCount = run.nodeIds.filter(id => rowByNodeId.get(id)?.node.releasedAt !== null
       && rowByNodeId.get(id)?.node.releasedAt !== undefined).length;
+    const testingCount = run.nodeIds.filter(id => {
+      const node = rowByNodeId.get(id)?.node;
+      return node && node.releasedAt === null && node.testingAt !== null;
+    }).length;
     return {
       ...run,
       id: `task-run:${run.branch.id}:${run.task.id}:${[...run.nodeIds].sort().join(':')}`,
       releasedCount,
+      testingCount,
       releaseState: releasedCount === 0 ? 'none' : releasedCount === run.nodeIds.length ? 'all' : 'partial',
     };
   });

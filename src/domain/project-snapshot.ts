@@ -65,7 +65,7 @@ export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
 
 export function parseProjectSnapshot(value: unknown): ProjectGraph {
   let root = record(value, '快照', ['schemaVersion', 'graph']);
-  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5 || root.schemaVersion === 6, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4、5 和 6 配置文件。');
+  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5 || root.schemaVersion === 6 || root.schemaVersion === 7, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4、5、6 和 7 配置文件。');
   if (root.schemaVersion === 3) {
     const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
     requireCondition(Array.isArray(legacy.tasks), 'SNAPSHOT_TYPE', 'graph.tasks 必须为数组。');
@@ -137,6 +137,12 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
     ], item => ({ ...item, parentTaskId: null }));
     root = { schemaVersion: 6, graph: { ...legacy, tasks } };
   }
+  if (root.schemaVersion === 6) {
+    const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
+    const nodes = parseItems(legacy.nodes, 'graph.nodes', ['id', 'projectId', 'version', 'description', 'taskId', 'releasedAt'],
+      item => ({ ...item, testingAt: null }));
+    root = { schemaVersion: 7, graph: { ...legacy, nodes } };
+  }
   const source = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
   requireCondition(
     Array.isArray(source.nodes) && Array.isArray(source.edges) &&
@@ -187,13 +193,14 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       priorityOptions: parseOptions('priorityOptions'),
       assigneeOptions: parseOptions('assigneeOptions'),
     },
-    nodes: parseItems(source.nodes, 'graph.nodes', ['id', 'projectId', 'version', 'description', 'taskId', 'releasedAt'], item => ({
+    nodes: parseItems(source.nodes, 'graph.nodes', ['id', 'projectId', 'version', 'description', 'taskId', 'releasedAt', 'testingAt'], item => ({
       id: text(item.id, 'node.id'),
       projectId: text(item.projectId, 'node.projectId'),
       version: text(item.version, 'node.version'),
       description: text(item.description, 'node.description'),
       taskId: nullableText(item.taskId, 'node.taskId'),
       releasedAt: nullableText(item.releasedAt, 'node.releasedAt'),
+      testingAt: nullableText(item.testingAt, 'node.testingAt'),
     })),
     edges: parseItems(source.edges, 'graph.edges', ['id', 'projectId', 'parentId', 'childId'], item => ({
       id: text(item.id, 'edge.id'),

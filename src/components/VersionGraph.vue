@@ -927,12 +927,17 @@ function taskRunVersions(run: TaskRun): string[] {
   });
 }
 function taskRunReleaseLabel(run: TaskRun): string {
+  if (run.testingCount) return `已放行 ${run.releasedCount}，放行测试中 ${run.testingCount}，未放行 ${run.nodeIds.length - run.releasedCount - run.testingCount}`;
   if (run.releaseState === 'all') return '全部版本已放行';
   if (run.releaseState === 'partial') return `部分放行 ${run.releasedCount}/${run.nodeIds.length}`;
   return '未放行';
 }
-function taskRunReleaseIcon(run: TaskRun): 'file' | 'release' | 'release-partial' {
+function taskRunReleaseIcon(run: TaskRun): 'file' | 'release' | 'release-partial' | 'release-testing' {
+  if (run.testingCount) return 'release-testing';
   return run.releaseState === 'all' ? 'release' : run.releaseState === 'partial' ? 'release-partial' : 'file';
+}
+function nodeReleaseLabel(node: VersionNode): string {
+  return node.releasedAt ? '已放行' : node.testingAt ? '放行测试中' : '未放行';
 }
 const parentIdsOf = computed(() => {
   const parents = new Map((graph.value?.nodes ?? []).map(node => [node.id, [] as string[]]));
@@ -2144,12 +2149,14 @@ function createNode(current: ProjectGraph, form: typeof nodeForm.value): Version
     description: form.description.trim(),
     taskId: nodeTaskId.value || null,
     releasedAt: null,
+    testingAt: null,
   };
 }
 
 async function submitParentEdit(): Promise<boolean> {
   if (!selectedNode.value) return false;
   const wasReleased = selectedNode.value.releasedAt !== null;
+  const wasTesting = !wasReleased && selectedNode.value.testingAt !== null;
   return operation('设置父版本', async () => {
     const current = graph.value!;
     graph.value = await props.repository.saveNodeParents(
@@ -2157,7 +2164,7 @@ async function submitParentEdit(): Promise<boolean> {
     );
     status.value = wasReleased
       ? '父版本已更新；新父节点及其未放行祖先已按原放行时间自动补齐放行状态。'
-      : '父版本已更新。';
+      : wasTesting ? '父版本已更新；新父节点及其未放行祖先已设为放行测试中。' : '父版本已更新。';
     panel.value = null;
   });
 }
@@ -2240,8 +2247,8 @@ async function releaseSelectedNode() {
       .map(id => nodeById.value.get(id)!.version);
     const detail = releasedDescendants.length
       ? `其中 ${releasedDescendants.length} 个当前已放行：${releasedDescendants.join('、')}。`
-      : '后代当前均未放行，但会一并清除其放行状态。';
-    if (!window.confirm(`版本“${node.version}”有 ${childIdsOf.value.get(node.id)!.length} 个直接子节点、${descendants.size} 个后代。\n确认撤销本版本放行，并同步撤销所有后代放行吗？\n${detail}\n祖先版本和分支头不会改变。`)) return;
+      : '后代当前均未放行或正在测试。';
+    if (!window.confirm(`版本“${node.version}”有 ${childIdsOf.value.get(node.id)!.length} 个直接子节点、${descendants.size} 个后代。\n确认将本版本及全部后代恢复为未放行（包括测试中）吗？\n${detail}\n祖先版本和分支头不会改变。`)) return;
   }
   await operation(node.releasedAt ? '撤销版本放行' : '放行版本', async () => {
     const current = await props.repository.get(props.projectId);
@@ -2252,6 +2259,26 @@ async function releaseSelectedNode() {
     status.value = node.releasedAt
       ? descendants.size ? `已撤销放行，并同步撤销 ${descendants.size} 个后代版本。` : '放行已撤销。'
       : '版本及全部祖先已放行。';
+  });
+}
+
+async function toggleTestingSelectedNode() {
+  const node = selectedNode.value;
+  if (!node || node.releasedAt) return;
+  const expectedRevision = graph.value!.project.revision;
+  const descendants = descendantNodeIds(node.id);
+  if (node.testingAt && descendants.size && !window.confirm(`取消“${node.version}”的放行测试，并将其测试中的后代一并恢复为未放行？祖先不会改变；存在已放行后代时无法取消。`)) return;
+  await operation(node.testingAt ? '取消放行测试' : '设置放行测试中', async () => {
+    const current = await props.repository.get(props.projectId);
+    if (current.project.revision !== expectedRevision) throw new Error('版本图已变化，请检查最新状态后重试。');
+    graph.value = node.testingAt
+      ? await props.repository.cancelTesting(props.projectId, expectedRevision, node.id)
+      : await props.repository.startTesting(props.projectId, expectedRevision, node.id);
+    const before = new Map(current.nodes.map(item => [item.id, item]));
+    const changed = graph.value.nodes.filter(item => item.testingAt !== before.get(item.id)?.testingAt).map(item => item.version);
+    status.value = changed.length
+      ? `${node.testingAt ? '已取消放行测试' : '已设为放行测试中'}（${changed.length} 个版本）：${changed.join('、')}。`
+      : '版本已处于放行测试中，状态未改变。';
   });
 }
 
@@ -2586,6 +2613,9 @@ function onIqanDialogClosed() {
         <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" :aria-label="selectedNode?.releasedAt ? '撤销放行' : '放行版本'" :title="selectedNode?.releasedAt ? '撤销选中版本的放行；不可破坏已放行后代闭包' : '放行选中版本及其全部祖先'" @click="startNodeAction('release')">
           <AppIcon :name="selectedNode?.releasedAt ? 'unrelease' : 'release'" /><span class="tool-caption">{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</span>
         </button>
+        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" :aria-label="selectedNode?.testingAt ? '取消放行测试' : '设为放行测试中'" :title="selectedNode?.testingAt ? '取消本版本及测试中后代的放行测试' : '设置本版本及未放行祖先为放行测试中'" @click="toggleTestingSelectedNode">
+          <AppIcon name="release-testing" /><span class="tool-caption">{{ selectedNode?.testingAt ? '取消测试' : '放行测试' }}</span>
+        </button>
         <button class="tool-button tool-button-danger" :disabled="saving || selectedNodeIds.length === 0" aria-label="删除所选版本" title="预览删除所选版本及关系重连，确认后才执行" @click="startNodeAction('delete')"><AppIcon name="trash" /><span class="tool-caption">删除版本</span></button>
         <button class="tool-button" :disabled="saving || (selectedNodeIds.length !== 1 && !selectedBranch)" aria-label="创建分支" title="从选中版本或分支头创建分支" @click="selectedBranch ? openBranchAdd(selectedBranch.headId) : startNodeAction('branch')"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
       </div>
@@ -2758,7 +2788,7 @@ function onIqanDialogClosed() {
                     v-else-if="!row.isolated"
                     class="git-row-commit"
                     :class="{ 'is-released': row.node.releasedAt }"
-                    :aria-label="`版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
+                    :aria-label="`版本 ${row.node.version}，${nodeReleaseLabel(row.node)}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
                     :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
                     @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
@@ -2770,7 +2800,7 @@ function onIqanDialogClosed() {
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
                     <span class="git-commit-content">
-                      <span class="git-commit-version">{{ row.node.version }}</span>
+                      <span class="git-commit-version"><AppIcon v-if="row.node.testingAt && !row.node.releasedAt" class="git-testing-icon" name="release-testing" />{{ row.node.version }}</span>
                       <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                     </span>
                   </button>
@@ -2830,7 +2860,7 @@ function onIqanDialogClosed() {
                     v-if="row.kind === 'version' && row.isolated"
                     class="git-row-commit git-row-orphan"
                     :class="{ selected: selectedNodeIds.includes(row.node.id), 'is-released': row.node.releasedAt }"
-                    :aria-label="`未关联版本 ${row.node.version}${row.node.releasedAt ? '，已放行' : '，未放行'}${row.node.description ? `，${row.node.description}` : ''}`"
+                    :aria-label="`未关联版本 ${row.node.version}，${nodeReleaseLabel(row.node)}${row.node.description ? `，${row.node.description}` : ''}`"
                     :aria-pressed="selectedNodeIds.includes(row.node.id)"
                     :aria-describedby="hintedNode?.id === row.node.id ? 'version-info-hint' : undefined"
                     @mouseenter="showVersionHint($event, row.node)" @mouseleave="scheduleHintClose"
@@ -2842,7 +2872,7 @@ function onIqanDialogClosed() {
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
                     <span class="git-commit-content">
-                      <span class="git-commit-version">{{ row.node.version }}</span>
+                      <span class="git-commit-version"><AppIcon v-if="row.node.testingAt && !row.node.releasedAt" class="git-testing-icon" name="release-testing" />{{ row.node.version }}</span>
                       <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                     </span>
                   </button>
@@ -2900,6 +2930,7 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving" @click="openNodeEdit(); closeMenu(false)"><AppIcon name="edit" />编辑</button>
           <button role="menuitem" :disabled="saving" @click="openParentEdit(); closeMenu(false)" :title="selectedNode?.releasedAt ? '更换父节点后会自动补齐新放行链' : undefined"><AppIcon name="link" />设置父版本</button>
           <button role="menuitem" :disabled="saving" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
+          <button role="menuitem" :disabled="saving || !!selectedNode?.releasedAt" @click="toggleTestingSelectedNode(); closeMenu(false)"><AppIcon name="release-testing" />{{ selectedNode?.testingAt ? '取消放行测试' : '设为放行测试中' }}</button>
           <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除</button>
         </template>
         <template v-else-if="menu.kind === 'task'">
@@ -3023,7 +3054,8 @@ function onIqanDialogClosed() {
           <div v-if="selectedNode.description.trim()" class="markdown-content" v-html="renderMarkdown(selectedNode.description)"></div>
           <p v-else class="markdown-empty">（无改动说明）</p>
         </section>
-        <p class="workspace-details">状态：{{ selectedNode.releasedAt ? '已放行' : '未放行' }}</p>
+        <p class="workspace-details">状态：{{ nodeReleaseLabel(selectedNode) }}</p>
+        <p v-if="selectedNode.testingAt" class="workspace-details">进入放行测试时间：{{ new Date(selectedNode.testingAt).toLocaleString('zh-CN') }}</p>
         <p class="workspace-details">所属任务：<span v-if="selectedTask" class="task-reference"><code v-if="selectedTask.externalTaskId" class="task-reference-id">{{ selectedTask.externalTaskId }}</code><span class="task-reference-name">{{ selectedTask.name }}</span></span><span v-else>未关联任务</span></p>
         <p class="workspace-details">父版本：{{ (parentIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无（未关联）' }}</p>
         <p class="workspace-details">子版本：{{ (childIdsOf.get(selectedNode.id) ?? []).map(id => nodeById.get(id)?.version ?? id).join('、') || '无' }}</p>
@@ -3062,7 +3094,7 @@ function onIqanDialogClosed() {
     <div v-if="panel === 'relations' && relationPreview" class="graph-form" role="dialog" aria-modal="false" aria-label="批量父子关联确认">
       <h3 tabindex="-1">{{ relationPreview.action === 'clear' ? '清除父子关联' : '构建线性关联' }}</h3>
       <p>已选 {{ relationPreview.nodeIds.length }} 个版本，将{{ relationPreview.action === 'clear' ? '清除' : '新增' }} {{ relationPreview.edges.length }} 条关系。</p>
-      <p class="form-help">{{ relationPreview.action === 'clear' ? '包括所选版本与未选版本之间的直接父子边，不自动重连。' : '按版本号从旧到新关联，左侧为父版本，右侧为子版本；与点击顺序、当前显示排序无关。' }}版本、任务、放行状态及分支指针保持不变；可撤销。</p>
+      <p class="form-help">{{ relationPreview.action === 'clear' ? '包括所选版本与未选版本之间的直接父子边，不自动重连。' : '按版本号从旧到新关联，左侧为父版本，右侧为子版本；与点击顺序、当前显示排序无关。测试中的子版本会使未放行的新祖先进入测试中。' }}版本、任务及分支指针保持不变；可撤销。</p>
       <ul class="selected-parent-list" aria-label="父子关联预览">
         <li v-for="edge in relationPreview.edges" :key="edge.id"><span>{{ nodeById.get(edge.parentId)?.version }} → {{ nodeById.get(edge.childId)?.version }}</span></li>
       </ul>
@@ -3189,7 +3221,7 @@ function onIqanDialogClosed() {
 
     <div v-if="deletionPlan" class="graph-form" role="dialog" aria-modal="false" aria-label="删除版本预览">
       <h3 tabindex="-1">删除 {{ deletionPlan.nodeIds.length }} 个版本</h3>
-      <p class="form-help">删除前预览父子关系重连；已放行子版本不能重连。仅删除下方勾选的共享/本地工程文件，不影响其他未选版本。</p>
+      <p class="form-help">删除前预览父子关系重连；已放行子版本不能重连。测试中子版本重连时，新父版本及未放行祖先会进入测试中。仅删除下方勾选的共享/本地工程文件，不影响其他未选版本。</p>
       <ul class="deletion-preview-list">
         <li v-for="id in deletionPlan.nodeIds" :key="id">{{ nodeById.get(id)?.version ?? id }}</li>
       </ul>
@@ -3271,9 +3303,9 @@ function onIqanDialogClosed() {
       @mouseenter="keepVersionHint" @mouseleave="scheduleHintClose">
       <template v-if="hintedNode">
         <div class="version-info-hint-heading">
-          <AppIcon :name="hintedNode.releasedAt ? 'release' : 'unrelease'" />
+          <AppIcon :name="hintedNode.releasedAt ? 'release' : hintedNode.testingAt ? 'release-testing' : 'unrelease'" />
           <strong>{{ hintedNode.version }}</strong>
-          <span>{{ hintedNode.releasedAt ? '已放行' : '未放行' }}</span>
+          <span>{{ nodeReleaseLabel(hintedNode) }}</span>
         </div>
         <div v-if="hintedNode.description.trim()" class="markdown-content version-hint-description" v-html="renderMarkdown(hintedNode.description)"></div>
         <p v-else class="markdown-empty">（无改动说明）</p>

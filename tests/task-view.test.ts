@@ -12,12 +12,12 @@ function fixture() {
     { id: 'task-empty', projectId, parentTaskId: null, name: '空任务', description: '', externalTaskId: '2', statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [] },
   ];
   graph.nodes = [
-    { id: 'a1', projectId, version: 'V1', description: '', taskId: 'task-a', releasedAt: '2026-01-01T00:00:00.000Z' },
-    { id: 'a2', projectId, version: 'V2', description: '', taskId: 'task-a', releasedAt: null },
-    { id: 'b1', projectId, version: 'V3', description: '', taskId: 'task-b', releasedAt: null },
-    { id: 'a3', projectId, version: 'V4', description: '', taskId: 'task-a', releasedAt: null },
-    { id: 'free', projectId, version: 'V5', description: '', taskId: null, releasedAt: null },
-    { id: 'isolated-task', projectId, version: 'V6', description: '', taskId: 'task-a', releasedAt: null },
+    { id: 'a1', projectId, version: 'V1', description: '', taskId: 'task-a', releasedAt: '2026-01-01T00:00:00.000Z', testingAt: null },
+    { id: 'a2', projectId, version: 'V2', description: '', taskId: 'task-a', releasedAt: null, testingAt: null },
+    { id: 'b1', projectId, version: 'V3', description: '', taskId: 'task-b', releasedAt: null, testingAt: null },
+    { id: 'a3', projectId, version: 'V4', description: '', taskId: 'task-a', releasedAt: null, testingAt: null },
+    { id: 'free', projectId, version: 'V5', description: '', taskId: null, releasedAt: null, testingAt: null },
+    { id: 'isolated-task', projectId, version: 'V6', description: '', taskId: 'task-a', releasedAt: null, testingAt: null },
   ];
   graph.edges = [
     { id: 'e1', projectId, parentId: 'a1', childId: 'a2' },

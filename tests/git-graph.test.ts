@@ -6,7 +6,7 @@ function fixture() {
   const graph = createProject('图测试', '1479');
   const projectId = graph.project.id;
   graph.nodes = ['V1.0-1', 'V1.0-2', 'V1.0-3', 'V1.0-4', 'V1.0-5'].map((version, index) => ({
-    id: `n${index + 1}`, projectId, version, description: `说明 ${version}`, taskId: null, releasedAt: null,
+    id: `n${index + 1}`, projectId, version, description: `说明 ${version}`, taskId: null, releasedAt: null, testingAt: null,
   }));
   graph.edges = [
     { id: 'e1', projectId, parentId: 'n1', childId: 'n2' },
@@ -99,7 +99,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('分支列复用', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['V1', 'V2', 'V3', 'V4'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'a', projectId, parentId: 'V1', childId: 'V2' },
@@ -120,7 +120,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('主干分支段复用', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'a1', projectId, parentId: 'V1', childId: 'V2' },
@@ -149,7 +149,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('共享主干分支复用', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'trunk', projectId, parentId: 'V1', childId: 'V2' },
@@ -173,7 +173,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('线性分支头', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['parent', 'child'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [{ id: 'edge', projectId, parentId: 'parent', childId: 'child' }];
     graph.branches = [
@@ -190,7 +190,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('无分支树列复用', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['V1', 'V2', 'V3', 'V4'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'main', projectId, parentId: 'V1', childId: 'V2' },
@@ -207,7 +207,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('共享历史不复用分支列', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['V1', 'V2', 'V3', 'V4', 'V5'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'trunk', projectId, parentId: 'V1', childId: 'V2' },
@@ -230,7 +230,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('头节点轨道', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['parent', 'feature-a', 'feature-b', 'merge'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'pa', projectId, parentId: 'parent', childId: 'feature-a' },
@@ -253,7 +253,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('无分支分叉', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['branch-head', 'child-a', 'child-b', 'child-a-next'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'a', projectId, parentId: 'branch-head', childId: 'child-a' },
@@ -274,7 +274,7 @@ describe('Git Graph 投影', () => {
     const graph = createProject('实际树分叉', '1479');
     const projectId = graph.project.id;
     graph.nodes = ['parent', 'child-a', 'child-a-next', 'child-b', 'merge'].map(id => ({
-      id, projectId, version: id, description: '', taskId: null, releasedAt: null,
+      id, projectId, version: id, description: '', taskId: null, releasedAt: null, testingAt: null,
     }));
     graph.edges = [
       { id: 'a', projectId, parentId: 'parent', childId: 'child-a' },

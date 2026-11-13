@@ -5,7 +5,7 @@ import { createBranch, release, reorderBranches, revokeRelease, setNodeParents, 
 function fixture(): ProjectGraph {
   const graph = createProject('工程', '123');
   const p = graph.project.id;
-  graph.nodes = ['A', 'B'].map(id => ({ id, projectId: p, version: id, description: '', taskId: null, releasedAt: null }));
+  graph.nodes = ['A', 'B'].map(id => ({ id, projectId: p, version: id, description: '', taskId: null, releasedAt: null, testingAt: null }));
   graph.edges = [{ id: 'e', projectId: p, parentId: 'A', childId: 'B' }];
   graph.tasks = [{
     id: 't', projectId: p, parentTaskId: null, name: '任务', description: '', externalTaskId: '1479',
@@ -18,7 +18,7 @@ function fixture(): ProjectGraph {
 describe('节点与分支编辑', () => {
   it('父节点集合可替换并保留其他图数据及未变化父边身份', () => {
     const graph = fixture();
-    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null });
+    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null });
     const next = setNodeParents(graph, 'B', ['C']);
     expect(next.edges).toHaveLength(1);
     expect(next.edges[0]).toMatchObject({ parentId: 'C', childId: 'B' });
@@ -29,7 +29,7 @@ describe('节点与分支编辑', () => {
 
   it('父节点合并保留既有边且拒绝重复、自引用、悬空和成环关系', () => {
     const graph = fixture();
-    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null });
+    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null });
     const next = setNodeParents(graph, 'B', ['A', 'C']);
     expect(next.edges.map(edge => edge.id)).toContain('e');
     expect(next.edges.filter(edge => edge.childId === 'B').map(edge => edge.parentId).sort()).toEqual(['A', 'C']);
@@ -44,9 +44,9 @@ describe('节点与分支编辑', () => {
     const graph = fixture();
     const projectId = graph.project.id;
     graph.nodes.push(
-      { id: 'C', projectId, version: 'C', description: '', taskId: null, releasedAt: null },
-      { id: 'D', projectId, version: 'D', description: '', taskId: null, releasedAt: null },
-      { id: 'E', projectId, version: 'E', description: '', taskId: null, releasedAt: null },
+      { id: 'C', projectId, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null },
+      { id: 'D', projectId, version: 'D', description: '', taskId: null, releasedAt: null, testingAt: null },
+      { id: 'E', projectId, version: 'E', description: '', taskId: null, releasedAt: null, testingAt: null },
     );
     graph.edges.push(
       { id: 'bd', projectId, parentId: 'B', childId: 'D' },
@@ -68,9 +68,9 @@ describe('节点与分支编辑', () => {
     const graph = fixture();
     const projectId = graph.project.id;
     graph.nodes.push(
-      { id: 'C', projectId, version: 'C', description: '', taskId: null, releasedAt: null },
-      { id: 'D', projectId, version: 'D', description: '', taskId: null, releasedAt: null },
-      { id: 'E', projectId, version: 'E', description: '', taskId: null, releasedAt: null },
+      { id: 'C', projectId, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null },
+      { id: 'D', projectId, version: 'D', description: '', taskId: null, releasedAt: null, testingAt: null },
+      { id: 'E', projectId, version: 'E', description: '', taskId: null, releasedAt: null, testingAt: null },
     );
     graph.edges.push(
       { id: 'bc', projectId, parentId: 'B', childId: 'C' },

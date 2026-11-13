@@ -100,7 +100,7 @@ export function registerCandidates(graph: ProjectGraph, candidates: readonly Fil
   for (const candidate of candidates) {
     const { parsed, node } = candidateDetails(next, candidate);
     if (!node) {
-      next.nodes.push({ id: crypto.randomUUID(), projectId: next.project.id, version: parsed.version, description: '', taskId: null, releasedAt: null });
+      next.nodes.push({ id: crypto.randomUUID(), projectId: next.project.id, version: parsed.version, description: '', taskId: null, releasedAt: null, testingAt: null });
     }
   }
   requireCondition(next.nodes.length > graph.nodes.length, 'SELECTION', '所选文件均已有对应版本，无需登记。');

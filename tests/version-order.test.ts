@@ -6,7 +6,7 @@ import { layoutDag, LAYOUT } from '../src/domain/layout';
 function fixture(versions: string[]) {
   const graph = createProject('排序测试', '001');
   graph.nodes = versions.map((version, index) => ({
-    id: `n${index}`, projectId: graph.project.id, version, description: '', taskId: null, releasedAt: null,
+    id: `n${index}`, projectId: graph.project.id, version, description: '', taskId: null, releasedAt: null, testingAt: null,
   }));
   return graph;
 }

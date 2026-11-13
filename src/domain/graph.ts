@@ -104,6 +104,7 @@ export function validateGraph(graph: ProjectGraph): void {
     versions.add(versionKey);
     requireCondition(node.taskId === null || taskIds.has(node.taskId), 'TASK_REFERENCE', '版本引用的任务不存在。');
     requireCondition(node.releasedAt === null || Number.isFinite(Date.parse(node.releasedAt)), 'RELEASE_TIME', '放行时间无效。');
+    requireCondition(node.testingAt === null || (typeof node.testingAt === 'string' && Number.isFinite(Date.parse(node.testingAt))), 'TESTING_TIME', '放行测试时间无效。');
   }
   const children = new Map(nodes.map(node => [node.id, [] as string[]]));
   const incoming = new Map(nodes.map(node => [node.id, 0]));
@@ -118,6 +119,8 @@ export function validateGraph(graph: ProjectGraph): void {
     children.get(parent.id)!.push(child.id);
     incoming.set(child.id, incoming.get(child.id)! + 1);
     requireCondition(child.releasedAt === null || parent.releasedAt !== null, 'RELEASE_CLOSURE', '已放行节点的祖先必须全部放行。');
+    requireCondition(child.releasedAt !== null || child.testingAt === null || parent.releasedAt !== null || parent.testingAt !== null,
+      'TESTING_CLOSURE', '放行测试中的版本，其祖先必须处于测试中或已放行。');
   }
   const queue = nodes.filter(node => incoming.get(node.id) === 0).map(node => node.id);
   for (let cursor = 0; cursor < queue.length; cursor++) {
@@ -206,6 +209,57 @@ export function release(graph: ProjectGraph, targetId: string, time: string): Pr
   return next;
 }
 
+export function propagateTesting(graph: ProjectGraph, targetIds: readonly string[], time: string): void {
+  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+  const parents = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  for (const edge of graph.edges) parents.get(edge.childId)?.push(edge.parentId);
+  const visited = new Set<string>();
+  const pending = [...targetIds];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = nodes.get(id);
+    requireCondition(node, 'NODE_REFERENCE', '父边引用了不存在的节点。');
+    if (node.releasedAt !== null) continue;
+    if (node.testingAt === null) node.testingAt = time;
+    pending.push(...(parents.get(id) ?? []));
+  }
+}
+
+export function startReleaseTesting(graph: ProjectGraph, targetId: string, time: string): ProjectGraph {
+  validateGraph(graph);
+  requireCondition(Number.isFinite(Date.parse(time)), 'TESTING_TIME', '放行测试时间无效。');
+  const node = getNode(graph, targetId);
+  requireCondition(node.releasedAt === null, 'ALREADY_RELEASED', '已放行版本不能设置为放行测试中。');
+  const next = structuredClone(graph);
+  propagateTesting(next, [targetId], time);
+  validateGraph(next);
+  return next;
+}
+
+export function cancelReleaseTesting(graph: ProjectGraph, targetId: string): ProjectGraph {
+  validateGraph(graph);
+  const target = getNode(graph, targetId);
+  requireCondition(target.releasedAt === null && target.testingAt !== null, 'NOT_TESTING', '版本不处于放行测试中。');
+  const children = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  for (const edge of graph.edges) children.get(edge.parentId)!.push(edge.childId);
+  const descendants = new Set<string>();
+  const pending = [targetId];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (descendants.has(id)) continue;
+    descendants.add(id);
+    pending.push(...children.get(id)!);
+  }
+  requireCondition(!graph.nodes.some(node => descendants.has(node.id) && node.releasedAt !== null),
+    'RELEASED_DESCENDANT', '存在已放行后代，无法取消测试，请先撤销相关放行。');
+  const next = structuredClone(graph);
+  for (const node of next.nodes) if (descendants.has(node.id)) node.testingAt = null;
+  validateGraph(next);
+  return next;
+}
+
 export function revokeRelease(graph: ProjectGraph, targetId: string): ProjectGraph {
   validateGraph(graph);
   getNode(graph, targetId);
@@ -220,7 +274,10 @@ export function revokeRelease(graph: ProjectGraph, targetId: string): ProjectGra
     pending.push(...children.get(id)!);
   }
   const next = structuredClone(graph);
-  for (const node of next.nodes) if (descendants.has(node.id)) node.releasedAt = null;
+  for (const node of next.nodes) if (descendants.has(node.id)) {
+    node.releasedAt = null;
+    node.testingAt = null;
+  }
   validateGraph(next);
   return next;
 }
@@ -355,6 +412,7 @@ export function applyDeletionMany(
   graph: ProjectGraph,
   plan: MultiDeletionPlan,
   confirmedVersions: Readonly<Record<string, string>>,
+  time = new Date().toISOString(),
 ): ProjectGraph {
   validateGraph(graph);
   const expected = planDeletionMany(graph, plan.nodeIds);
@@ -393,6 +451,11 @@ export function applyDeletionMany(
     const headId = plan.branchHeads[branch.id];
     return headId ? [{ ...branch, headId }] : [];
   });
+  const testedChildren = [...affectedChildren].filter(childId => {
+    const child = getNode(next, childId);
+    return child.releasedAt === null && child.testingAt !== null;
+  });
+  if (testedChildren.length) propagateTesting(next, testedChildren, time);
   validateGraph(next);
   return next;
 }
@@ -412,7 +475,7 @@ export function planDeletion(graph: ProjectGraph, nodeId: string): DeletionPlan 
   return { nodeId, childParents, branchHeads: {} };
 }
 
-export function applyDeletion(graph: ProjectGraph, plan: DeletionPlan, confirmedVersion: string | null): ProjectGraph {
+export function applyDeletion(graph: ProjectGraph, plan: DeletionPlan, confirmedVersion: string | null, time = new Date().toISOString()): ProjectGraph {
   validateGraph(graph);
   const node = getNode(graph, plan.nodeId);
   if (node.releasedAt !== null) {
@@ -445,6 +508,11 @@ export function applyDeletion(graph: ProjectGraph, plan: DeletionPlan, confirmed
     const headId = plan.branchHeads[branch.id];
     return headId === null ? [] : [{ ...branch, headId: headId! }];
   });
+  const testedChildren = [...children].filter(childId => {
+    const child = getNode(next, childId);
+    return child.releasedAt === null && child.testingAt !== null;
+  });
+  if (testedChildren.length) propagateTesting(next, testedChildren, time);
   validateGraph(next);
   return next;
 }
@@ -509,6 +577,7 @@ export function appendVersion(
 ): ProjectGraph {
   validateGraph(graph);
   requireCondition(node.releasedAt === null, 'INITIAL_RELEASE', '新版本初始状态必须未放行。');
+  requireCondition(node.testingAt === null, 'INITIAL_TESTING', '新版本初始状态必须未放行。');
   requireCondition(!graph.nodes.some(existing => existing.id === node.id), 'DUPLICATE_ID', '版本 ID 已存在。');
   requireCondition(new Set(parentIds).size === parentIds.length, 'DUPLICATE_PARENT', '父节点不能重复。');
   for (const id of parentIds) getNode(graph, id);
@@ -537,7 +606,7 @@ export function mergeVersion(
   return appendVersion(graph, node, parentIds, targetBranchId);
 }
 
-export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: readonly string[]): ProjectGraph {
+export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: readonly string[], time = new Date().toISOString()): ProjectGraph {
   validateGraph(graph);
   const child = getNode(graph, childId);
   requireCondition(new Set(parentIds).size === parentIds.length, 'DUPLICATE_PARENT', '父节点不能重复。');
@@ -574,7 +643,7 @@ export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: 
       const ancestor = getNode(next, ancestorId);
       if (ancestor.releasedAt === null) ancestor.releasedAt = child.releasedAt;
     }
-  }
+  } else if (child.testingAt !== null) propagateTesting(next, [childId], time);
   validateTransition(graph, next);
   return next;
 }

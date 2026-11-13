@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { createProject, migratePriorityOptions, migrateTaskTypeOptions, normalizeVersion, orderPriorityOptions, orderedBranches, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type Task, type VersionNode, type Edge, type Branch, type ProjectSnapshot } from '../domain/model';
-import { applyDeletion, applyDeletionMany, appendVersion, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode, updatePartNumber, updateTask, updateTasks, updateTaskOptions, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
+import { applyDeletion, applyDeletionMany, appendVersion, cancelReleaseTesting, createBranch, deleteBranch as removeBranch, deleteTask, mergeVersion, release, reorderBranches, revokeRelease, setNodeParents, startReleaseTesting, updateBranch, updateNode, updatePartNumber, updateTask, updateTasks, updateTaskOptions, validateGraph, validateTransition, type BranchUpdate, type DeletionPlan, type MultiDeletionPlan, type NodeUpdate } from '../domain/graph';
 import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
@@ -18,7 +18,7 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
       priorityOptions: structuredClone(graph.project.priorityOptions),
       assigneeOptions: structuredClone(graph.project.assigneeOptions),
     },
-    nodes: graph.nodes.map(({ id, projectId, version, description, taskId, releasedAt }) => ({ id, projectId, version, description, taskId, releasedAt })),
+    nodes: graph.nodes.map(({ id, projectId, version, description, taskId, releasedAt, testingAt }) => ({ id, projectId, version, description, taskId, releasedAt, testingAt })),
     edges: graph.edges.map(({ id, projectId, parentId, childId }) => ({ id, projectId, parentId, childId })),
     tasks: graph.tasks.map(task => structuredClone(task)),
     branches: orderedBranches(graph.branches).map((branch, order) => ({
@@ -159,6 +159,10 @@ export class ArchiveDatabase extends Dexie {
         }
       }
     });
+    this.version(12).stores({ nodes: 'id, projectId, &[projectId+version]' }).upgrade(async transaction => {
+      const nodes = transaction.table<VersionNode>('nodes');
+      for (const node of await nodes.toArray()) await nodes.put({ ...node, testingAt: null });
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -237,8 +241,10 @@ export class ArchiveRepository {
   async save(graph: ProjectGraph): Promise<ProjectGraph> {
     return this.change(graph.project.id, graph.project.revision, current => {
       const released = new Map(current.nodes.map(node => [node.id, node.releasedAt]));
+      const testing = new Map(current.nodes.map(node => [node.id, node.testingAt]));
       for (const node of graph.nodes) {
         requireCondition(node.releasedAt === (released.get(node.id) ?? null), 'RELEASE_COMMAND', '放行状态和时间必须通过放行或撤销命令修改。');
+        requireCondition(node.testingAt === (testing.get(node.id) ?? null), 'TESTING_COMMAND', '测试状态和时间必须通过测试命令修改。');
       }
       return structuredClone(graph);
     });
@@ -329,6 +335,14 @@ export class ArchiveRepository {
     return this.change(projectId, revision, graph => release(graph, nodeId, new Date().toISOString()));
   }
 
+  async startTesting(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => startReleaseTesting(graph, nodeId, new Date().toISOString()));
+  }
+
+  async cancelTesting(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
+    return this.change(projectId, revision, graph => cancelReleaseTesting(graph, nodeId));
+  }
+
   async revoke(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => revokeRelease(graph, nodeId));
   }
@@ -382,7 +396,7 @@ export class ArchiveRepository {
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = clean.project;
     return {
-      schemaVersion: 6,
+      schemaVersion: 7,
       graph: {
         ...clean,
         project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },

@@ -1,11 +1,11 @@
 import { requireCondition, type ProjectGraph } from './model';
-import { validateGraph, validateTransition } from './graph';
+import { propagateTesting, validateGraph, validateTransition } from './graph';
 import { compareVersionNodes } from './version-order';
 
 export type BatchRelationAction = 'clear' | 'linear';
 
 export function changeVersionRelations(
-  graph: ProjectGraph, nodeIds: readonly string[], action: BatchRelationAction,
+  graph: ProjectGraph, nodeIds: readonly string[], action: BatchRelationAction, time = new Date().toISOString(),
 ): ProjectGraph {
   validateGraph(graph);
   const selected = new Set(nodeIds);
@@ -34,6 +34,10 @@ export function changeVersionRelations(
         parentId: nodes[index - 1]!.id, childId: nodes[index]!.id,
       });
     }
+  }
+  if (action === 'linear') {
+    const tested = nodes.filter(node => node.releasedAt === null && node.testingAt !== null).map(node => node.id);
+    if (tested.length) propagateTesting(next, tested, time);
   }
   validateTransition(graph, next);
   return next;
