@@ -254,6 +254,7 @@ let menuOpenLocationController: AbortController | undefined;
 const menuReturnFocus = ref<HTMLElement | null>(null);
 const panel = ref<'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit' | 'branch-manager' | 'relations' | null>(null);
 const applyingPanelRoute = ref(false);
+let replaceEditorRouteOnClose = false;
 const nodeSwitchDialog = ref<HTMLDialogElement>();
 type NodeSwitchSource = 'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'branch-add' | 'branch-edit'
   | 'deletion-preview' | 'branch-delete' | 'relation-preview';
@@ -386,8 +387,10 @@ function editorRouteSegments(): string[] {
 function syncEditorRoute() {
   if (applyingPanelRoute.value) return;
   const next = editorRouteSegments();
+  const replaceOnClose = replaceEditorRouteOnClose;
+  replaceEditorRouteOnClose = false;
   if (JSON.stringify(next) === JSON.stringify(props.panelRoute ?? [])) return;
-  emit('navigatePanel', next, next.length ? 'push' : 'back');
+  emit('navigatePanel', next, next.length ? 'push' : replaceOnClose ? 'replace' : 'back');
 }
 const branchMoveDialog = ref<HTMLDialogElement>();
 const draggedBranch = ref<{ branchId: string; headId: string; revision: number } | null>(null);
@@ -1157,9 +1160,9 @@ function restoreEditorRoute(route: readonly string[]): boolean {
   return false;
 }
 
-watch([() => props.panelRoute, graph], async ([route]) => {
+watch([() => JSON.stringify(props.panelRoute ?? []), () => !!graph.value], async () => {
   if (!graph.value) return;
-  const next = route ?? [];
+  const next = props.panelRoute ?? [];
   if (JSON.stringify(editorRouteSegments()) === JSON.stringify(next)) return;
   if (editorOpen.value && editorDraftDirty.value
     && !window.confirm('当前图操作尚未保存。放弃修改并切换路由吗？')) {
@@ -1181,7 +1184,7 @@ watch([() => props.panelRoute, graph], async ([route]) => {
   }
   await nextTick();
   applyingPanelRoute.value = false;
-}, { immediate: true, deep: true });
+}, { immediate: true });
 watch(() => props.projectId, () => {
   pendingBranchMove.value = null;
   endBranchDrag();
@@ -1917,6 +1920,7 @@ async function submitNode(): Promise<boolean> {
   if (actionPanel !== 'node-add' && actionPanel !== 'node-edit' && actionPanel !== 'merge') return false;
   let childCopyAfterSave: { nodeId: string; parentId: string; parentVersion: string; targetVersion: string } | undefined;
   let renameRequestAfterSave: { uri: string; count: number } | undefined;
+  let savedNodeId = '';
   const saved = await operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
     const current = graph.value!;
     if (actionPanel === 'node-add') {
@@ -1927,6 +1931,7 @@ async function submitNode(): Promise<boolean> {
       graph.value = await props.repository.addNode(
         props.projectId, current.project.revision, node, nodeForm.value.parentIds, nodeForm.value.targetBranchId || null,
       );
+      savedNodeId = node.id;
       status.value = '版本已新增。';
       if (parent) {
         childCopyAfterSave = {
@@ -1988,25 +1993,30 @@ async function submitNode(): Promise<boolean> {
         description: nodeForm.value.description,
         taskId: nodeTaskId.value || null,
       });
+      savedNodeId = currentNode.id;
       status.value = '版本已更新。';
     } else if (actionPanel === 'merge') {
       const node = createNode(current, nodeForm.value);
       graph.value = await props.repository.merge(
         props.projectId, current.project.revision, node, nodeForm.value.parentIds, nodeForm.value.targetBranchId,
       );
+      savedNodeId = node.id;
       status.value = '合并版本已创建。';
     } else {
       return;
     }
+    selectedNodeIds.value = [savedNodeId];
+    selectionAnchorId.value = savedNodeId;
+    activeBranchId.value = null;
+    replaceEditorRouteOnClose = true;
     panel.value = null;
-    selectedNodeIds.value = [];
   });
-  if (saved && childCopyAfterSave) void offerChildEngineeringCopy(childCopyAfterSave);
-  if (saved && renameRequestAfterSave) {
+  if (saved && savedNodeId && childCopyAfterSave) void offerChildEngineeringCopy(childCopyAfterSave);
+  if (saved && savedNodeId && renameRequestAfterSave) {
     status.value = `版本已更新；已请求 Launcher 批量改名 ${renameRequestAfterSave.count} 个工程文件。请在本机确认窗口核对路径；若取消或失败，请按 Launcher 提示手动处理。网页无法确认改名结果。`;
     window.location.assign(renameRequestAfterSave.uri);
   }
-  return saved;
+  return saved && !!savedNodeId;
 }
 
 async function offerChildEngineeringCopy(target: Omit<ChildCopyPrompt, 'candidates'>) {
@@ -2192,6 +2202,7 @@ async function submitParentEdit(): Promise<boolean> {
     status.value = wasReleased
       ? '父版本已更新；新父节点及其未放行祖先已按原放行时间自动补齐放行状态。'
       : wasTesting ? '父版本已更新；新父节点及其未放行祖先已设为放行测试中。' : '父版本已更新。';
+    replaceEditorRouteOnClose = true;
     panel.value = null;
   });
 }
@@ -2236,7 +2247,11 @@ async function submitBranch() {
         color: branchForm.value.color,
       });
       status.value = '分支信息已更新。';
+      activeBranchId.value = branchForm.value.id;
     }
+    selectedNodeIds.value = [];
+    selectionAnchorId.value = null;
+    replaceEditorRouteOnClose = true;
     panel.value = null;
   });
 }
