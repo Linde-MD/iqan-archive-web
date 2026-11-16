@@ -27,7 +27,7 @@ const deleting = ref(false);
 const error = ref('');
 const status = ref('');
 let disposed = false;
-const busy = computed(() => scanning.value || opening.value || copying.value || deleting.value);
+const busy = computed(() => opening.value || copying.value || deleting.value);
 const files = computed(() => mergeDocumentCandidates({
   shared: sourceStates.value.shared.scan?.files ?? [],
   local: sourceStates.value.local.scan?.files ?? [],
@@ -44,6 +44,7 @@ const sortedVisibleFiles = computed(() => orderDocumentCandidates(visibleFiles.v
 
 function receiveScans(value: DocumentLocationStates) {
   sourceStates.value = value;
+  scanning.value = value.shared.status === 'scanning' || value.local.status === 'scanning';
   const selected: Record<string, ArchiveLocation> = {};
   for (const file of mergeDocumentCandidates({
     shared: value.shared.scan?.files ?? [],
@@ -54,12 +55,6 @@ function receiveScans(value: DocumentLocationStates) {
       ? previous : file.locations.includes('local') ? 'local' : 'shared';
   }
   selectedSources.value = selected;
-  error.value = '';
-}
-
-function scanningChanged(value: boolean) {
-  scanning.value = value;
-  emit('busy', busy.value);
 }
 
 function onRowKeyDown(event: KeyboardEvent, file: MergedDocumentCandidate) {
@@ -199,10 +194,6 @@ async function deleteLocalDocument(file: MergedDocumentCandidate) {
   if (shouldRescan && !disposed) await directoryPanel.value?.scanBoth();
 }
 
-function directoryBusy(value: boolean) {
-  scanning.value = value;
-  emit('busy', busy.value);
-}
 onUnmounted(() => { disposed = true; });
 </script>
 
@@ -216,7 +207,7 @@ onUnmounted(() => { disposed = true; });
       </div>
     </div>
     <DocumentDirectoryPanel ref="directoryPanel" :repository="repository" :project-id="projectId" :project-name="projectName" :archive-roots="archiveRoots"
-      :disabled="opening || copying || deleting" @results="receiveScans" @busy="directoryBusy" />
+      :disabled="opening || copying || deleting" @results="receiveScans" />
     <div class="document-filters">
       <label for="document-search">搜索文档</label>
       <input id="document-search" v-model="query" type="search" placeholder="文件名或相对路径" />

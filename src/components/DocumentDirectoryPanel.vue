@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { ArchiveLocation } from '../domain/model';
 import type { ArchiveRoots } from '../files/directories';
 import { fileOperationErrorMessage } from '../files/directories';
-import { scanDocumentDirectories, type DocumentDirectoryScan, type DocumentLocationScanResult } from '../files/document-directories';
+import { scanDocumentDirectory, type DocumentDirectoryScan } from '../files/document-directories';
 import type { ArchiveRepository } from '../storage/database';
 import AppIcon from './AppIcon.vue';
 
@@ -23,12 +23,12 @@ const props = defineProps<{
   archiveRoots: ArchiveRoots;
   disabled: boolean;
 }>();
-const emit = defineEmits<{ results: [states: DocumentLocationStates]; busy: [value: boolean] }>();
+const emit = defineEmits<{ results: [states: DocumentLocationStates] }>();
 const states = ref<DocumentLocationStates>({ shared: emptyState(), local: emptyState() });
 const scanning = ref(false);
-const authorizing = ref(false);
-const busy = computed(() => scanning.value || authorizing.value);
-let controller: AbortController | undefined;
+const authorizing = ref<Record<ArchiveLocation, boolean>>({ shared: false, local: false });
+const busy = computed(() => scanning.value || authorizing.value.shared || authorizing.value.local);
+const controllers = new Map<ArchiveLocation, AbortController>();
 let disposed = false;
 
 function emptyState(): DocumentLocationState {
@@ -45,99 +45,76 @@ function folderName(location: ArchiveLocation) {
 }
 
 async function scanBoth() {
-  if (authorizing.value || props.disabled) return;
-  controller?.abort();
-  const activeController = new AbortController();
-  controller = activeController;
-  scanning.value = true;
-  emit('busy', true);
-  states.value = {
-    shared: { status: 'scanning', message: '正在扫描…', count: 0 },
-    local: { status: 'scanning', message: '正在扫描…', count: 0 },
-  };
-  emit('results', states.value);
-  const progress: Record<ArchiveLocation, number> = { shared: 0, local: 0 };
+  if (props.disabled) return;
+  await Promise.all((['local', 'shared'] as const).map(location => scanLocation(location)));
+}
 
+async function scanLocation(location: ArchiveLocation) {
+  if (props.disabled || authorizing.value[location]) return;
+  controllers.get(location)?.abort();
+  const active = new AbortController();
+  controllers.set(location, active);
+  scanning.value = true;
+  let count = 0;
+  states.value = { ...states.value, [location]: { status: 'scanning', message: '正在扫描…', count } };
+  emit('results', states.value);
   try {
-    const results = await scanDocumentDirectories(props.repository, props.projectId, activeController.signal, (location, count) => {
-      progress[location] = count;
-      const current = states.value[location];
-      if (current.status === 'scanning') states.value = {
-        ...states.value,
-        [location]: { ...current, count },
-      };
+    const scan = await scanDocumentDirectory(props.repository, props.projectId, location, active.signal, value => {
+      count = value;
+      if (controllers.get(location) === active && !active.signal.aborted)
+        states.value = { ...states.value, [location]: { ...states.value[location], count } };
     });
-    if (disposed || activeController.signal.aborted) return;
-    states.value = {
-      shared: resultToState(results.find(result => result.location === 'shared')!),
-      local: resultToState(results.find(result => result.location === 'local')!),
-    };
+    if (disposed || active.signal.aborted || controllers.get(location) !== active) return;
+    states.value = { ...states.value, [location]: scan.missingDirectory
+      ? { status: 'missing', message: '项目文档子目录不存在；复制到此位置时 Launcher 会创建。', count: 0, scan }
+      : { status: 'success', message: `扫描成功，找到 ${scan.files.length} 份文档`, count, scan } };
     emit('results', states.value);
   } catch (cause) {
-    if (!activeController.signal.aborted) {
-      const state = { status: 'error', message: fileOperationErrorMessage(cause), count: 0 } satisfies DocumentLocationState;
-      states.value = { shared: state, local: state };
-      emit('results', states.value);
-    } else if (controller === activeController && !disposed) {
-      const state = { status: 'idle', message: '扫描已取消，未提交本次结果', count: 0 } satisfies DocumentLocationState;
-      states.value = { shared: state, local: state };
-      emit('results', states.value);
-    }
+    if (disposed || controllers.get(location) !== active) return;
+    states.value = { ...states.value, [location]: active.signal.aborted
+      ? { status: 'idle', message: '扫描已取消，未提交本次结果', count: 0 }
+      : { status: 'error', message: fileOperationErrorMessage(cause), count } };
+    emit('results', states.value);
   } finally {
-    if (controller === activeController) {
-      controller = undefined;
-      scanning.value = false;
-      emit('busy', busy.value);
-    }
+    if (controllers.get(location) === active) controllers.delete(location);
+    scanning.value = controllers.size > 0;
   }
 }
 
-function resultToState(result: DocumentLocationScanResult): DocumentLocationState {
-  return result.status === 'success'
-    ? { status: 'success', message: `扫描成功，找到 ${result.scan.files.length} 份文档`, count: result.count, scan: result.scan }
-    : result.status === 'missing'
-      ? { status: 'missing', message: '项目文档子目录不存在；复制到此位置时 Launcher 会创建。', count: 0, scan: result.scan }
-    : { status: 'error', message: result.message, count: result.count };
-}
-
-async function authorizeBoth() {
-  if (busy.value || props.disabled) return;
-  authorizing.value = true;
-  emit('busy', true);
+async function authorizeLocation(location: ArchiveLocation) {
+  if (authorizing.value[location] || props.disabled) return;
+  const root = props.archiveRoots[location];
+  if (!root) return;
+  controllers.get(location)?.abort();
+  authorizing.value = { ...authorizing.value, [location]: true };
   try {
-    await Promise.all((['shared', 'local'] as const).map(async location => {
-      const root = props.archiveRoots[location];
-      if (!root) return;
-      try {
-        const permission = await root.requestPermission({ mode: 'readwrite' });
-        if (permission !== 'granted') {
-          states.value = {
-            ...states.value,
-            [location]: { status: 'error', message: `${locationLabel(location)}根目录读写授权未获批准。`, count: 0 },
-          };
-        }
-      } catch (cause) {
-        states.value = {
-          ...states.value,
-          [location]: { status: 'error', message: fileOperationErrorMessage(cause), count: 0 },
-        };
-      }
-    }));
+    const permission = await root.requestPermission({ mode: 'readwrite' });
+    if (permission !== 'granted') throw new Error(`${locationLabel(location)}根目录读写授权未获批准。`);
+    if (props.archiveRoots[location] !== root) throw new Error('根目录已变更，请重新授权。');
+  } catch (cause) {
+    states.value = { ...states.value, [location]: { status: 'error', message: fileOperationErrorMessage(cause), count: 0 } };
+    emit('results', states.value);
+    return;
   } finally {
-    authorizing.value = false;
-    emit('busy', false);
+    authorizing.value = { ...authorizing.value, [location]: false };
   }
-  await scanBoth();
+  await scanLocation(location);
 }
 
 function cancelScan() {
-  controller?.abort();
+  for (const [location, active] of controllers) {
+    active.abort();
+    states.value = { ...states.value, [location]: { status: 'idle', message: '扫描已取消，未提交本次结果', count: 0 } };
+  }
+  controllers.clear();
+  scanning.value = false;
+  if (!disposed) emit('results', states.value);
 }
 
 defineExpose({ scanBoth });
 
 watch(() => [props.archiveRoots.shared, props.archiveRoots.local, props.projectName] as const, () => {
-  controller?.abort();
+  cancelScan();
   states.value = { shared: emptyState(), local: emptyState() };
   emit('results', states.value);
   if (props.archiveRoots.shared || props.archiveRoots.local) void scanBoth();
@@ -146,7 +123,7 @@ watch(() => [props.archiveRoots.shared, props.archiveRoots.local, props.projectN
 onMounted(() => {
   if (props.archiveRoots.shared || props.archiveRoots.local) void scanBoth();
 });
-onUnmounted(() => { disposed = true; controller?.abort(); });
+onUnmounted(() => { disposed = true; cancelScan(); });
 </script>
 
 <template>
@@ -154,8 +131,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); });
     <div class="section-heading">
       <h3><AppIcon name="file" />软件对比文档目录</h3>
       <div class="document-directory-actions">
-        <button type="button" class="secondary" :disabled="disabled || busy || (!archiveRoots.shared && !archiveRoots.local)" @click="authorizeBoth"><AppIcon name="shield" />授权两侧</button>
-        <button type="button" class="tool-button tool-button-accent" :disabled="disabled || busy || (!archiveRoots.shared && !archiveRoots.local)" @click="scanBoth"><AppIcon name="scan" />扫描两侧</button>
+        <button type="button" class="tool-button tool-button-accent" :disabled="disabled || (!archiveRoots.shared && !archiveRoots.local)" @click="scanBoth"><AppIcon name="scan" />扫描两侧</button>
         <button v-if="scanning" type="button" class="secondary" aria-label="取消双目录扫描" @click="cancelScan"><AppIcon name="stop" />取消</button>
       </div>
     </div>
@@ -171,6 +147,10 @@ onUnmounted(() => { disposed = true; controller?.abort(); });
         <span v-else-if="states[location].status === 'error'" class="document-location-message document-location-error" role="status">{{ states[location].message }}</span>
         <span v-else-if="states[location].status === 'success'" class="document-location-message" role="status">{{ states[location].message }}（枚举 {{ states[location].count }} 个条目）</span>
         <span v-else class="document-location-message">{{ states[location].message }}</span>
+        <div class="document-directory-actions">
+          <button type="button" class="secondary" :disabled="disabled || !archiveRoots[location] || authorizing[location]" @click="authorizeLocation(location)"><AppIcon name="shield" />授权{{ locationLabel(location) }}</button>
+          <button type="button" class="secondary" :disabled="disabled || !archiveRoots[location] || authorizing[location]" @click="scanLocation(location)"><AppIcon name="scan" />扫描{{ locationLabel(location) }}</button>
+        </div>
       </div>
     </div>
   </section>

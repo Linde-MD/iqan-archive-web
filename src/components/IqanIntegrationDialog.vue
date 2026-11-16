@@ -115,6 +115,7 @@ async function open(targetAction: Action, nodeIds: readonly string[], preferredL
           const matches = matchScannedFiles(graph, scanned).matches;
           if (nodes.some(node => (matches.get(node.id)?.length ?? 0) > 0)) {
             byLocation.set(location, { binding: candidateBinding, candidates: scanned });
+            break;
           }
         } catch (cause) {
           if (operationController.signal.aborted) throw cause;

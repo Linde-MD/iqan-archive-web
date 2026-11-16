@@ -41,10 +41,9 @@ const activeProject = computed(() => projects.value.find(project => project.id =
 const projectsCollapsed = ref(false);
 const filesPanelBusy = ref(false);
 const documentsBusy = ref(false);
-const rootBusy = ref(false);
 const archiveRoots = shallowRef<ArchiveRoots>({});
 const archiveRootRevision = ref(0);
-const filesBusy = computed(() => filesPanelBusy.value || documentsBusy.value || rootBusy.value);
+const filesBusy = computed(() => filesPanelBusy.value || documentsBusy.value);
 const graphBusy = ref(false);
 const taskBoardBusy = ref(false);
 const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
@@ -526,7 +525,7 @@ onUnmounted(() => {
           <button v-if="activeProject" type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="openBackupManager"><AppIcon name="folder" />管理备份</button>
         </div>
       </details>
-      <ArchiveRootPanel :repository="repository" :disabled="saving || filesBusy || graphBusy" @roots="receiveArchiveRoots" @busy="rootBusy = $event" @error="showError" />
+      <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
       <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
     </div>
   </header>

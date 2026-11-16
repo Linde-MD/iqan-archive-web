@@ -27,28 +27,38 @@ const expectedName = computed(() => {
 });
 let controller: AbortController | undefined;
 let disposed = false;
+let generation = 0;
 
 async function operation(action: () => Promise<void>) {
-  busy.value = true; emit('busy', true); message.value = '';
+  const active = generation;
+  busy.value = true; emit('busy', location.value === 'local'); message.value = '';
   try { await action(); }
   catch (cause) {
+    if (active !== generation || disposed) return;
     if (cause instanceof DOMException && cause.name === 'AbortError') message.value = '扫描已取消，未提交。';
     else emit('error', cause);
-  } finally { busy.value = false; emit('busy', false); }
+  } finally { if (active === generation) { busy.value = false; emit('busy', false); } }
 }
 
 async function restore() {
+  const active = generation;
   await operation(async () => {
     handle.value = undefined;
     const root = rootHandle.value;
     if (disposed || !root) { permission.value = '未设置根目录'; return; }
-    if (!await checkPermission(root, false, 'readwrite')) { permission.value = '需要读写授权'; return; }
+    const granted = await checkPermission(root, false, 'readwrite');
+    if (active !== generation || disposed) return;
+    if (!granted) { permission.value = '需要读写授权'; return; }
     try {
       const child = await resolveProjectDirectory(root, props.projectName, props.role);
+      if (active !== generation || disposed) return;
+      const readable = await checkPermission(child);
+      if (active !== generation || disposed) return;
       handle.value = child;
-      permission.value = await checkPermission(child) ? '可扫描' : '需要重新授权根目录';
+      permission.value = readable ? '可扫描' : '需要重新授权根目录';
       if (permission.value !== '可扫描') message.value = `请重新授权${location.value === 'local' ? '本地' : '共享'}根目录。`;
     } catch (cause) {
+      if (active !== generation || disposed) return;
       if (cause instanceof DOMException && cause.name === 'NotFoundError') {
         permission.value = '目录不存在';
         message.value = `未找到子目录“${expectedName.value}”。`;
@@ -69,52 +79,76 @@ async function copyName() {
 }
 
 async function scan() {
+  const active = generation;
+  const selectedLocation = location.value;
   emit('invalidate');
-  controller = new AbortController();
+  const scanController = new AbortController();
+  controller = scanController;
   count.value = 0;
   await operation(async () => {
     if (!rootHandle.value || !handle.value) throw new Error(`请先设置${location.value === 'local' ? '本地' : '共享'}根目录，并确认该项目子目录存在。`);
-    if (!await checkPermission(handle.value)) {
+    const granted = await checkPermission(handle.value);
+    if (active !== generation || disposed || scanController.signal.aborted) return;
+    if (!granted) {
       permission.value = '需要重新授权根目录';
       throw new Error(`${location.value === 'local' ? '本地' : '共享'}根目录授权已失效，请重新授权。`);
     }
     permission.value = '已授权';
-    const files = await scanDirectory(handle.value, props.role, controller!.signal, value => { count.value = value; });
-    if (!disposed) { emit('results', location.value, files); message.value = `扫描完成：${location.value === 'local' ? '本地' : '共享'}目录枚举 ${count.value} 个条目，找到 ${files.length} 个候选文件。`; }
+    const files = await scanDirectory(handle.value, props.role, scanController.signal, value => { if (active === generation) count.value = value; });
+    if (!disposed && active === generation && !scanController.signal.aborted) { emit('results', selectedLocation, files); message.value = `扫描完成：${selectedLocation === 'local' ? '本地' : '共享'}目录枚举 ${count.value} 个条目，找到 ${files.length} 个候选文件。`; }
   });
-  controller = undefined;
+  if (controller === scanController) controller = undefined;
 }
 
 async function authorizeRoot() {
   const root = rootHandle.value;
   if (!root || busy.value || props.disabled) return;
+  const active = generation;
   busy.value = true;
-  emit('busy', true);
+  emit('busy', location.value === 'local');
   message.value = '';
   try {
     const request = root.requestPermission({ mode: 'readwrite' });
     const granted = await request === 'granted';
+    if (active !== generation || disposed) return;
     if (!granted) throw new Error(`${location.value === 'local' ? '本地' : '共享'}根目录授权未获批准。`);
     await restore();
   } catch (cause) {
-    emit('error', cause);
+    if (active === generation && !disposed) emit('error', cause);
   } finally {
-    busy.value = false;
-    emit('busy', false);
+    if (active === generation) {
+      busy.value = false;
+      emit('busy', false);
+    }
   }
 }
 
 function selectLocation(next: ArchiveLocation) {
-  if (busy.value || props.disabled || location.value === next) return;
+  if (props.disabled || location.value === next) return;
+  generation++;
+  controller?.abort();
+  controller = undefined;
+  busy.value = false;
+  emit('busy', false);
   location.value = next;
 }
 
 defineExpose({ getHandle: () => handle.value, getLocation: () => location.value });
-onMounted(async () => { await restore(); if (!disposed && props.autoScan && handle.value) await scan(); });
-watch(() => [props.archiveRoots.shared, props.archiveRoots.local, props.projectName, location.value] as const, async () => {
-  emit('invalidate');
+onMounted(async () => {
+  const active = generation;
   await restore();
-  if (!disposed && props.autoScan && handle.value) await scan();
+  if (!disposed && active === generation && props.autoScan && handle.value) await scan();
+});
+watch(() => [props.archiveRoots.shared, props.archiveRoots.local, props.projectName, location.value] as const, async () => {
+  generation++;
+  controller?.abort();
+  controller = undefined;
+  busy.value = false;
+  emit('busy', false);
+  emit('invalidate');
+  const active = generation;
+  await restore();
+  if (!disposed && active === generation && props.autoScan && handle.value) await scan();
 });
 onUnmounted(() => { disposed = true; controller?.abort(); });
 </script>
@@ -124,8 +158,8 @@ onUnmounted(() => { disposed = true; controller?.abort(); });
     <div class="section-heading"><h3><AppIcon :name="role === 'engineering' ? 'folder' : 'file'" />{{ label }}目录</h3><span class="permission-badge">{{ permission }}</span></div>
     <div class="directory-control-row">
       <div class="scan-location" role="group" :aria-label="`选择扫描${label}的位置`">
-        <button type="button" class="secondary" :aria-pressed="location === 'shared'" :disabled="disabled || busy" @click="selectLocation('shared')">共享</button>
-        <button type="button" class="secondary" :aria-pressed="location === 'local'" :disabled="disabled || busy" @click="selectLocation('local')">本地</button>
+        <button type="button" class="secondary" :aria-pressed="location === 'shared'" :disabled="disabled" @click="selectLocation('shared')">共享</button>
+        <button type="button" class="secondary" :aria-pressed="location === 'local'" :disabled="disabled" @click="selectLocation('local')">本地</button>
       </div>
       <div class="directory-name"><div><span class="field-caption">{{ location === 'local' ? '本地' : '共享' }}项目子目录</span><strong>{{ handle?.name ?? expectedName }}</strong></div><button class="secondary icon-button" :disabled="disabled || busy || !handle" :aria-label="`复制${label}目录名`" :title="`复制${label}目录名`" @click="copyName"><AppIcon name="copy" /></button></div>
     </div>

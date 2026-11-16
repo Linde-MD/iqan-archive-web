@@ -281,6 +281,23 @@ describe('只读目录扫描与定位', () => {
     expect(results.find(result => result.location === 'local')).toMatchObject({ status: 'error', message: '本地根目录未设置。', count: 0 });
   });
 
+  it('共享目录响应挂起时，本地扫描仍可独立完成', async () => {
+    const graph = createProject('项目 A', '001');
+    const local = directory('local', [directory('项目 A_software_changes_docs', [file('本地.docx')])]);
+    let releaseShared!: (value: DirectoryHandle | undefined) => void;
+    const pendingShared = new Promise<DirectoryHandle | undefined>(resolve => { releaseShared = resolve; });
+    const repository = {
+      getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? pendingShared : Promise.resolve(local); },
+      async get() { return graph; },
+    } as unknown as ArchiveRepository;
+    const controller = new AbortController();
+    const shared = scanDocumentDirectory(repository, graph.project.id, 'shared', controller.signal);
+    const localScan = await scanDocumentDirectory(repository, graph.project.id, 'local', controller.signal);
+    expect(localScan.files.map(item => item.fileName)).toEqual(['本地.docx']);
+    releaseShared(undefined);
+    await expect(shared).rejects.toThrow('共享根目录未设置');
+  });
+
   it('将授权根目录下缺少项目文档子目录标记为可复制的空目标', async () => {
     const graph = createProject('项目 A', '001');
     const sharedBinding = directory('项目 A_software_changes_docs', [file('说明.docx')]);

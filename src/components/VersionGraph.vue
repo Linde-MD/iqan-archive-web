@@ -437,6 +437,22 @@ async function refreshComparisonDocuments() {
   const failures: string[] = [];
   try {
     const graphAtScan = await props.repository.get(props.projectId);
+    const publish = () => {
+      const matchesByNode = new Map<string, ComparisonDocumentSource[]>();
+      for (const [location, candidates] of candidatesByLocation) {
+        for (const [nodeId, files] of matchComparisonDocuments(graphAtScan, candidates)) {
+          const matches = matchesByNode.get(nodeId) ?? [];
+          matches.push(...files.map(file => ({ location, file })));
+          matchesByNode.set(nodeId, matches);
+        }
+      }
+      for (const matches of matchesByNode.values()) {
+        matches.sort((first, second) => Number(second.location === 'local') - Number(first.location === 'local')
+          || first.file.relativePath.localeCompare(second.file.relativePath));
+      }
+      comparisonDocumentsByNode.value = matchesByNode;
+      documentScanError.value = failures.join(' ');
+    };
     for (const location of ['local', 'shared'] as const) {
       const root = await props.repository.getArchiveRoot(location);
       if (!root) continue;
@@ -468,25 +484,14 @@ async function refreshComparisonDocuments() {
         if (controller.signal.aborted) return;
         if (!(cause instanceof DOMException && cause.name === 'NotFoundError'))
           failures.push(fileOperationErrorMessage(cause));
+      } finally {
+        if (!controller.signal.aborted && documentScanController === controller) publish();
       }
     }
     if (controller.signal.aborted) return;
     const latestGraph = await props.repository.get(props.projectId);
     if (latestGraph.project.name !== graphAtScan.project.name) return;
-    const matchesByNode = new Map<string, ComparisonDocumentSource[]>();
-    for (const [location, candidates] of candidatesByLocation) {
-      for (const [nodeId, files] of matchComparisonDocuments(latestGraph, candidates)) {
-        const matches = matchesByNode.get(nodeId) ?? [];
-        matches.push(...files.map(file => ({ location, file })));
-        matchesByNode.set(nodeId, matches);
-      }
-    }
-    for (const matches of matchesByNode.values()) {
-      matches.sort((first, second) => Number(second.location === 'local') - Number(first.location === 'local')
-        || first.file.relativePath.localeCompare(second.file.relativePath));
-    }
-    comparisonDocumentsByNode.value = matchesByNode;
-    documentScanError.value = failures.join(' ');
+    publish();
   } catch (cause) {
     if (!controller.signal.aborted) documentScanError.value = fileOperationErrorMessage(cause);
   } finally {
@@ -649,6 +654,13 @@ async function refreshEngineeringFileStates() {
     } catch (cause) {
       if (controller.signal.aborted) return;
       issues.set(location, fileOperationErrorMessage(cause));
+    } finally {
+      if (!controller.signal.aborted && engineeringScanController === controller) {
+        engineeringFileLocationsByNode.value = new Map(filesByNode);
+        engineeringFileCandidatesByNode.value = new Map(candidatesByNode);
+        engineeringScannedLocations.value = new Set(scannedLocations);
+        engineeringScanIssues.value = new Map(issues);
+      }
     }
   }
 
@@ -1695,6 +1707,11 @@ async function refreshMenuOpenLocations(nodeId: string) {
       } catch (cause) {
         if (controller.signal.aborted) throw cause;
       }
+      if (menu.value?.kind === 'node' && menu.value.id === nodeId && !controller.signal.aborted) {
+        menuOpenLocations.value = { nodeId, locations: [...locations] };
+        menuOpenLocation.value = locations.includes('local') ? 'local' : locations[0] ?? 'local';
+        if (locations.includes('local')) menuOpenLocationBusy.value = false;
+      }
     }
     if (menu.value?.kind === 'node' && menu.value.id === nodeId && !controller.signal.aborted) {
       menuOpenLocations.value = { nodeId, locations };
@@ -1898,36 +1915,25 @@ function removeDeletionParent(childId: string, parentId: string) {
 async function submitNode(): Promise<boolean> {
   const actionPanel = panel.value;
   if (actionPanel !== 'node-add' && actionPanel !== 'node-edit' && actionPanel !== 'merge') return false;
-  let copyPromptAfterSave: ChildCopyPrompt | undefined;
+  let childCopyAfterSave: { nodeId: string; parentId: string; parentVersion: string; targetVersion: string } | undefined;
   let renameRequestAfterSave: { uri: string; count: number } | undefined;
-  let copyNotice = '';
   const saved = await operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
     const current = graph.value!;
     if (actionPanel === 'node-add') {
       const node = createNode(current, nodeForm.value);
-      let copyCandidates: ChildCopyCandidate[] = [];
-      if (nodeForm.value.parentIds.length === 1) {
-        status.value = '正在检查共享和本地工程目录…';
-        try {
-          const result = await findChildEngineeringCopies(current, nodeForm.value.parentIds[0]!, node.version);
-          copyCandidates = result.candidates;
-          copyNotice = result.notice ?? '';
-        } catch (cause) {
-          copyNotice = `无法确认是否可以创建本地工程副本：${fileOperationErrorMessage(cause)}`;
-        }
-      }
+      const parent = nodeForm.value.parentIds.length === 1
+        ? current.nodes.find(item => item.id === nodeForm.value.parentIds[0])
+        : undefined;
       graph.value = await props.repository.addNode(
         props.projectId, current.project.revision, node, nodeForm.value.parentIds, nodeForm.value.targetBranchId || null,
       );
-      status.value = copyNotice || '版本已新增。';
-      if (copyCandidates.length) {
-        const parent = current.nodes.find(item => item.id === nodeForm.value.parentIds[0]);
-        if (parent) copyPromptAfterSave = {
+      status.value = '版本已新增。';
+      if (parent) {
+        childCopyAfterSave = {
           nodeId: node.id,
           parentId: parent.id,
           parentVersion: parent.version,
           targetVersion: node.version,
-          candidates: copyCandidates,
         };
       }
     } else if (actionPanel === 'node-edit') {
@@ -1995,16 +2001,35 @@ async function submitNode(): Promise<boolean> {
     panel.value = null;
     selectedNodeIds.value = [];
   });
-  if (saved && copyPromptAfterSave) {
-    childCopyPrompt.value = copyPromptAfterSave;
-    selectedChildCopyKey.value = copyPromptAfterSave.candidates.length === 1
-      ? childCopyKey(copyPromptAfterSave.candidates[0]!) : '';
-  }
+  if (saved && childCopyAfterSave) void offerChildEngineeringCopy(childCopyAfterSave);
   if (saved && renameRequestAfterSave) {
     status.value = `版本已更新；已请求 Launcher 批量改名 ${renameRequestAfterSave.count} 个工程文件。请在本机确认窗口核对路径；若取消或失败，请按 Launcher 提示手动处理。网页无法确认改名结果。`;
     window.location.assign(renameRequestAfterSave.uri);
   }
   return saved;
+}
+
+async function offerChildEngineeringCopy(target: Omit<ChildCopyPrompt, 'candidates'>) {
+  try {
+    const current = await props.repository.get(props.projectId);
+    const child = current.nodes.find(node => node.id === target.nodeId);
+    const parent = current.nodes.find(node => node.id === target.parentId);
+    if (!child || !parent || child.version !== target.targetVersion || parent.version !== target.parentVersion) return;
+    const result = await findChildEngineeringCopies(current, parent.id, child.version);
+    const latest = await props.repository.get(props.projectId);
+    const latestChild = latest.nodes.find(node => node.id === target.nodeId);
+    const latestParent = latest.nodes.find(node => node.id === target.parentId);
+    if (!latestChild || !latestParent || latestChild.version !== target.targetVersion
+      || latestParent.version !== target.parentVersion || panel.value || saving.value) return;
+    if (result.candidates.length) {
+      childCopyPrompt.value = { ...target, candidates: result.candidates };
+      selectedChildCopyKey.value = result.candidates.length === 1 ? childCopyKey(result.candidates[0]!) : '';
+    }
+    if (result.notice) status.value = result.notice;
+  } catch (cause) {
+    if (!panel.value && !saving.value)
+      status.value = `版本已新增。检查工程文件失败：${fileOperationErrorMessage(cause)}`;
+  }
 }
 
 function childCopyKey(candidate: ChildCopyCandidate): string {
@@ -2018,18 +2043,18 @@ async function findChildEngineeringCopies(
 ): Promise<{ candidates: ChildCopyCandidate[]; notice?: string }> {
   const parent = current.nodes.find(node => node.id === parentId);
   if (!parent) return { candidates: [] };
-  const [sharedRoot, localRoot] = await Promise.all([
-    props.repository.getArchiveRoot('shared'),
-    props.repository.getArchiveRoot('local'),
-  ]);
-  if (!sharedRoot || !localRoot)
-    return { candidates: [], notice: '未同时设置共享和本地根目录，未检查或创建工程副本。' };
-  if (!await checkPermission(sharedRoot) || !await checkPermission(localRoot, false, 'readwrite'))
-    return { candidates: [], notice: '共享或本地根目录未授权，无法确认目标文件是否已存在。' };
+  const localRoot = await props.repository.getArchiveRoot('local');
+  if (!localRoot || !await checkPermission(localRoot, false, 'readwrite'))
+    return { candidates: [], notice: '本地根目录未设置或没有读写授权，无法创建本地工程副本。' };
 
   const normalizedTarget = normalizeVersion(targetVersion);
   const candidates: ChildCopyCandidate[] = [];
-  for (const [location, root] of [['shared', sharedRoot], ['local', localRoot]] as const) {
+  for (const location of ['local', 'shared'] as const) {
+    const root = location === 'local' ? localRoot : await props.repository.getArchiveRoot('shared');
+    if (!root || !await checkPermission(root)) {
+      if (location === 'shared') return { candidates, notice: '共享根目录未设置或未授权，未找到可用的父版本工程文件。' };
+      return { candidates: [], notice: '本地根目录未授权，无法创建工程副本。' };
+    }
     let binding: DirectoryHandle;
     try { binding = await resolveProjectDirectory(root, current.project.name, 'engineering'); }
     catch (cause) {
@@ -2054,6 +2079,8 @@ async function findChildEngineeringCopies(
       const targetRelativePath = replaceRelativeFileName(source.relativePath, targetFileName);
       candidates.push({ location, source, targetRelativePath });
     }
+    if (location === 'local' && candidates.length)
+      return { candidates, notice: '已检查本地工程目录；共享目录未检查，请联网后确认共享副本。' };
   }
   return { candidates };
 }
@@ -2073,7 +2100,7 @@ async function copyParentEngineeringFile() {
     if (!child || !parent || child.version !== normalizeVersion(prompt.targetVersion) || parent.version !== prompt.parentVersion)
       throw new Error('版本图已变化，未请求创建工程副本。请重新检查版本。');
     const currentPlan = await findChildEngineeringCopies(current, parent.id, child.version);
-    if (currentPlan.notice) throw new Error(currentPlan.notice);
+    if (!currentPlan.candidates.length && currentPlan.notice) throw new Error(currentPlan.notice);
     const currentSource = currentPlan.candidates.find(candidate => childCopyKey(candidate) === childCopyKey(selectedSource));
     if (!currentSource) throw new Error('所选源文件已变化，未请求创建副本。请重新扫描后再试。');
     const localRoot = await props.repository.getArchiveRoot('local');

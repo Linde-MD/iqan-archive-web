@@ -125,8 +125,8 @@ onUnmounted(() => subscription?.unsubscribe());
     <template v-if="graph">
       <div class="workspace-meta"><strong>{{ graph.project.name }}</strong><span>零件号 <code>{{ graph.project.partNumber }}</code></span><span class="count">{{ graph.nodes.length }} 个版本 · {{ scanned ? rows.filter(row => row.nodeId !== null).length : '尚未扫描' }}{{ scanned ? ' 个关联文件' : '' }}</span></div>
       <div class="directory-grid">
-        <DirectoryPanel ref="engineering" :project-name="projectName" :archive-roots="archiveRoots" role="engineering" :disabled="busy" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="receiveEngineeringFiles" />
-        <DirectoryPanel :project-name="projectName" :archive-roots="archiveRoots" role="word" :disabled="busy" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="receiveComparisonDocuments" />
+        <DirectoryPanel ref="engineering" :project-name="projectName" :archive-roots="archiveRoots" role="engineering" :disabled="saving" @busy="setBusy('engineering', $event)" @error="showError" @invalidate="invalidate" @results="receiveEngineeringFiles" />
+        <DirectoryPanel :project-name="projectName" :archive-roots="archiveRoots" role="word" :disabled="saving" @busy="setBusy('word', $event)" @error="showError" @invalidate="comparisonDocuments = []; comparisonDocumentsScanned = false" @results="receiveComparisonDocuments" />
       </div>
 
       <div class="file-section-heading"><h3>工程扫描预览</h3><span v-if="scanned" class="source-tag">{{ engineeringLocation === 'local' ? '本地' : '共享' }}</span></div>
