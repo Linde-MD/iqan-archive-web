@@ -611,7 +611,7 @@ onUnmounted(() => {
     </div>
   </header>
 
-  <main id="workspace">
+  <main id="workspace" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
     <Transition name="surface">
       <div v-if="error" class="error" role="alert">
         <h2 ref="errorHeading" tabindex="-1">操作未完成</h2>

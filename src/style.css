@@ -111,6 +111,7 @@ button:disabled { cursor: not-allowed; background: #263248; color: #a7b3c5; bord
 .local-label .app-icon { color: var(--success); }
 .local-label span { margin: 0 6px; color: #7185a2; }
 main { max-width: 1680px; margin: auto; padding: 18px 24px 12px; }
+main.projects-collapsed { max-width: none; }
 .intro { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .eyebrow { font-size: 10px; font-weight: 700; letter-spacing: .16em; color: #9cb0ca; margin: 0 0 8px; }
 h1 { margin: 0 0 8px; font-size: clamp(24px, 3vw, 32px); letter-spacing: -.04em; font-weight: 650; color: #f5f8ff; }
@@ -127,10 +128,9 @@ h3 { font-size: 14px; margin: 0 0 8px; color: #eaf1fc; }
 .app-workspace.has-project { display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; gap: 20px; }
 .has-project > .workspace-grid { grid-template-columns: minmax(0, 1fr); }
 .has-project > .file-workspace, .has-project > .graph-workspace { margin-top: 0; }
-.app-workspace.has-project.projects-collapsed { grid-template-columns: 32px minmax(0, 1fr) 32px; gap: 8px; }
+.app-workspace.has-project.projects-collapsed { grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; }
 .app-workspace.has-project.projects-collapsed > .project-rail-region { grid-column: 1; }
 .app-workspace.has-project.projects-collapsed > :not(.project-rail-region) { grid-column: 2; }
-.app-workspace.has-project.projects-collapsed::after { grid-column: 3; content: ""; }
 .project-rail-region.is-collapsed { display: flex; justify-content: center; min-width: 0; }
 .project-list-heading-actions { display: flex; align-items: center; gap: 6px; }
 .project-rail-toggle { min-width: 44px; width: 44px; height: 44px; padding: 8px; }
@@ -650,6 +650,9 @@ footer { color: #aebdd2; font-size: 11px; display: flex; justify-content: space-
   .topbar-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .local-label { font-size: 11px; }
   main { padding: 20px 16px 12px; }
+  .app-workspace.has-project.projects-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .app-workspace.has-project.projects-collapsed > :not(.project-rail-region) { grid-column: 1; }
+  .project-rail-region.is-collapsed { justify-content: flex-start; }
   .intro { align-items: flex-start; flex-direction: column; gap: 12px; }
   .workspace-grid, .directory-grid, .has-project > .workspace-grid, .graph-layout { grid-template-columns: minmax(0, 1fr); }
   .directory-control-row { flex-wrap: wrap; }
