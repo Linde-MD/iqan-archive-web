@@ -4,7 +4,8 @@ import type { ArchiveRepository } from '../storage/database';
 import { backendAddress, checkLocalBackend, DEFAULT_BACKEND_PORT, parseBackendPort } from '../local-backend';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ repository: ArchiveRepository }>();
+const props = defineProps<{ repository: ArchiveRepository; disabled?: boolean }>();
+const emit = defineEmits<{ saved: [] }>();
 const dialog = ref<HTMLDialogElement>();
 const trigger = ref<HTMLButtonElement>();
 const portInput = ref<HTMLInputElement>();
@@ -88,7 +89,8 @@ async function save() {
   try {
     await props.repository.setBackendPort(value);
     savedPort.value = value;
-    message.value = '端口已保存到本机，尚未检测连接。项目存储未切换。';
+    emit('saved');
+    message.value = '端口已保存到本机，尚未检测连接。请在团队协作中重新连接或登录。';
   } catch (cause) {
     await showError(cause);
   } finally {
@@ -107,7 +109,7 @@ async function testConnection() {
   try {
     const result = await checkLocalBackend(value, controller.signal);
     if (controller.signal.aborted) return;
-    message.value = `检测时 ${backendAddress(value)} 服务可用，${result.initialized ? '管理员已初始化' : '管理员尚未初始化，请运行 init-admin'}。${value === savedPort.value ? '' : '此端口尚未保存。'}项目存储未切换。`;
+    message.value = `检测时 ${backendAddress(value)} 服务可用，${result.initialized ? '管理员已初始化' : '管理员尚未初始化，请运行 init-admin'}。${value === savedPort.value ? '' : '此端口尚未保存。'}检测不代表已登录，请在团队协作中登录。`;
   } catch (cause) {
     if (!controller.signal.aborted) await showError(cause);
   } finally {
@@ -122,10 +124,10 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
 </script>
 
 <template>
-  <button ref="trigger" type="button" class="secondary" @click="open"><AppIcon name="computer" />本机后端</button>
+  <button ref="trigger" type="button" class="secondary" :disabled="disabled" @click="open"><AppIcon name="computer" />本机后端</button>
   <dialog ref="dialog" class="branch-move-dialog backend-settings" aria-labelledby="backend-settings-title" @close="closed" @cancel="saving && $event.preventDefault()">
     <h2 id="backend-settings-title">本机后端设置</h2>
-    <p class="form-help">仅配置此浏览器连接本机服务的端口，不修改后端配置或数据库位置。当前项目仍存于本机 IndexedDB。</p>
+    <p class="form-help">仅配置此浏览器连接本机服务的端口，不修改后端配置或数据库位置。共享项目同步副本仍保留在本机 IndexedDB。</p>
     <div v-if="error" class="backend-settings-error" role="alert">
       <h3 ref="errorHeading" tabindex="-1">操作未完成</h3>
       <p>{{ error }}</p>
@@ -146,7 +148,7 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
         <button type="button" class="secondary" :disabled="saving" @click="dialog?.close()">关闭</button>
       </div>
     </form>
-    <p v-if="!message && !testing && !loading && !error" class="form-help">尚未检测连接；此处不提供登录或共享项目同步。</p>
+    <p v-if="!message && !testing && !loading && !error" class="form-help">尚未检测连接；登录和共享项目同步请使用顶栏账号入口。</p>
     <p v-if="testing || message" class="form-help" role="status">{{ testing ? '正在检测本机服务与数据库，请稍候…' : message }}</p>
   </dialog>
 </template>

@@ -33,6 +33,10 @@ const emit = defineEmits<{
 }>();
 
 const graph = shallowRef<ProjectGraph>();
+const sharedWritable = computed(() => {
+  const permissions = props.repository.permissions;
+  return !permissions || (permissions.sharedWritable && !permissions.draftProjectIds.includes(props.projectId));
+});
 const router = useRouter();
 const loading = ref(true);
 const saving = ref(false);
@@ -89,7 +93,7 @@ const taskDraftDirty = computed(() => !!taskDraft.value && JSON.stringify(taskDr
 const commentDraftDirty = computed(() => commentEditorOpen.value && commentText.value !== commentTextBaseline.value);
 const hasUnsavedTaskChanges = computed(() => taskDraftDirty.value || commentDraftDirty.value);
 const taskDraftStale = computed(() => !graph.value || taskDraftRevision.value !== graph.value.project.revision);
-const taskFieldsDisabled = computed(() => (taskDraftStale.value && !saving.value) || (saving.value && !taskDraft.value?.id));
+const taskFieldsDisabled = computed(() => !sharedWritable.value || (taskDraftStale.value && !saving.value) || (saving.value && !taskDraft.value?.id));
 const optionDraftStale = computed(() => !graph.value || optionDraftRevision.value !== graph.value.project.revision);
 const optionKey = computed<OptionKey>(() => `${optionKind.value}Options` as OptionKey);
 const currentOptionLabel = computed(() => ({
@@ -852,8 +856,8 @@ onUnmounted(() => {
         <h2 id="task-board-title">{{ projectName }} · 任务管理</h2>
       </div>
       <div class="task-board-header-actions">
-        <button type="button" class="secondary" :disabled="loading || saving || hasUnsavedTaskChanges || !!quickTask" @click="openOptions()"><AppIcon name="edit" />管理选项</button>
-        <button type="button" :disabled="loading || saving || !!quickTask" @click="createTask()"><AppIcon name="plus" />新建任务</button>
+        <button type="button" class="secondary" :disabled="!sharedWritable || loading || saving || hasUnsavedTaskChanges || !!quickTask" @click="openOptions()"><AppIcon name="edit" />管理选项</button>
+        <button type="button" :disabled="!sharedWritable || loading || saving || !!quickTask" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>
     <div class="task-view-controls">
@@ -890,7 +894,7 @@ onUnmounted(() => {
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
               :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :type-name-by-id="typeNameById"
               :priority-option-by-id="priorityOptionById" :assignee-name-by-id="assigneeNameById"
-              :disabled="saving || taskDraftDirty || !!quickTask" :saving="saving"
+              :disabled="!sharedWritable || saving || taskDraftDirty || !!quickTask" :saving="saving"
               :quick-task="quickTask && quickTask.statusId === (lane.status?.id ?? null) ? quickTask : null"
               :quick-error="quickError" :quick-stale="quickStale"
               @open-task="switchTask" @add-task="startQuickTask" @submit-quick="submitQuickTask" @cancel-quick="cancelQuickTask" @refresh-quick="refreshQuickTask"
@@ -918,7 +922,7 @@ onUnmounted(() => {
             <div class="task-heading-fields">
               <span class="task-heading-icon"><AppIcon name="tasks" /></span>
               <label class="visually-hidden" for="task-board-external-id">Task ID（{{ taskDraft.id ? '可选' : '必填' }}，1–16 位数字）</label>
-              <input id="task-board-external-id" v-model="taskDraft.externalTaskId" form="task-detail-form" inputmode="numeric" placeholder="编号" title="点击编辑 Task ID" :aria-required="!taskDraft.id" :aria-invalid="!!taskIdError" :aria-describedby="taskIdError ? 'task-id-error' : taskIdOverflow ? 'task-id-overflow' : undefined" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @input="taskIdError = ''" @blur="requestAutoSave" />
+              <input id="task-board-external-id" v-model="taskDraft.externalTaskId" form="task-detail-form" inputmode="numeric" placeholder="编号" title="点击编辑 Task ID" :aria-required="!taskDraft.id" :aria-invalid="!!taskIdError" :aria-describedby="taskIdError ? 'task-id-error' : taskIdOverflow ? 'task-id-overflow' : undefined" :disabled="saving && !taskDraft.id" :readonly="!sharedWritable || (taskDraftStale && !saving)" @input="taskIdError = ''" @blur="requestAutoSave" />
               <span class="task-heading-divider" aria-hidden="true"></span>
               <label for="task-board-parent">父任务</label>
               <select id="task-board-parent" v-model="taskDraft.parentTaskId" form="task-detail-form" :disabled="taskFieldsDisabled" @change="requestAutoSave">
@@ -929,7 +933,7 @@ onUnmounted(() => {
           </div>
           <div class="task-header-actions">
             <span v-if="saving || taskDraftDirty || statusMessage" class="task-save-status" role="status">{{ saving ? '保存中…' : taskDraftDirty ? '未保存' : statusMessage }}</span>
-            <button v-if="taskDraft.id" type="button" class="secondary icon-button" aria-label="删除任务" title="删除任务" :disabled="saving || taskDraftStale" @click="deleteCurrentTask"><AppIcon name="trash" /></button>
+            <button v-if="taskDraft.id" type="button" class="secondary icon-button" aria-label="删除任务" title="删除任务" :disabled="!sharedWritable || saving || taskDraftStale" @click="deleteCurrentTask"><AppIcon name="trash" /></button>
             <button type="button" class="secondary icon-button" aria-label="关闭任务详情" title="关闭任务详情" :disabled="saving" @click="closeTaskDetails"><AppIcon name="clear" /></button>
           </div>
         </header>
@@ -941,7 +945,7 @@ onUnmounted(() => {
             <p v-if="error" class="task-board-message is-error" role="alert">{{ error }}</p>
             <form id="task-detail-form" class="task-detail-form" @submit.prevent="submitTask" @change="requestAutoSave">
               <label class="visually-hidden" for="task-board-name">任务名（必填）</label>
-              <input id="task-board-name" v-model="taskDraft.name" required placeholder="任务名称" title="点击编辑任务名" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @blur="requestAutoSave" />
+              <input id="task-board-name" v-model="taskDraft.name" required placeholder="任务名称" title="点击编辑任务名" :disabled="saving && !taskDraft.id" :readonly="!sharedWritable || (taskDraftStale && !saving)" @blur="requestAutoSave" />
               <div class="task-fields-row task-summary-fields">
                 <div class="task-summary-field"><span class="task-field-icon is-status"><AppIcon name="status" /></span><div><label for="task-board-status">状态</label><select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="taskFieldsDisabled">
                   <option :value="null">未分组</option><option v-for="option in graph.project.statusOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
@@ -971,7 +975,7 @@ onUnmounted(() => {
                 </select><p v-if="legacyTypeNames.length" class="task-legacy-type-notice" role="status">仍有旧类型名称：{{ legacyTypeNames.join('、') }}。请在“管理选项”中检查并修改。</p></div>
               </div>
               <div class="task-description-field"><label for="task-board-description">说明</label>
-                <textarea id="task-board-description" v-model="taskDraft.description" rows="6" placeholder="添加任务说明…" :disabled="saving && !taskDraft.id" :readonly="taskDraftStale && !saving" @input="scheduleDescriptionSave"></textarea>
+                <textarea id="task-board-description" v-model="taskDraft.description" rows="6" placeholder="添加任务说明…" :disabled="saving && !taskDraft.id" :readonly="!sharedWritable || (taskDraftStale && !saving)" @input="scheduleDescriptionSave"></textarea>
               </div>
               </div>
               <div v-show="detailSection === 'children'" class="task-child-list">
@@ -981,7 +985,7 @@ onUnmounted(() => {
                 <p v-else class="task-child-empty">{{ taskDraft.id ? '暂无子任务' : '创建任务后可关联子任务' }}</p>
               </div>
               <div v-if="!taskDraft.id || (error && !taskDraftStale)" class="task-detail-actions">
-                <button type="submit" :disabled="saving || taskDraftStale || commentDraftDirty || !taskDraft.name.trim()"><AppIcon name="check" />{{ taskDraft.id ? '重试保存' : '创建任务' }}</button>
+                <button type="submit" :disabled="!sharedWritable || saving || taskDraftStale || commentDraftDirty || !taskDraft.name.trim()"><AppIcon name="check" />{{ taskDraft.id ? '重试保存' : '创建任务' }}</button>
               </div>
             </form>
           </div>
@@ -1008,21 +1012,21 @@ onUnmounted(() => {
                 <div class="task-comment-meta"><time :datetime="comment.createdAt">{{ formatTime(comment.createdAt) }}</time><span v-if="comment.updatedAt !== comment.createdAt">已编辑 {{ formatTime(comment.updatedAt) }}</span></div>
                 <div class="markdown-content task-comment-content" v-html="renderMarkdown(comment.text)"></div>
                 <div class="task-comment-actions">
-                  <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" :aria-label="`编辑评论 ${formatTime(comment.createdAt)}`" @click="beginEditComment(comment)"><AppIcon name="edit" /></button>
-                  <button type="button" class="secondary" :disabled="saving || taskDraftStale || taskDraftDirty" :aria-label="`删除评论 ${formatTime(comment.createdAt)}`" @click="deleteComment(comment)"><AppIcon name="trash" /></button>
+                  <button type="button" class="secondary" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty" :aria-label="`编辑评论 ${formatTime(comment.createdAt)}`" @click="beginEditComment(comment)"><AppIcon name="edit" /></button>
+                  <button type="button" class="secondary" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty" :aria-label="`删除评论 ${formatTime(comment.createdAt)}`" @click="deleteComment(comment)"><AppIcon name="trash" /></button>
                 </div>
               </li>
             </ul>
             <p v-else class="task-comments-empty">暂无评论</p>
             <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
               <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
-              <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving" :readonly="taskDraftStale" />
+              <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving" :readonly="!sharedWritable || taskDraftStale" />
               <div class="task-comment-editor-actions">
-                <button type="submit" :disabled="saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
+                <button type="submit" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
                 <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
               </div>
             </form>
-            <button v-else type="button" class="task-comment-composer" :disabled="saving || taskDraftStale || taskDraftDirty" @click="beginNewComment">添加评论…</button>
+            <button v-else type="button" class="task-comment-composer" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty" @click="beginNewComment">添加评论…</button>
           </section>
           </aside>
           <aside v-else class="task-comments-empty-note">保存任务后，可以在详情中继续添加评论和查看关联版本。</aside>
