@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/vue';
+import { DragDropProvider, DragOverlay, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/vue';
+import { AutoScroller, defaultPreset } from '@dnd-kit/dom';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { useRouter } from 'vue-router';
@@ -8,6 +9,7 @@ import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { renderMarkdown } from '../utils/markdown';
+import { startTaskDragScroll } from '../utils/task-drag-scroll';
 import AppIcon from './AppIcon.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import TaskBoardLane from './TaskBoardLane.vue';
@@ -71,6 +73,15 @@ const quickStale = computed(() => !!quickTask.value && (quickConflict.value || g
 let removeQuickRouteGuard: (() => void) | undefined;
 let subscription: { unsubscribe(): void } | undefined;
 const dragState = shallowRef<{ original: ProjectGraph; preview: ProjectGraph; taskId: string } | null>(null);
+const draggingTask = computed(() => dragState.value?.preview.tasks.find(task => task.id === dragState.value?.taskId));
+const draggingStatusName = computed(() => dragState.value?.preview.project.statusOptions
+  .find(option => option.id === draggingTask.value?.statusOptionId)?.name ?? '未分组');
+const boardScroll = ref<HTMLElement>();
+// Retain horizontal auto-scroll; lane scrolling uses the stationary pointer.
+const dragPlugins = [...defaultPreset.plugins.filter(plugin => plugin !== AutoScroller),
+  AutoScroller.configure({ threshold: { x: 0.2, y: 0 } })];
+let dragPosition = { x: 0, y: 0 };
+let stopDragScroll: (() => void) | undefined;
 let descriptionSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let autoSaveQueued = false;
 
@@ -452,12 +463,27 @@ async function persistMove(taskId: string, statusOptionId: string | null, before
 }
 
 function onDragStart(event: DragStartEvent) {
+  stopDragScroll?.();
+  stopDragScroll = undefined;
   const current = graph.value;
   const source = event.operation.source;
   error.value = '';
   statusMessage.value = '';
   dragState.value = current && source
     ? { original: current, preview: current, taskId: String(source.id) } : null;
+  if (dragState.value && boardScroll.value && !(event.operation.activatorEvent instanceof KeyboardEvent)) {
+    dragPosition = { x: event.operation.position.current.x, y: event.operation.position.current.y };
+    stopDragScroll = startTaskDragScroll(boardScroll.value, () => dragPosition);
+  }
+}
+
+function onDragMove(event: DragMoveEvent) {
+  // Ignore synthetic moves emitted to compensate for scrolling.
+  const native = event.nativeEvent;
+  if (native instanceof MouseEvent) dragPosition = { x: native.clientX, y: native.clientY };
+  else if (typeof TouchEvent !== 'undefined' && native instanceof TouchEvent && native.touches[0]) {
+    dragPosition = { x: native.touches[0].clientX, y: native.touches[0].clientY };
+  }
 }
 
 function onDragOver(event: DragOverEvent) {
@@ -486,6 +512,8 @@ function onDragOver(event: DragOverEvent) {
 }
 
 async function onDragEnd(event: DragEndEvent) {
+  stopDragScroll?.();
+  stopDragScroll = undefined;
   const state = dragState.value;
   if (!state || event.canceled || !event.operation.target) {
     dragState.value = null;
@@ -808,6 +836,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  stopDragScroll?.();
   clearTimeout(descriptionSaveTimer);
   subscription?.unsubscribe();
   removeQuickRouteGuard?.();
@@ -854,8 +883,8 @@ onUnmounted(() => {
 
     <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
     <div v-if="graph && taskView === 'board'" class="task-board-layout">
-      <div class="task-board-scroll">
-        <DragDropProvider @drag-start="onDragStart" @drag-over="onDragOver" @drag-end="onDragEnd">
+      <div ref="boardScroll" class="task-board-scroll">
+        <DragDropProvider :plugins="dragPlugins" @drag-start="onDragStart" @drag-move="onDragMove" @drag-over="onDragOver" @drag-end="onDragEnd">
           <div class="task-board-lanes">
             <TaskBoardLane
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
@@ -868,6 +897,12 @@ onUnmounted(() => {
               @move-task="(taskId, beforeId) => persistMove(taskId, lane.status?.id ?? null, beforeId)"
             />
           </div>
+          <DragOverlay>
+            <div v-if="draggingTask" class="task-drag-preview" aria-hidden="true">
+              <span>{{ draggingStatusName }}</span>
+              <strong><code v-if="draggingTask.externalTaskId">{{ draggingTask.externalTaskId }}</code>{{ draggingTask.name }}</strong>
+            </div>
+          </DragOverlay>
         </DragDropProvider>
       </div>
     </div>
@@ -1055,6 +1090,10 @@ onUnmounted(() => {
 .task-board-message.is-error { border-color: #9c4a55; background: #2a1820; color: #ffd1d5; }
 .task-board-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .task-board-scroll { display: block; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.task-drag-preview { padding: 10px; border: 1px solid #8bc3ff; border-radius: 6px; background: #17243a; color: #eef4ff; box-shadow: 0 4px 12px #02061766; pointer-events: none; }
+.task-drag-preview > span { display: block; margin-bottom: 12px; color: #afbdd2; font-size: 10px; }
+.task-drag-preview strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
+.task-drag-preview code { margin-right: 6px; }
 .task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; height: clamp(320px, calc(100dvh - 260px), 680px); padding: 2px 2px 10px; }
 .task-detail-dialog { width: min(1480px, calc(100vw - 48px)); height: min(920px, calc(100dvh - 48px)); max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid #52647e; border-radius: 8px; background: #101a2a; color: #eef4ff; box-shadow: 0 24px 80px #020617aa; }
 .task-detail-dialog::backdrop { background: #020617a8; backdrop-filter: blur(2px); }
