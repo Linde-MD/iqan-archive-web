@@ -167,12 +167,54 @@ function toggleFullscreenSidebar() {
   if (!fullscreenSidebarVisible.value) void nextTick(() => fullscreenButton.value?.focus({ preventScroll: true }));
 }
 const canvasViewport = ref<HTMLDivElement>();
+const graphLayoutElement = ref<HTMLDivElement>();
+const inspectorWidth = ref(360);
+const layoutWidth = ref(0);
+const inspectorMaxWidth = computed(() => Math.max(280, layoutWidth.value - 296));
+let layoutResizeObserver: ResizeObserver | undefined;
+let splitStart: { pointerId: number; x: number; width: number } | null = null;
+watch(graphLayoutElement, element => {
+  layoutResizeObserver?.disconnect();
+  if (!element) return;
+  layoutWidth.value = element.clientWidth;
+  layoutResizeObserver = new ResizeObserver(() => {
+    layoutWidth.value = element.clientWidth;
+    inspectorWidth.value = Math.min(inspectorWidth.value, inspectorMaxWidth.value);
+  });
+  layoutResizeObserver.observe(element);
+});
+onUnmounted(() => layoutResizeObserver?.disconnect());
+
+function setInspectorWidth(width: number) {
+  if (graphLayoutElement.value) layoutWidth.value = graphLayoutElement.value.clientWidth;
+  inspectorWidth.value = Math.max(280, Math.min(inspectorMaxWidth.value, width));
+  if (viewportSize.value) resizeViewport(viewportSize.value.width, viewportSize.value.height);
+}
+
+function startSplitResize(event: PointerEvent) {
+  if (event.button !== 0 || !(event.currentTarget instanceof HTMLElement)) return;
+  splitStart = { pointerId: event.pointerId, x: event.clientX, width: inspectorWidth.value };
+  event.currentTarget.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function moveSplitResize(event: PointerEvent) {
+  if (!splitStart || splitStart.pointerId !== event.pointerId) return;
+  setInspectorWidth(splitStart.width - event.clientX + splitStart.x);
+}
+
+function onSplitKeydown(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) return;
+  event.preventDefault();
+  setInspectorWidth(event.key === 'Home' ? 360
+    : inspectorWidth.value + (event.key === 'ArrowLeft' ? 1 : -1) * (event.shiftKey ? 80 : 20));
+}
 const viewportSize = ref<{ width: number; height: number } | null>(null);
 let resizeStart: { pointerId: number; x: number; y: number; width: number; height: number } | null = null;
 
 function resizeViewport(width: number, height: number) {
   const available = canvasViewport.value?.parentElement?.getBoundingClientRect().width ?? width;
-  const sidebarWidth = window.matchMedia('(min-width: 1101px)').matches ? 376 : 0;
+  const sidebarWidth = window.matchMedia('(min-width: 1101px)').matches ? inspectorWidth.value + 16 : 0;
   const maxWidth = Math.max(0, available - sidebarWidth);
   viewportSize.value = {
     width: Math.max(Math.min(280, maxWidth), Math.min(maxWidth, width)),
@@ -2672,7 +2714,7 @@ function onIqanDialogClosed() {
       <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击离散多选 · Shift 点击连续多选</span>
     </div>
     </div>
-    <div v-if="graph" class="graph-layout" :class="{ 'is-editing': editorOpen }">
+    <div v-if="graph" ref="graphLayoutElement" class="graph-layout" :class="{ 'is-editing': editorOpen }" :style="{ '--inspector-width': `${inspectorWidth}px` }">
       <div ref="canvasViewport" class="graph-viewport" :style="viewportSize ? { width: `${viewportSize.width}px`, height: `${viewportSize.height}px` } : undefined">
       <div
         ref="graphScroller"
@@ -3066,6 +3108,15 @@ function onIqanDialogClosed() {
       ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M7 19 19 7 M13 19l6-6 M19 19h0" /></svg></button>
       </div>
 
+      <div
+        v-show="!isFullscreen" class="graph-splitter" role="separator" tabindex="0"
+        aria-label="调整版本图与详情面板宽度" aria-orientation="vertical" aria-controls="graph-inspector"
+        :aria-valuemin="280" :aria-valuemax="inspectorMaxWidth" :aria-valuenow="inspectorWidth"
+        title="左右拖动；方向键调整，Shift 加速，Home 恢复默认"
+        @pointerdown="startSplitResize" @pointermove="moveSplitResize"
+        @pointerup="splitStart = null" @pointercancel="splitStart = null" @lostpointercapture="splitStart = null"
+        @keydown="onSplitKeydown" @dblclick="setInspectorWidth(360)"
+      ></div>
       <div v-show="!isFullscreen || fullscreenSidebarVisible" id="graph-inspector" ref="editorSidebar" class="graph-sidebar" :class="{ 'is-editing': editorOpen }" @focusout="onSidebarFocusOut">
         <div v-if="isFullscreen" class="fullscreen-window-heading">
           <span>{{ editorOpen ? '悬浮编辑窗口' : '分支与版本详情' }}</span>

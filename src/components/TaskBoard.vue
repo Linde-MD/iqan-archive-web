@@ -131,7 +131,7 @@ const lanes = computed(() => {
   if (quickTask.value?.statusId && !current.project.statusOptions.some(option => option.id === quickTask.value?.statusId)) {
     result.push({ status: { id: quickTask.value.statusId, name: '已删除的泳道' }, tasks: [] });
   }
-  return result;
+  return result.filter(lane => lane.status !== null || lane.tasks.length > 0 || quickTask.value?.statusId === null);
 });
 const taskIndexById = computed(() => new Map(lanes.value.flatMap(lane => lane.tasks)
   .map((task, index) => [task.id, index] as const)));
