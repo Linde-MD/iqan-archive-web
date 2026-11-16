@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
-import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
+import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
 import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
@@ -263,6 +263,40 @@ describe('任务看板顺序变换', () => {
 
     const reordered = moveTaskInBoard(moved, 'c', pendingId, 'b');
     expect(tasksInLane(reordered, pendingId).map(task => task.id)).toEqual(['c', 'b']);
+  });
+
+  it('拖拽预览区分目标卡片前后，同泳道向上/向下与预览位置一致', () => {
+    const graph = fixture();
+    const [backlog, pending] = graph.project.statusOptions;
+    const before = structuredClone(graph);
+    const above = projectTaskDrop(graph, 'b', pending!.id, 'c', false);
+    expect(tasksInLane(above, pending!.id).map(task => task.id)).toEqual(['b', 'c']);
+    const below = projectTaskDrop(graph, 'b', pending!.id, 'c', true);
+    expect(tasksInLane(below, pending!.id).map(task => task.id)).toEqual(['c', 'b']);
+    const down = projectTaskDrop(graph, 'a', backlog!.id, 'b', false);
+    expect(tasksInLane(down, backlog!.id).map(task => task.id)).toEqual(['b', 'a']);
+    const up = projectTaskDrop(down, 'a', backlog!.id, 'b', true);
+    expect(tasksInLane(up, backlog!.id).map(task => task.id)).toEqual(['a', 'b']);
+    expect(projectTaskDrop(up, 'a', backlog!.id, 'a', true)).toBe(up);
+    expect(graph).toEqual(before);
+  });
+
+  it('连续跨泳道预览及空泳道/未分组落点保留最终位置命令', () => {
+    const graph = fixture();
+    const [backlog, pending, empty] = graph.project.statusOptions;
+    let preview = projectTaskDrop(graph, 'a', pending!.id, 'c', true);
+    preview = projectTaskDrop(preview, 'a', empty!.id, null, false);
+    expect(tasksInLane(preview, empty!.id).map(task => task.id)).toEqual(['a']);
+    preview = projectTaskDrop(preview, 'a', null, 'u', false);
+    expect(tasksInLane(preview, null).map(task => task.id)).toEqual(['a', 'u']);
+    const task = preview.tasks.find(task => task.id === 'a')!;
+    const lane = tasksInLane(preview, task.statusOptionId);
+    const beforeId = lane[lane.findIndex(item => item.id === task.id) + 1]?.id ?? null;
+    const committed = moveTaskInBoard(graph, task.id, task.statusOptionId, beforeId);
+    expect(tasksInLane(committed, null).map(task => task.id)).toEqual(['a', 'u']);
+    expect(tasksInLane(committed, backlog!.id).map(task => task.id)).toEqual(['b']);
+    expect(committed.nodes).toEqual(graph.nodes);
+    expect(() => projectTaskDrop(graph, 'a', pending!.id, 'b', false)).toThrow('排序目标无效');
   });
 
   it('拒绝不存在的泳道、任务和排序目标', () => {

@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/vue';
-import { isSortableOperation } from '@dnd-kit/vue/sortable';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskSearchMode } from '../domain/task-board';
+import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
@@ -71,7 +70,7 @@ const quickConflict = ref(false);
 const quickStale = computed(() => !!quickTask.value && (quickConflict.value || graph.value?.project.revision !== quickTask.value.revision));
 let removeQuickRouteGuard: (() => void) | undefined;
 let subscription: { unsubscribe(): void } | undefined;
-let lastDragOverTarget: DragEndEvent['operation']['target'] | null = null;
+const dragState = shallowRef<{ original: ProjectGraph; preview: ProjectGraph; taskId: string } | null>(null);
 let descriptionSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let autoSaveQueued = false;
 
@@ -118,7 +117,7 @@ const listRows = computed(() => projectTaskList(
   expandedTaskIds.value, !!query.value.trim(), collapsedSearchTaskIds.value,
 ));
 const lanes = computed(() => {
-  const current = graph.value;
+  const current = dragState.value?.preview ?? graph.value;
   if (!current) return [];
   const visibleTaskIds = new Set(taskMatches.value.map(task => task.id));
   const result = [
@@ -131,10 +130,9 @@ const lanes = computed(() => {
   if (quickTask.value?.statusId && !current.project.statusOptions.some(option => option.id === quickTask.value?.statusId)) {
     result.push({ status: { id: quickTask.value.statusId, name: '已删除的泳道' }, tasks: [] });
   }
-  return result.filter(lane => lane.status !== null || lane.tasks.length > 0 || quickTask.value?.statusId === null);
+  return result.filter(lane => lane.status !== null || lane.tasks.length > 0 || quickTask.value?.statusId === null
+    || dragState.value?.original.tasks.some(task => task.statusOptionId === null));
 });
-const taskIndexById = computed(() => new Map(lanes.value.flatMap(lane => lane.tasks)
-  .map((task, index) => [task.id, index] as const)));
 const parentTaskCandidates = computed(() => {
   const tasks = graph.value?.tasks ?? [];
   const draftId = taskDraft.value?.id;
@@ -430,13 +428,13 @@ async function deleteCurrentTask() {
   }
 }
 
-async function persistMove(taskId: string, statusOptionId: string | null, beforeTaskId: string | null) {
+async function persistMove(taskId: string, statusOptionId: string | null, beforeTaskId: string | null, revision?: number) {
   const current = graph.value;
-  if (!current || saving.value || hasUnsavedTaskChanges.value) return;
+  if (!current || saving.value || hasUnsavedTaskChanges.value) return false;
   saving.value = true;
   try {
     graph.value = await props.repository.moveTask(
-      props.projectId, current.project.revision, taskId, statusOptionId, beforeTaskId,
+      props.projectId, revision ?? current.project.revision, taskId, statusOptionId, beforeTaskId,
     );
     const savedDraft = taskDraft.value?.id
       ? graph.value.tasks.find(task => task.id === taskDraft.value?.id)
@@ -444,82 +442,68 @@ async function persistMove(taskId: string, statusOptionId: string | null, before
     if (savedDraft) setTaskDraft(savedDraft);
     error.value = '';
     statusMessage.value = '任务状态和顺序已保存。';
+    return true;
   } catch (cause) {
     reportError(cause);
+    return false;
   } finally {
     saving.value = false;
   }
 }
 
-function onDragStart(_event: DragStartEvent) {
-  lastDragOverTarget = null;
+function onDragStart(event: DragStartEvent) {
+  const current = graph.value;
+  const source = event.operation.source;
+  error.value = '';
+  statusMessage.value = '';
+  dragState.value = current && source
+    ? { original: current, preview: current, taskId: String(source.id) } : null;
 }
 
 function onDragOver(event: DragOverEvent) {
-  const sourceId = event.operation.source ? String(event.operation.source.id) : '';
+  // Keep Vue's projection authoritative instead of optimistic DOM-only sorting.
+  event.preventDefault();
+  const state = dragState.value;
   const target = event.operation.target;
-  if (target && String(target.id) !== sourceId) lastDragOverTarget = target;
-}
-
-function statusAtDropPoint(event?: Event): string | null | undefined {
-  if (!(event instanceof MouseEvent)) return undefined;
-  const lane = [...document.querySelectorAll<HTMLElement>('.task-lane')].find(element => {
-    const bounds = element.getBoundingClientRect();
-    return event.clientX >= bounds.left && event.clientX <= bounds.right
-      && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
-  });
-  return lane ? lane.dataset.statusOptionId || null : undefined;
+  if (!state || !target || String(target.id) === state.taskId) return;
+  const statusOptionId = target.data.statusOptionId;
+  if (statusOptionId !== null && typeof statusOptionId !== 'string') {
+    dragState.value = null;
+    reportError(new Error('无法识别拖拽目标泳道，请重新拖拽。'));
+    return;
+  }
+  const targetId = String(target.id);
+  const targetTaskId = state.preview.tasks.some(task => task.id === targetId) ? targetId : null;
+  const centerY = event.operation.shape?.current.center.y ?? event.operation.position.current.y;
+  try {
+    const preview = projectTaskDrop(state.preview, state.taskId, statusOptionId, targetTaskId,
+      !!target.shape && centerY > target.shape.center.y);
+    dragState.value = { ...state, preview };
+  } catch (cause) {
+    dragState.value = null;
+    reportError(cause);
+  }
 }
 
 async function onDragEnd(event: DragEndEvent) {
-  const source = event.operation.source;
-  let target = event.operation.target;
-  if (event.canceled || !source) {
-    lastDragOverTarget = null;
+  const state = dragState.value;
+  if (!state || event.canceled || !event.operation.target) {
+    dragState.value = null;
     return;
   }
-  const sourceTaskId = String(source.id);
-  if (target && String(target.id) === sourceTaskId && lastDragOverTarget) target = lastDragOverTarget;
-  lastDragOverTarget = null;
-  if (!target) return;
-  const sourceTask = graph.value?.tasks.find(task => task.id === sourceTaskId);
-  if (!sourceTask) return;
-  const pointerStatusOptionId = statusAtDropPoint(event.nativeEvent);
-  let targetStatusOptionId: string | null;
-  let beforeTaskId: string | null = null;
-  if (isSortableOperation(event.operation)) {
-    const targetTaskId = String(target.id);
-    const targetTask = graph.value?.tasks.find(task => task.id === targetTaskId);
-    if (!targetTask) return;
-    const targetData = target.data as { statusOptionId?: unknown } | undefined;
-    if (pointerStatusOptionId !== undefined) targetStatusOptionId = pointerStatusOptionId;
-    else if (targetData && 'statusOptionId' in targetData)
-      targetStatusOptionId = typeof targetData.statusOptionId === 'string' ? targetData.statusOptionId : null;
-    else targetStatusOptionId = targetTask.statusOptionId;
-    if (targetStatusOptionId !== sourceTask.statusOptionId) {
-      beforeTaskId = targetTaskId === sourceTaskId ? null : targetTaskId;
-    } else {
-      const targetLaneIndex = lanes.value.findIndex(lane => lane.status?.id === targetStatusOptionId);
-      const sourceLaneIndex = lanes.value.findIndex(lane => lane.status?.id === sourceTask.statusOptionId);
-      let targetLaneStart = lanes.value.slice(0, targetLaneIndex)
-        .reduce((count, lane) => count + lane.tasks.length, 0);
-      if (sourceLaneIndex >= 0 && sourceLaneIndex < targetLaneIndex) targetLaneStart--;
-      const destination = tasksInLane(graph.value!, targetStatusOptionId).filter(task => task.id !== sourceTaskId);
-      const sourceIndex = (source as typeof source & { index?: number }).index;
-      const insertionIndex = sourceIndex === undefined
-        ? destination.findIndex(task => task.id === targetTaskId)
-        : Math.max(0, Math.min(destination.length, sourceIndex - targetLaneStart));
-      beforeTaskId = destination[insertionIndex]?.id ?? null;
-    }
-  } else {
-    const data = target.data as { statusOptionId?: unknown } | undefined;
-    if (pointerStatusOptionId !== undefined) targetStatusOptionId = pointerStatusOptionId;
-    else if (data && 'statusOptionId' in data)
-      targetStatusOptionId = typeof data.statusOptionId === 'string' ? data.statusOptionId : null;
-    else return;
+  if (state.preview === state.original) {
+    dragState.value = null;
+    return;
   }
-  if (beforeTaskId === sourceTaskId) return;
-  await persistMove(sourceTaskId, targetStatusOptionId, beforeTaskId);
+  const task = state.preview.tasks.find(task => task.id === state.taskId)!;
+  const destination = tasksInLane(state.preview, task.statusOptionId);
+  const beforeTaskId = destination[destination.findIndex(candidate => candidate.id === task.id) + 1]?.id ?? null;
+  const drop = event.suspend();
+  const saved = await persistMove(task.id, task.statusOptionId, beforeTaskId, state.original.project.revision);
+  dragState.value = null;
+  await nextTick();
+  if (saved) drop.resume();
+  else drop.abort();
 }
 
 function openOptions(updateRoute = true) {
@@ -875,7 +859,7 @@ onUnmounted(() => {
           <div class="task-board-lanes">
             <TaskBoardLane
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
-              :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :task-index-by-id="taskIndexById" :type-name-by-id="typeNameById"
+              :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :type-name-by-id="typeNameById"
               :priority-option-by-id="priorityOptionById" :assignee-name-by-id="assigneeNameById"
               :disabled="saving || taskDraftDirty || !!quickTask" :saving="saving"
               :quick-task="quickTask && quickTask.statusId === (lane.status?.id ?? null) ? quickTask : null"

@@ -9,7 +9,6 @@ const props = defineProps<{
   status: TaskOption | null;
   tasks: Task[];
   selectedTaskId: string;
-  taskIndexById: ReadonlyMap<string, number>;
   typeNameById: ReadonlyMap<string, string>;
   priorityOptionById: ReadonlyMap<string, TaskOption>;
   assigneeNameById: ReadonlyMap<string, string>;
@@ -102,8 +101,8 @@ onUnmounted(() => {
     </header>
     <div class="task-lane-list">
       <TaskBoardCard
-        v-for="(task, index) in tasks" :key="task.id" :task="task" :index="taskIndexById.get(task.id) ?? index"
-        group="task-board" :status-name="status?.name ?? '未分组'"
+        v-for="(task, index) in tasks" :key="task.id" :task="task" :index="index"
+        :group="laneId" :status-name="status?.name ?? '未分组'"
         :type-name="task.typeOptionId ? typeNameById.get(task.typeOptionId) ?? null : null"
         :priority-name="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.name ?? null : null"
         :priority-indicator-count="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorCount ?? null : null"

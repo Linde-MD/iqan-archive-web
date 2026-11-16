@@ -178,3 +178,25 @@ export function moveTaskInBoard(
   validateGraph(next);
   return next;
 }
+
+export function projectTaskDrop(
+  graph: ProjectGraph,
+  taskId: string,
+  targetStatusOptionId: string | null,
+  targetTaskId: string | null,
+  afterTarget: boolean,
+): ProjectGraph {
+  if (targetTaskId === taskId) return graph;
+  const source = graph.tasks.find(task => task.id === taskId);
+  requireCondition(source, 'TASK_REFERENCE', '要移动的任务不存在。');
+  const lane = tasksInLane(graph, targetStatusOptionId);
+  const targetIndex = targetTaskId === null ? lane.length : lane.findIndex(task => task.id === targetTaskId);
+  requireCondition(targetIndex >= 0, 'TASK_ORDER_TARGET', '任务排序目标无效或已移动。');
+  const insertAfter = targetTaskId !== null && (source.statusOptionId === targetStatusOptionId
+    ? lane.findIndex(task => task.id === taskId) < targetIndex
+    : afterTarget);
+  const destination = lane.filter(task => task.id !== taskId);
+  const insertionIndex = targetTaskId === null ? destination.length
+    : destination.findIndex(task => task.id === targetTaskId) + (insertAfter ? 1 : 0);
+  return moveTaskInBoard(graph, taskId, targetStatusOptionId, destination[insertionIndex]?.id ?? null);
+}
