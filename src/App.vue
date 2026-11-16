@@ -13,7 +13,7 @@ const TaskBoard = defineAsyncComponent(() => import('./components/TaskBoard.vue'
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
-import { deleteProjectBackups, JSON_BACKUP_LOCATION, listImportJsonBackups, listProjectBackups, writeJsonBackup, type ProjectBackupList } from './files/archive-json';
+import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listProjectBackups, writeJsonBackup, writeSelectedJsonFile, type ProjectBackupList } from './files/archive-json';
 import { parseWorkspaceLocation, projectOverlayPath, projectPath, type ProjectView } from './workspace-routes';
 
 const db = new ArchiveDatabase();
@@ -60,6 +60,9 @@ const importPreview = shallowRef<{ graph: ProjectGraph; fileName: string; plan: 
 const importFiles = ref<FileHandle[]>([]);
 const importFileName = ref('');
 const importPicker = ref<HTMLDialogElement>();
+const manualImportInput = ref<HTMLInputElement>();
+const supportsSaveFilePicker = typeof window.showSaveFilePicker === 'function';
+let manualImportProjectId = '';
 const backupManager = ref<HTMLDialogElement>();
 const backupList = shallowRef<ProjectBackupList>({ backups: [], unrecognized: [] });
 const selectedBackups = ref<string[]>([]);
@@ -310,14 +313,43 @@ async function savePartNumber() {
 }
 
 async function exportProject() {
-  if (!activeProjectId.value) return;
+  const project = activeProject.value;
+  if (!project) return;
   saving.value = true; error.value = ''; status.value = '';
   try {
     const root = archiveRoots.value[JSON_BACKUP_LOCATION];
-    if (!root || !await checkPermission(root, false, 'readwrite')) throw new Error('请先授权共享根目录的读写权限。');
-    const snapshot = await repository.snapshot(activeProjectId.value);
-    const fileName = await writeJsonBackup(root, snapshot.graph.project.name, serializeProjectSnapshot(snapshot));
-    status.value = `“${snapshot.graph.project.name}”配置已导出到共享根目录：${fileName}`;
+    if (root) {
+      if (!await checkPermission(root, false, 'readwrite')) throw new Error('请先授权共享根目录的读写权限。');
+      const snapshot = await repository.snapshot(project.id);
+      const fileName = await writeJsonBackup(root, snapshot.graph.project.name, serializeProjectSnapshot(snapshot));
+      status.value = `“${snapshot.graph.project.name}”配置已导出到共享根目录：${fileName}`;
+    } else if (window.showSaveFilePicker) {
+      let handle: FileHandle;
+      try {
+        handle = await window.showSaveFilePicker({
+          suggestedName: jsonBackupFileName(project.name),
+          types: [{ description: 'JSON 配置备份', accept: { 'application/json': ['.json'] } }],
+        });
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') {
+          status.value = '已取消导出。';
+          return;
+        }
+        throw cause;
+      }
+      const snapshot = await repository.snapshot(project.id);
+      await writeSelectedJsonFile(handle, serializeProjectSnapshot(snapshot));
+      status.value = `“${snapshot.graph.project.name}”配置已保存：${handle.name}`;
+    } else {
+      const snapshot = await repository.snapshot(project.id);
+      const blob = new Blob([serializeProjectSnapshot(snapshot)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = jsonBackupFileName(snapshot.graph.project.name);
+      try { link.click(); } finally { setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+      status.value = '已请求浏览器下载 JSON；保存位置由浏览器下载设置决定，请检查下载结果。';
+    }
   } catch (cause) {
     showError(cause);
   } finally {
@@ -327,15 +359,18 @@ async function exportProject() {
 
 async function exportProjectFromMenu() {
   if (backupMenu.value) backupMenu.value.open = false;
-  await nextTick();
   backupMenuTrigger.value?.focus();
   await exportProject();
 }
 
 async function importProjectFromMenu() {
   if (backupMenu.value) backupMenu.value.open = false;
-  await nextTick();
   backupMenuTrigger.value?.focus();
+  if (!archiveRoots.value[JSON_BACKUP_LOCATION]) {
+    manualImportProjectId = activeProjectId.value;
+    manualImportInput.value?.click();
+    return;
+  }
   await chooseImportFromRoot();
 }
 
@@ -436,6 +471,7 @@ async function readImportFileFromRoot() {
   const fileName = importFileName.value;
   const fileHandle = importFiles.value.find(file => file.name === fileName);
   if (!fileHandle) return;
+  const projectId = activeProjectId.value;
   importPreview.value = null;
   saving.value = true; error.value = ''; status.value = '';
   try {
@@ -445,14 +481,42 @@ async function readImportFileFromRoot() {
       throw new Error('共享根目录已更改，请重新选择 JSON 备份。');
     if (!await checkPermission(rootAtRead, false, 'readwrite')) throw new Error('共享根目录读写授权已失效，请重新授权。');
     const file = await fileHandle.getFile();
-    const graph = await readProjectSnapshotFile(file);
-    const currentProjectId = activeProjectId.value;
-    const plan = await repository.previewSnapshotRestore(graph, currentProjectId);
-    importPreview.value = { graph, fileName: file.name, plan, currentProjectId };
+    await prepareImportPreview(file, projectId);
     importPicker.value?.close();
-    await nextTick();
-    if (plan.blockedReason) document.getElementById('import-preview-title')?.focus();
-    else importConfirmButton.value?.focus();
+    await focusImportPreview();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function prepareImportPreview(file: File, currentProjectId: string) {
+  if (!/\.json$/i.test(file.name)) throw new Error('请选择扩展名为 .json 的备份文件。');
+  const graph = await readProjectSnapshotFile(file);
+  const plan = await repository.previewSnapshotRestore(graph, currentProjectId);
+  if (activeProjectId.value !== currentProjectId) throw new Error('当前项目已更改，请重新选择 JSON 备份。');
+  importPreview.value = { graph, fileName: file.name, plan, currentProjectId };
+}
+
+async function focusImportPreview() {
+  await nextTick();
+  if (importPreview.value?.plan.blockedReason) document.getElementById('import-preview-title')?.focus();
+  else importConfirmButton.value?.focus();
+}
+
+async function readManualImport(event: Event) {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  importPreview.value = null;
+  saving.value = true; error.value = ''; status.value = '';
+  try {
+    if (activeProjectId.value !== manualImportProjectId) throw new Error('当前项目已更改，请重新选择 JSON 备份。');
+    await prepareImportPreview(file, manualImportProjectId);
+    await focusImportPreview();
   } catch (cause) {
     showError(cause);
   } finally {
@@ -520,11 +584,12 @@ onUnmounted(() => {
       <details ref="backupMenu" class="topbar-menu" @keydown.esc.prevent="closeBackupMenu">
         <summary ref="backupMenuTrigger" class="topbar-menu-trigger"><AppIcon name="folder" />JSON 备份</summary>
         <div class="topbar-menu-items">
-          <button v-if="activeProject" type="button" :disabled="saving || filesBusy || graphBusy || !archiveRoots.shared" @click="exportProjectFromMenu"><AppIcon name="download" />导出 JSON</button>
-          <button type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="importProjectFromMenu"><AppIcon name="upload" />导入恢复</button>
+          <button v-if="activeProject" type="button" :disabled="saving || filesBusy || graphBusy" @click="exportProjectFromMenu"><AppIcon name="download" />{{ archiveRoots.shared ? '导出 JSON' : supportsSaveFilePicker ? '选择位置导出 JSON' : '下载 JSON' }}</button>
+          <button type="button" :disabled="saving || workspaceBusy" @click="importProjectFromMenu"><AppIcon name="upload" />{{ archiveRoots.shared ? '导入恢复' : '选择 JSON 文件导入' }}</button>
           <button v-if="activeProject" type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="openBackupManager"><AppIcon name="folder" />管理备份</button>
         </div>
       </details>
+      <input ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
       <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
     </div>

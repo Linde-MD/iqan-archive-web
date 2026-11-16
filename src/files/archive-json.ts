@@ -23,6 +23,24 @@ function safeProjectName(projectName: string): string {
     .slice(0, 100) || '项目';
 }
 
+export function jsonBackupFileName(projectName: string, now = new Date(), number = 1): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}${pad(now.getDate())}-T${pad(now.getHours())}`;
+  return `IQAN-${safeProjectName(projectName)}-${stamp}-${number}.json`;
+}
+
+export async function writeSelectedJsonFile(handle: FileHandle, content: string): Promise<void> {
+  requireCondition(handle.createWritable, 'ARCHIVE_JSON_WRITE_UNSUPPORTED', '当前浏览器不支持写入所选 JSON 文件。');
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(new Blob([content], { type: 'application/json;charset=utf-8' }));
+    await writable.close();
+  } catch (cause) {
+    await writable.abort().catch(() => undefined);
+    throw cause;
+  }
+}
+
 export async function listJsonBackups(root: DirectoryHandle): Promise<FileHandle[]> {
   requireCondition(await checkPermission(root), 'ARCHIVE_ROOT_PERMISSION', '归档根目录读取授权已失效，请重新授权。');
   const files: FileHandle[] = [];
@@ -103,12 +121,9 @@ export async function writeJsonBackup(
   now = new Date(),
 ): Promise<string> {
   requireCondition(await checkPermission(root, false, 'readwrite'), 'ARCHIVE_ROOT_WRITE_PERMISSION', '归档根目录读写授权已失效，请重新授权。');
-  const safeName = safeProjectName(projectName);
-  const pad = (value: number) => String(value).padStart(2, '0');
-  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}${pad(now.getDate())}-T${pad(now.getHours())}`;
   let fileName = '';
   for (let number = 1; !fileName; number++) {
-    const candidate = `IQAN-${safeName}-${stamp}-${number}.json`;
+    const candidate = jsonBackupFileName(projectName, now, number);
     try { await root.getFileHandle(candidate); }
     catch (cause) {
       if (cause instanceof DOMException && cause.name === 'NotFoundError') { fileName = candidate; break; }
@@ -116,14 +131,6 @@ export async function writeJsonBackup(
     }
   }
   const handle = await root.getFileHandle(fileName, { create: true });
-  requireCondition(handle.createWritable, 'ARCHIVE_JSON_WRITE_UNSUPPORTED', '当前浏览器不支持向归档根目录写入 JSON。');
-  const writable = await handle.createWritable();
-  try {
-    await writable.write(new Blob([content], { type: 'application/json;charset=utf-8' }));
-    await writable.close();
-  } catch (cause) {
-    await writable.abort().catch(() => undefined);
-    throw cause;
-  }
+  await writeSelectedJsonFile(handle, content);
   return fileName;
 }

@@ -7,7 +7,7 @@ import { serializeProjectSnapshot } from '../src/domain/project-snapshot';
 import { release, validateGraph } from '../src/domain/graph';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
-import { deleteProjectBackups, JSON_BACKUP_LOCATION, listImportJsonBackups, listJsonBackups, listProjectBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup } from '../src/files/archive-json';
+import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listJsonBackups, listProjectBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup, writeSelectedJsonFile } from '../src/files/archive-json';
 import { deleteLocalDocumentCopy, scanDocumentDirectories, scanDocumentDirectory, scanDocumentLocalDeletion } from '../src/files/document-directories';
 
 const databases: Dexie[] = [];
@@ -372,6 +372,32 @@ describe('只读目录扫描与定位', () => {
 });
 
 describe('统一归档根目录 JSON 文件', () => {
+  it('手动保存使用相同命名规则并可写入所选文件', async () => {
+    const root = writableDirectory('chosen');
+    const name = jsonBackupFileName('项目 A', new Date(2026, 10, 16, 8));
+    expect(name).toBe('IQAN-项目 A-2026-1116-T08-1.json');
+    const handle = await root.handle.getFileHandle(name, { create: true });
+    await writeSelectedJsonFile(handle, '{"ok":true}');
+    expect(root.contents.get(name)).toBe('{"ok":true}');
+  });
+
+  it('手动保存失败时中止写入并报告原错误', async () => {
+    let aborted = false;
+    const handle: FileHandle = {
+      ...file('backup.json'),
+      async createWritable() {
+        return {
+          async write() { throw new Error('磁盘写入失败'); },
+          async close() { throw new Error('不应提交'); },
+          async abort() { aborted = true; },
+        } as unknown as FileSystemWritableFileStream;
+      },
+    };
+    await expect(writeSelectedJsonFile(handle, '{}')).rejects.toThrow('磁盘写入失败');
+    expect(aborted).toBe(true);
+    await expect(writeSelectedJsonFile(file('backup.json'), '{}')).rejects.toThrow('不支持写入');
+  });
+
   it('仅列出根目录直接子级 JSON，并受 5000 项扫描上限约束', async () => {
     const root = writableDirectory('IQAN_Archive', {
       'b.json': '{}',

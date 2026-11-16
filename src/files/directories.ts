@@ -63,6 +63,10 @@ export function fileOperationErrorMessage(cause: unknown): string {
 declare global {
   interface Window {
     showDirectoryPicker?: (options: { mode: 'read' | 'readwrite' }) => Promise<DirectoryHandle>;
+    showSaveFilePicker?: (options: {
+      suggestedName: string;
+      types: { description: string; accept: Record<string, string[]> }[];
+    }) => Promise<FileHandle>;
   }
 }
 
