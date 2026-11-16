@@ -11,6 +11,7 @@ const VersionGraph = defineAsyncComponent(() => import('./components/VersionGrap
 const ComparisonDocuments = defineAsyncComponent(() => import('./components/ComparisonDocuments.vue'));
 const TaskBoard = defineAsyncComponent(() => import('./components/TaskBoard.vue'));
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
+import BackendSettings from './components/BackendSettings.vue';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listProjectBackups, writeJsonBackup, writeSelectedJsonFile, type ProjectBackupList } from './files/archive-json';
@@ -607,6 +608,7 @@ onUnmounted(() => {
       </details>
       <input ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
+      <BackendSettings :repository="repository" />
       <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
     </div>
   </header>

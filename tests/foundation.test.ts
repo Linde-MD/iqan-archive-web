@@ -347,9 +347,9 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v12 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v13 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(13).stores({ projects: 'id' });
+    future.db.version(14).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();

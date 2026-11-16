@@ -5,6 +5,7 @@ import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
+import { DEFAULT_BACKEND_PORT, parseBackendPort } from '../local-backend';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
   return {
@@ -48,6 +49,7 @@ export class ArchiveDatabase extends Dexie {
   tasks!: Table<Task, string>;
   directoryBindings!: Table<DirectoryBinding, [string, DirectoryRole]>;
   archiveRoots!: Table<ArchiveRootBinding, string>;
+  backendSettings!: Table<{ id: 'connection'; port: number }, string>;
 
   constructor(name = 'iqan-archive-web') {
     super(name);
@@ -163,6 +165,7 @@ export class ArchiveDatabase extends Dexie {
       const nodes = transaction.table<VersionNode>('nodes');
       for (const node of await nodes.toArray()) await nodes.put({ ...node, testingAt: null });
     });
+    this.version(13).stores({ backendSettings: 'id' });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -172,6 +175,15 @@ export class ArchiveDatabase extends Dexie {
 
 export class ArchiveRepository {
   constructor(public readonly db: ArchiveDatabase) {}
+
+  async getBackendPort(): Promise<number> {
+    const settings = await this.db.backendSettings.get('connection');
+    return settings ? parseBackendPort(settings.port) : DEFAULT_BACKEND_PORT;
+  }
+
+  async setBackendPort(port: number): Promise<void> {
+    await this.db.backendSettings.put({ id: 'connection', port: parseBackendPort(port) });
+  }
 
   async listProjects(): Promise<Project[]> {
     return this.db.projects.toArray();

@@ -1,5 +1,7 @@
 # SPEC-03 本地持久化与发布准备
 
+> 协作模式增量见 [SPEC-08](SPEC-08-local-collaboration.md)：共享项目元数据迁入 Access，目录句柄继续保留本机；本规格的 Dexie 行为仍适用于尚未切换的单人版。JSON v7 继续作为业务快照格式，账号/会话不进入项目 JSON。
+
 - 规格状态：可实施
 - 实施状态：部分完成（schemaVersion 7 JSON 导出/恢复已实现；Pages 实站及本机平台验收未完成）
 - 范围：核心基础能力与配置 JSON 恢复；不含工程/软件对比文档二进制备份
@@ -44,7 +46,7 @@
 ## 4. 必要接口与数据
 
 - 存储接口使用异步读写并暴露可区分错误（不可用、配额不足、版本迁移失败、导入格式无效）。
-- Dexie.js 已在 SPEC-00 安装；当前数据库 v12 保存全局 `archiveRoots` 根目录句柄及项目任务看板字段，v7→v8 补 priority 标记，v8→v9 重排默认优先级，v9→v10 为旧任务补空父任务引用，v10→v11 更新无重名冲突的旧默认类型名称并保留引用，v11→v12 将旧版本测试时间设为 null 并保留原放行时间；保留旧 `directoryBindings` 表但当前授权流程不再读取/写入。v1 版本规范化冲突检测、`externalTaskId` 规则不变；旧 JSON schema 按显式迁移兼容。
+- Dexie.js 已在 SPEC-00 安装；当前数据库 v13 保存全局 `archiveRoots` 根目录句柄及项目任务看板字段，v7→v8 补 priority 标记，v8→v9 重排默认优先级，v9→v10 为旧任务补空父任务引用，v10→v11 更新无重名冲突的旧默认类型名称并保留引用，v11→v12 将旧版本测试时间设为 null 并保留原放行时间；v12→v13 仅新增空 `backendSettings` 表，保存设备端后端端口（SPEC-08），不改变项目或根目录，不进入项目 JSON。保留旧 `directoryBindings` 表但当前授权流程不再读取/写入。v1 版本规范化冲突检测、`externalTaskId` 规则不变；旧 JSON schema 按显式迁移兼容。
 - 数据 schema 迁移必须显式版本化，并保留恢复/备份策略。
 - 当前独立表：projects、nodes、edges、branches、tasks、旧 `directoryBindings`（兼容）、`archiveRoots`（全局根句柄）；数据库 v7 不持久化扫描关联。图数据按稳定 project ID 隔离；根目录是本机全局设置，不属于图或 JSON 配置。
 - 当前 JSON schemaVersion 7 包含项目元数据、版本节点/说明、父边、分支、任务看板选项/字段/评论、任务父子关系、放行状态及测试时间；不包含统一根目录句柄、项目子目录路径、文档匹配结果或扫描缓存。schemaVersion 3–6 依次显式迁移至 v7，旧任务父引用及旧版本测试时间设为 null；schemaVersion 1/2 拒绝。旧应用不保证能读取新版快照。恢复后沿用本机根目录（如已授权），按项目名重新扫描子目录；未授权则重新选择根目录。布局偏好不加入 JSON。
