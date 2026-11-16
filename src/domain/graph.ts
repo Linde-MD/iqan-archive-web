@@ -283,11 +283,19 @@ export function revokeRelease(graph: ProjectGraph, targetId: string): ProjectGra
 }
 
 export function updateTask(graph: ProjectGraph, task: Task): ProjectGraph {
+  validateGraph(graph);
+  requireCondition(Number.isSafeInteger(task.sortOrder) && task.sortOrder >= 0, 'TASK_ORDER', '任务顺序无效。');
   const next = structuredClone(graph);
+  reindexTaskLanes(next.tasks);
   const normalized = { ...task, name: task.name.trim(), externalTaskId: normalizeExternalTaskId(task.externalTaskId) };
   const index = next.tasks.findIndex(item => item.id === task.id);
+  const previous = next.tasks[index];
+  normalized.sortOrder = previous && previous.statusOptionId === task.statusOptionId
+    ? previous.sortOrder
+    : next.tasks.filter(item => item.statusOptionId === task.statusOptionId).length;
   if (index < 0) next.tasks.push(normalized);
   else next.tasks[index] = normalized;
+  reindexTaskLanes(next.tasks);
   validateGraph(next);
   return next;
 }

@@ -223,7 +223,7 @@ function createTask(statusOptionId?: string | null, updateRoute = true) {
   const task: Task = {
     id: '', projectId: current.project.id, parentTaskId: null, name: '', description: '', externalTaskId: suggestedId,
     statusOptionId: targetStatus, typeOptionId: null, priorityOptionId: null, assigneeId: null,
-    startDate: null, dueDate: null, sortOrder: tasksInLane(current, targetStatus).length, comments: [],
+    startDate: null, dueDate: null, sortOrder: 0, comments: [],
   };
   taskDraft.value = task;
   taskIdError.value = '';
@@ -294,13 +294,11 @@ async function submitQuickTask() {
     if (!draft.name.trim()) throw new Error('请填写任务名称。');
     const externalTaskId = suggestNextTaskId(current.tasks);
     if (externalTaskId === null) throw new Error('Task ID 已达到自动编号上限。请复制任务名称，取消后通过“新建任务”手工填写未使用的编号。');
-    const laneTasks = tasksInLane(current, draft.statusId);
-    const sortOrder = (laneTasks[laneTasks.length - 1]?.sortOrder ?? -1) + 1;
     const task: Task = {
       id: crypto.randomUUID(), projectId: current.project.id, parentTaskId: null,
       name: draft.name.trim(), description: '', externalTaskId,
       statusOptionId: draft.statusId, typeOptionId: null, priorityOptionId: null, assigneeId: null,
-      startDate: null, dueDate: null, sortOrder, comments: [],
+      startDate: null, dueDate: null, sortOrder: 0, comments: [],
     };
     saving.value = true;
     quickError.value = '';
@@ -346,16 +344,12 @@ async function saveTask(candidate: Task, successMessage: string) {
   try {
     const submitted = structuredClone(toRaw(candidate));
     const taskId = candidate.id || crypto.randomUUID();
-    const persistedTask = current.tasks.find(task => task.id === taskId);
     const persisted = await props.repository.saveTask(props.projectId, taskDraftRevision.value, {
       ...submitted,
       id: taskId,
       projectId: current.project.id,
       name: candidate.name.trim(),
       externalTaskId: candidate.externalTaskId?.trim() || null,
-      sortOrder: persistedTask?.statusOptionId === candidate.statusOptionId
-        ? persistedTask.sortOrder
-        : tasksInLane(current, candidate.statusOptionId).length,
     });
     const saved = persisted.tasks.find(task => task.id === taskId);
     if (!saved) throw new Error('保存后未找到任务，请重新读取项目。');

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
-import { deleteTask as removeTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
+import { deleteTask as removeTask, updateTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
 import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
 import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
@@ -206,6 +206,32 @@ describe('任务看板顺序变换', () => {
     expect(() => validateGraph(removed)).not.toThrow();
   });
 
+  it('详情跨泳道保存压紧旧序号空洞并追加末尾，普通编辑保持位置', () => {
+    const graph = fixture();
+    const [backlog, pending] = graph.project.statusOptions;
+    graph.tasks.find(task => task.id === 'a')!.sortOrder = 1;
+    graph.tasks.find(task => task.id === 'b')!.sortOrder = 4;
+    graph.tasks.find(task => task.id === 'c')!.sortOrder = 1;
+    const before = structuredClone(graph);
+    const moved = updateTask(graph, { ...graph.tasks.find(task => task.id === 'a')!, statusOptionId: pending!.id, sortOrder: 1 });
+    expect(tasksInLane(moved, backlog!.id).map(task => [task.id, task.sortOrder])).toEqual([['b', 0]]);
+    expect(tasksInLane(moved, pending!.id).map(task => [task.id, task.sortOrder])).toEqual([['c', 0], ['a', 1]]);
+    expect(graph).toEqual(before);
+    const edited = updateTask(moved, { ...moved.tasks.find(task => task.id === 'c')!, name: '修改名称', sortOrder: 1 });
+    expect(tasksInLane(edited, pending!.id).map(task => [task.id, task.sortOrder])).toEqual([['c', 0], ['a', 1]]);
+    const unassigned = updateTask(edited, { ...edited.tasks.find(task => task.id === 'a')!, statusOptionId: null });
+    expect(tasksInLane(unassigned, null).map(task => [task.id, task.sortOrder])).toEqual([['u', 0], ['a', 1]]);
+  });
+
+  it('新建任务由领域层追加到有序号空洞的泳道末尾', () => {
+    const graph = fixture();
+    const backlogId = graph.project.statusOptions[0]!.id;
+    graph.tasks.find(task => task.id === 'a')!.sortOrder = 1;
+    graph.tasks.find(task => task.id === 'b')!.sortOrder = 5;
+    const added = updateTask(graph, { ...graph.tasks[0]!, id: 'new', name: '新建', sortOrder: 2 });
+    expect(tasksInLane(added, backlogId).map(task => [task.id, task.sortOrder])).toEqual([['a', 0], ['b', 1], ['new', 2]]);
+  });
+
   it('父子任务必须属于同项目且不能自关联或成环，删除父任务只解除直接子任务', () => {
     const graph = fixture();
     const a = graph.tasks.find(task => task.id === 'a')!;
@@ -306,6 +332,46 @@ describe('任务看板顺序变换', () => {
       });
       expect(withoutBacklog.tasks.find(task => task.id === 'a')?.statusOptionId).toBeNull();
       expect(tasksInLane(withoutBacklog, null).map(task => task.id)).toEqual(['a']);
+    } finally {
+      await db.delete();
+    }
+  });
+
+  it('详情移入移出及新建原子持久化连续顺序，旧 revision 不得覆盖', async () => {
+    const db = new ArchiveDatabase(`task-lane-save-${crypto.randomUUID()}`);
+    try {
+      const repo = new ArchiveRepository(db);
+      const initial = await repo.create('泳道保存', '001');
+      const source = fixture();
+      source.project = initial.project;
+      const [backlog, pending] = initial.project.statusOptions;
+      source.tasks.forEach(task => {
+        task.projectId = initial.project.id;
+        task.statusOptionId = task.id === 'u' ? null : task.id === 'c' ? pending!.id : backlog!.id;
+        task.sortOrder += 1;
+      });
+      let graph = await repo.save(source);
+      const previousRevision = graph.project.revision;
+      graph = await repo.saveTask(graph.project.id, previousRevision, {
+        ...graph.tasks.find(task => task.id === 'a')!, statusOptionId: pending!.id, sortOrder: 1,
+      });
+      expect(tasksInLane(graph, backlog!.id).map(task => [task.id, task.sortOrder])).toEqual([['b', 0]]);
+      expect(tasksInLane(graph, pending!.id).map(task => [task.id, task.sortOrder])).toEqual([['c', 0], ['a', 1]]);
+      await expect(repo.saveTask(graph.project.id, previousRevision, graph.tasks[0]!)).rejects.toThrow('其他标签页已更新');
+      expect(await repo.get(graph.project.id)).toEqual(graph);
+      graph = await repo.saveTask(graph.project.id, graph.project.revision, {
+        ...graph.tasks.find(task => task.id === 'c')!, statusOptionId: null,
+      });
+      graph = await repo.saveTask(graph.project.id, graph.project.revision, {
+        ...graph.tasks.find(task => task.id === 'a')!, id: 'new', name: '新增任务', sortOrder: 0,
+      });
+      expect(tasksInLane(graph, pending!.id).map(task => [task.id, task.sortOrder])).toEqual([['a', 0], ['new', 1]]);
+      expect(tasksInLane(graph, null).map(task => [task.id, task.sortOrder])).toEqual([['u', 0], ['c', 1]]);
+      db.close();
+      await db.open();
+      const restored = await repo.get(graph.project.id);
+      expect({ ...restored, tasks: [...restored.tasks].sort((a, b) => a.id.localeCompare(b.id)) })
+        .toEqual({ ...graph, tasks: [...graph.tasks].sort((a, b) => a.id.localeCompare(b.id)) });
     } finally {
       await db.delete();
     }
