@@ -63,6 +63,8 @@ const importPicker = ref<HTMLDialogElement>();
 const manualImportInput = ref<HTMLInputElement>();
 const supportsSaveFilePicker = typeof window.showSaveFilePicker === 'function';
 let manualImportProjectId = '';
+const exportPicker = ref<HTMLDialogElement>();
+const exportProjectId = ref('');
 const backupManager = ref<HTMLDialogElement>();
 const backupList = shallowRef<ProjectBackupList>({ backups: [], unrecognized: [] });
 const selectedBackups = ref<string[]>([]);
@@ -312,9 +314,7 @@ async function savePartNumber() {
   }
 }
 
-async function exportProject() {
-  const project = activeProject.value;
-  if (!project) return;
+async function exportProject(project: Project) {
   saving.value = true; error.value = ''; status.value = '';
   try {
     const root = archiveRoots.value[JSON_BACKUP_LOCATION];
@@ -360,7 +360,23 @@ async function exportProject() {
 async function exportProjectFromMenu() {
   if (backupMenu.value) backupMenu.value.open = false;
   backupMenuTrigger.value?.focus();
-  await exportProject();
+  if (activeProject.value) {
+    await exportProject(activeProject.value);
+    return;
+  }
+  exportProjectId.value = projects.value[0]?.id ?? '';
+  exportPicker.value?.showModal();
+}
+
+function exportSelectedProject() {
+  const project = projects.value.find(item => item.id === exportProjectId.value);
+  if (!project) {
+    showError(new Error('所选项目已不存在，请重新选择。'));
+    exportPicker.value?.close();
+    return;
+  }
+  exportPicker.value?.close();
+  void exportProject(project);
 }
 
 async function importProjectFromMenu() {
@@ -584,7 +600,7 @@ onUnmounted(() => {
       <details ref="backupMenu" class="topbar-menu" @keydown.esc.prevent="closeBackupMenu">
         <summary ref="backupMenuTrigger" class="topbar-menu-trigger"><AppIcon name="folder" />JSON 备份</summary>
         <div class="topbar-menu-items">
-          <button v-if="activeProject" type="button" :disabled="saving || filesBusy || graphBusy" @click="exportProjectFromMenu"><AppIcon name="download" />{{ archiveRoots.shared ? '导出 JSON' : supportsSaveFilePicker ? '选择位置导出 JSON' : '下载 JSON' }}</button>
+          <button type="button" :disabled="loading || !projects.length || saving || workspaceBusy" @click="exportProjectFromMenu"><AppIcon name="download" />{{ archiveRoots.shared ? '导出 JSON' : supportsSaveFilePicker ? '选择位置导出 JSON' : '下载 JSON' }}</button>
           <button type="button" :disabled="saving || workspaceBusy" @click="importProjectFromMenu"><AppIcon name="upload" />{{ archiveRoots.shared ? '导入恢复' : '选择 JSON 文件导入' }}</button>
           <button v-if="activeProject" type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="openBackupManager"><AppIcon name="folder" />管理备份</button>
         </div>
@@ -626,6 +642,17 @@ onUnmounted(() => {
           <button type="button" class="secondary" :disabled="saving" @click="cancelImport">取消</button>
         </div>
     </section>
+    <dialog ref="exportPicker" class="branch-move-dialog" aria-labelledby="export-picker-title">
+      <h3 id="export-picker-title">选择要导出的项目</h3>
+      <label for="export-project-choice">项目</label>
+      <select id="export-project-choice" v-model="exportProjectId">
+        <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}（{{ project.partNumber }}）</option>
+      </select>
+      <div class="actions">
+        <button type="button" :disabled="saving || !exportProjectId" @click="exportSelectedProject">导出 JSON</button>
+        <button type="button" class="secondary" :disabled="saving" @click="exportPicker?.close()">取消</button>
+      </div>
+    </dialog>
     <dialog ref="importPicker" class="branch-move-dialog" aria-labelledby="import-picker-title" @close="importFiles = []; importFileName = ''">
       <h3 id="import-picker-title">从归档根目录导入</h3>
       <p>选择保存在归档根目录中的项目 JSON 备份。</p>
