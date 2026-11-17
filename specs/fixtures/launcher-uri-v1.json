@@ -430,5 +430,25 @@
       "uri": "iqanarchive://open-archive-root?v=1&location=shared&path=C%3A%5C",
       "failure": "InvalidSyntax"
     }
+  ],
+  "startBackendValid": [
+    {
+      "name": "start-backend-without-caller-controlled-values",
+      "uri": "iqanarchive://start-backend?v=1",
+      "operation": "StartBackend",
+      "files": []
+    }
+  ],
+  "startBackendInvalid": [
+    {
+      "name": "start-backend-extra-path",
+      "uri": "iqanarchive://start-backend?v=1&path=C%3A%5C",
+      "failure": "InvalidSyntax"
+    },
+    {
+      "name": "start-backend-unsupported-version",
+      "uri": "iqanarchive://start-backend?v=2",
+      "failure": "UnsupportedVersion"
+    }
   ]
 }
