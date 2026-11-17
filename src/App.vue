@@ -619,7 +619,7 @@ onUnmounted(() => {
           <button v-if="activeProject" type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="openBackupManager"><AppIcon name="folder" />管理备份</button>
         </div>
       </details>
-      <input ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
+      <input id="manual-import-file" name="manualImportFile" ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
       <BackendSettings :repository="repository" :disabled="saving || workspaceBusy || collaboration.state.busy" @saved="collaboration.disconnect()" />
       <CollaborationPanel :client="collaboration" :project-id="activeProjectId" :disabled="saving || workspaceBusy" />

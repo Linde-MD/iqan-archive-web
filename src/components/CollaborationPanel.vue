@@ -162,8 +162,8 @@ async function saveDraft() {
         <h3>{{ state.user.mustChangePassword ? '必须修改初始密码' : '修改密码' }}</h3>
         <label for="collab-current-password">当前密码</label>
         <input id="collab-current-password" v-model="currentPassword" type="password" autocomplete="current-password" required :disabled="busy">
-        <label for="collab-new-password">新密码（12–128 个字符）</label>
-        <input id="collab-new-password" v-model="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required :disabled="busy">
+        <label for="collab-new-password">新密码（6–128 个字符，无需复杂组合）</label>
+        <input id="collab-new-password" v-model="newPassword" type="password" autocomplete="new-password" minlength="6" maxlength="128" required :disabled="busy">
         <button type="submit" :disabled="busy">修改密码并退出</button>
       </form>
       <form v-if="state.authenticated && !state.user.mustChangePassword" @submit.prevent="run(async () => { await client.saveProfile({ displayName, email, avatar }); message = '资料已保存。'; })">
@@ -185,7 +185,7 @@ async function saveDraft() {
         <label for="member-username">成员账号（3–32 位小写字母、数字、点、横线或下划线，以字母开头）</label><input id="member-username" v-model="memberUsername" autocomplete="off" pattern="[a-z][a-z0-9._\-]{2,31}" required :disabled="busy">
         <label for="member-name">显示名称</label><input id="member-name" v-model="memberName" required maxlength="80" :disabled="busy">
         <label for="member-email">邮箱</label><input id="member-email" v-model="memberEmail" type="email" required :disabled="busy">
-        <label for="member-password">初始密码（12–128 个字符）</label><input id="member-password" v-model="memberPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="128" :disabled="busy">
+        <label for="member-password">初始密码（6–128 个字符，无需复杂组合）</label><input id="member-password" v-model="memberPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy">
         <div class="actions"><button type="submit" :disabled="busy">创建成员</button><button type="button" class="secondary" :disabled="busy" @click="run(async () => { members = await client.listUsers(); })">刷新成员</button></div>
       </form>
       <ul class="collaboration-members"><li v-for="member in members" :key="member.id">
@@ -194,7 +194,7 @@ async function saveDraft() {
       </li></ul>
       <form @submit.prevent="run(async () => { await client.manageUser(resetUsername, false, resetPassword); resetPassword = ''; message = '已重置并启用此成员，旧会话失效，首次登录须改密。'; })">
         <label for="reset-username">重置成员账号</label><input id="reset-username" v-model="resetUsername" autocomplete="off" required :disabled="busy">
-        <label for="reset-password">新的初始密码（12–128 个字符）</label><input id="reset-password" v-model="resetPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="128" :disabled="busy">
+        <label for="reset-password">新的初始密码（6–128 个字符，无需复杂组合）</label><input id="reset-password" v-model="resetPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy">
         <button type="submit" class="secondary" :disabled="busy || resetUsername === 'admin'">重置并启用成员</button>
       </form>
     </section>
