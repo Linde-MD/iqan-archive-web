@@ -10,6 +10,7 @@ import { createProjectDelta, type EntityChanges, type ProjectChanges } from '../
 import { orderedBranches } from '../src/domain/model';
 
 const databases: (ArchiveDatabase | CollaborationDatabase)[] = [];
+const testAvatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 function createNode(graph: ProjectGraph, input: { version: string; description: string }): VersionNode {
   return { id: crypto.randomUUID(), projectId: graph.project.id, ...input, taskId: null, releasedAt: null, testingAt: null };
 }
@@ -104,6 +105,10 @@ function setup() {
     if (path === '/auth/me') return response({ user: admin });
     if (path === '/instance') return response({ databaseId: source });
     if (path === '/auth/logout') return response({ loggedOut: true });
+    if (path === '/assignees') return response({ assignees: [{
+      id: 'member-id', username: 'member1', displayName: '工程成员', disabled: false,
+      avatar: testAvatar,
+    }] });
     if (path === '/projects' && init.method === 'GET') return response({ projects: [graph.project] });
     if (path === `/projects/${graph.project.id}` && init.method === 'GET') return response(graph.project);
     if (path === `/projects/${graph.project.id}/graph` && init.method === 'GET') {
@@ -164,6 +169,20 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('登录后读取负责人目录并保留账号头像字段', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    await expect(s.client.listAssignees()).resolves.toEqual([{
+      id: 'member-id', username: 'member1', displayName: '工程成员', disabled: false,
+      avatar: testAvatar,
+    }]);
+  });
+
+  it('没有共享数据库来源时明确报告无法读取负责人', async () => {
+    const s = setup();
+    await expect(s.client.listAssignees()).rejects.toThrow('尚未连接共享数据库');
+  });
+
   it('新项目从创建回执建立本机副本而不请求完整图', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);

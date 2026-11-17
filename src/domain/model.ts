@@ -96,6 +96,7 @@ export interface TaskAssignee {
   username: string;
   displayName: string;
   disabled: boolean;
+  avatar: string | null;
 }
 
 export interface Project {

@@ -76,8 +76,14 @@ function taskAssignee(value: unknown): TaskAssignee {
   const row = object(value);
   requireCondition(typeof row.id === 'string' && row.id.length > 0
     && typeof row.username === 'string' && typeof row.displayName === 'string'
-    && typeof row.disabled === 'boolean', 'RESPONSE', '负责人账号响应格式无效。');
-  return { id: row.id, username: row.username, displayName: row.displayName, disabled: row.disabled };
+    && typeof row.disabled === 'boolean'
+    && (row.avatar === undefined || row.avatar === null
+      || (typeof row.avatar === 'string' && row.avatar.startsWith('data:image/png;base64,') && row.avatar.length <= 90_000)),
+  'RESPONSE', '负责人账号响应格式无效。');
+  return {
+    id: row.id, username: row.username, displayName: row.displayName, disabled: row.disabled,
+    avatar: typeof row.avatar === 'string' ? row.avatar : null,
+  };
 }
 
 export function collaborationSnapshot(graph: ProjectGraph): ProjectSnapshot {
@@ -246,9 +252,13 @@ export class CollaborationRepository implements RepositorySync {
   async listAssignees(): Promise<TaskAssignee[]> {
     await this.context();
     const source = this.state.source;
-    if (!source) return [];
-    const cached = await this.cache.assignees.where('source').equals(source).toArray();
-    if (!this.state.connected || !this.state.authenticated) return cached;
+    requireCondition(source, 'SOURCE', '尚未连接共享数据库，无法读取负责人。请前往账号同步页连接共享数据库后重试。');
+    const cached = (await this.cache.assignees.where('source').equals(source).toArray())
+      .map(assignee => ({ ...assignee, ...taskAssignee(assignee) }));
+    if (!this.state.connected || !this.state.authenticated) {
+      if (cached.length) return cached;
+      throw new CollaborationError('当前未连接共享账号目录，无法读取负责人。请前往账号同步页重新连接后重试。');
+    }
 
     try {
       const value = object(await this.request('/assignees'));

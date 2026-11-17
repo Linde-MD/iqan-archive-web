@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { ProjectGraph } from '../domain/model';
+import type { ProjectGraph, TaskAssignee } from '../domain/model';
 import type { TaskListRow } from '../domain/task-board';
 import AppIcon from './AppIcon.vue';
+import TaskAssigneeAvatar from './TaskAssigneeAvatar.vue';
+import TaskStatusIcon from './TaskStatusIcon.vue';
 
 const props = defineProps<{
   graph: ProjectGraph;
   rows: TaskListRow[];
   nested: boolean;
   selectedTaskId: string;
-  assigneeNameById: ReadonlyMap<string, string>;
+  assigneeById: ReadonlyMap<string, TaskAssignee>;
   disabled: boolean;
 }>();
 const emit = defineEmits<{ open: [id: string]; toggle: [id: string] }>();
@@ -48,8 +50,8 @@ const idColumnWidth = computed(() => {
               <span v-if="!row.matches" class="task-list-context">上级</span>
             </div>
           </td>
-          <td><span class="task-list-status">{{ row.task.statusOptionId ? statuses.get(row.task.statusOptionId) : '未分组' }}</span></td>
-          <td>{{ row.task.assigneeId ? assigneeNameById.get(row.task.assigneeId) ?? '账号信息不可用' : '—' }}</td>
+          <td><span class="task-list-status"><TaskStatusIcon :status-name="row.task.statusOptionId ? statuses.get(row.task.statusOptionId) ?? null : null" />{{ row.task.statusOptionId ? statuses.get(row.task.statusOptionId) : '未分组' }}</span></td>
+          <td><span v-if="row.task.assigneeId && assigneeById.has(row.task.assigneeId)" class="task-list-assignee"><TaskAssigneeAvatar :assignee="assigneeById.get(row.task.assigneeId)!" />{{ assigneeById.get(row.task.assigneeId)?.displayName }}{{ assigneeById.get(row.task.assigneeId)?.disabled ? '（已停用）' : '' }}</span><span v-else-if="row.task.assigneeId">账号信息不可用</span><span v-else class="muted">—</span></td>
           <td><template v-if="row.task.parentTaskId && tasksById.has(row.task.parentTaskId)"><code v-if="tasksById.get(row.task.parentTaskId)?.externalTaskId" class="task-reference-id">{{ tasksById.get(row.task.parentTaskId)?.externalTaskId }}</code> {{ tasksById.get(row.task.parentTaskId)?.name }}</template><span v-else class="muted">—</span></td>
           <td>{{ row.task.typeOptionId ? types.get(row.task.typeOptionId) : '—' }}</td>
           <td><template v-if="row.task.priorityOptionId && priorities.has(row.task.priorityOptionId)"><span class="task-list-priority" :style="{ color: priorities.get(row.task.priorityOptionId)?.indicatorColor }" aria-hidden="true">{{ '!'.repeat(priorities.get(row.task.priorityOptionId)?.indicatorCount ?? 1) }}</span><span class="visually-hidden">{{ '!'.repeat(priorities.get(row.task.priorityOptionId)?.indicatorCount ?? 1) }} </span>{{ priorities.get(row.task.priorityOptionId)?.name }}</template><span v-else class="muted">—</span></td>
@@ -88,7 +90,10 @@ const idColumnWidth = computed(() => {
 .task-list-title { justify-content: flex-start; min-width: 0; padding: 6px; text-align: left; overflow-wrap: anywhere; }
 .task-list-title:disabled { background: transparent; color: #8290a6; }
 .task-list-context { padding: 2px 6px; color: #afbdd2; font-size: 11px; white-space: nowrap; }
-.task-list-status { display: inline-block; padding: 4px 8px; border: 1px solid #52647e; border-radius: 4px; background: #1d2b42; }
+.task-list-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #52647e; border-radius: 4px; background: #1d2b42; }
+.task-list-status :deep(.task-status-icon) { width: 16px; height: 16px; }
+.task-list-assignee { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.task-list-assignee :deep(.task-assignee-avatar) { width: 24px; height: 24px; font-size: 9px; }
 .task-list-priority { margin-right: 5px; font-weight: 700; }
 .muted { color: #afbdd2; }
 </style>

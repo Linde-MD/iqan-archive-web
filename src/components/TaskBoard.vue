@@ -14,6 +14,8 @@ import AppIcon from './AppIcon.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import TaskBoardLane from './TaskBoardLane.vue';
 import TaskList from './TaskList.vue';
+import TaskAssigneeAvatar from './TaskAssigneeAvatar.vue';
+import TaskStatusIcon from './TaskStatusIcon.vue';
 
 type OptionKey = 'statusOptions' | 'typeOptions' | 'priorityOptions';
 type OptionKind = 'status' | 'type' | 'priority';
@@ -37,6 +39,7 @@ const graph = shallowRef<ProjectGraph>();
 const assignees = shallowRef<TaskAssignee[]>([]);
 const assigneesLoading = ref(false);
 const assigneesError = ref('');
+let assigneesReloadQueued = false;
 const sharedWritable = computed(() => {
   const permissions = props.repository.permissions;
   return !permissions || (permissions.sharedWritable && !permissions.draftProjectIds.includes(props.projectId));
@@ -117,6 +120,14 @@ const legacyTypeNames = computed(() => legacyTaskTypeNames(graph.value?.project.
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeById = computed(() => new Map(assignees.value.map(assignee => [assignee.id, assignee])));
 const activeAssignees = computed(() => assignees.value.filter(assignee => !assignee.disabled));
+const selectedStatusName = computed(() => {
+  const statusId = taskDraft.value?.statusOptionId;
+  return statusId ? graph.value?.project.statusOptions.find(option => option.id === statusId)?.name ?? null : null;
+});
+const currentAssignee = computed(() => {
+  const assigneeId = taskDraft.value?.assigneeId;
+  return assigneeId ? assigneeById.value.get(assigneeId) ?? null : null;
+});
 const assigneeNameById = computed(() => new Map(assignees.value.map(assignee => [
   assignee.id, `${assignee.displayName}${assignee.disabled ? '（已停用）' : ''}`,
 ])));
@@ -415,6 +426,13 @@ async function requestAutoSave() {
   if (!taskDraftDirty.value) return;
   autoSaveQueued = false;
   await saveTask(taskDraft.value, '任务已自动保存。');
+}
+
+async function clearAssignee() {
+  if (!taskDraft.value?.assigneeId || taskFieldsDisabled.value) return;
+  taskDraft.value.assigneeId = null;
+  await nextTick();
+  await requestAutoSave();
 }
 
 function scheduleDescriptionSave() {
@@ -813,6 +831,10 @@ function formatTime(value: string): string {
 }
 
 async function loadAssignees() {
+  if (assigneesLoading.value) {
+    assigneesReloadQueued = true;
+    return;
+  }
   assigneesLoading.value = true;
   assigneesError.value = '';
   try {
@@ -821,6 +843,10 @@ async function loadAssignees() {
     assigneesError.value = cause instanceof Error ? cause.message : '读取负责人账号失败。';
   } finally {
     assigneesLoading.value = false;
+    if (assigneesReloadQueued) {
+      assigneesReloadQueued = false;
+      void loadAssignees();
+    }
   }
 }
 
@@ -844,6 +870,9 @@ async function focusRequestedTask() {
 watch([graph, () => props.focusTaskId], () => { void focusRequestedTask(); }, { flush: 'post' });
 watch([saving, quickTask], ([isSaving, draft]) => emit('busy', isSaving || !!draft), { immediate: true });
 watch(() => props.assigneeRefreshKey, () => { void loadAssignees(); });
+watch(() => taskDraft.value?.id, taskId => {
+  if (taskId) void loadAssignees();
+});
 
 onMounted(() => {
   void loadAssignees();
@@ -915,7 +944,7 @@ onUnmounted(() => {
     <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
     <div v-else-if="statusMessage && !taskDraft" class="task-board-message" role="status">{{ statusMessage }}</div>
 
-    <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :assignee-name-by-id="assigneeNameById" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
+    <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :assignee-by-id="assigneeById" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
     <div v-if="graph && taskView === 'board'" class="task-board-layout">
       <div ref="boardScroll" class="task-board-scroll">
         <DragDropProvider :plugins="dragPlugins" @drag-start="onDragStart" @drag-move="onDragMove" @drag-over="onDragOver" @drag-end="onDragEnd">
@@ -923,7 +952,7 @@ onUnmounted(() => {
             <TaskBoardLane
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
               :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :type-name-by-id="typeNameById"
-              :priority-option-by-id="priorityOptionById" :assignee-name-by-id="assigneeNameById"
+              :priority-option-by-id="priorityOptionById" :assignee-by-id="assigneeById"
               :disabled="!sharedWritable || saving || taskDraftDirty || !!quickTask" :saving="saving"
               :quick-task="quickTask && quickTask.statusId === (lane.status?.id ?? null) ? quickTask : null"
               :quick-error="quickError" :quick-stale="quickStale"
@@ -977,18 +1006,26 @@ onUnmounted(() => {
               <label class="visually-hidden" for="task-board-name">任务名（必填）</label>
               <input id="task-board-name" v-model="taskDraft.name" required placeholder="任务名称" title="点击编辑任务名" :disabled="saving && !taskDraft.id" :readonly="!sharedWritable || (taskDraftStale && !saving)" @blur="requestAutoSave" />
               <div class="task-fields-row task-summary-fields">
-                <div class="task-summary-field"><span class="task-field-icon is-status"><AppIcon name="status" /></span><div><label for="task-board-status">状态</label><select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="taskFieldsDisabled">
+                <div class="task-summary-field"><span class="task-field-icon"><TaskStatusIcon :status-name="selectedStatusName" /></span><div><label for="task-board-status">状态</label><select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="taskFieldsDisabled">
                   <option :value="null">未分组</option><option v-for="option in graph.project.statusOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
                 </select></div></div>
-                <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="user" /></span><div><label for="task-board-assignee">负责人</label><select id="task-board-assignee" v-model="taskDraft.assigneeId" :disabled="taskFieldsDisabled || assigneesLoading || !!assigneesError">
-                  <option :value="null">未分配</option>
-                  <option v-if="taskDraft.assigneeId && !assigneeById.has(taskDraft.assigneeId)" :value="taskDraft.assigneeId" disabled>账号信息不可用，保留现有负责人</option>
-                  <option v-if="currentDisabledAssignee" :value="currentDisabledAssignee.id" disabled>{{ currentDisabledAssignee.displayName }}（已停用）</option>
-                  <option v-for="assignee in activeAssignees" :key="assignee.id" :value="assignee.id">{{ assignee.displayName }}（@{{ assignee.username }}）</option>
-                </select>
-                <p v-if="assigneesError" class="task-legacy-type-notice is-error" role="alert">{{ assigneesError }}</p>
-                <p v-else-if="assigneesLoading" class="task-legacy-type-notice" role="status">正在读取协作账号…</p>
-                <p v-else-if="!activeAssignees.length" class="task-legacy-type-notice" role="status">暂无可分配成员。</p>
+                <div class="task-summary-field"><div><label for="task-board-assignee">负责人</label>
+                  <div class="task-assignee-control">
+                    <TaskAssigneeAvatar v-if="currentAssignee" :assignee="currentAssignee" size="medium" />
+                    <span v-else class="task-assignee-empty-avatar" :class="{ 'is-unavailable': !!taskDraft.assigneeId }" aria-hidden="true"><AppIcon name="user" /><AppIcon v-if="!taskDraft.assigneeId" class="task-assignee-add-icon" name="plus" /></span>
+                    <span class="task-assignee-name">{{ currentAssignee?.displayName ?? (taskDraft.assigneeId ? '账号信息不可用' : '负责人') }}</span>
+                    <AppIcon class="task-assignee-chevron" name="chevron-right" />
+                    <select id="task-board-assignee" v-model="taskDraft.assigneeId" class="task-assignee-select" :disabled="taskFieldsDisabled || assigneesLoading || !!assigneesError">
+                      <option :value="null">未分配</option>
+                      <option v-if="taskDraft.assigneeId && !assigneeById.has(taskDraft.assigneeId)" :value="taskDraft.assigneeId" disabled>账号信息不可用，保留现有负责人</option>
+                      <option v-if="currentDisabledAssignee" :value="currentDisabledAssignee.id" disabled>{{ currentDisabledAssignee.displayName }}（已停用）</option>
+                      <option v-for="assignee in activeAssignees" :key="assignee.id" :value="assignee.id">{{ assignee.displayName }}（@{{ assignee.username }}）</option>
+                    </select>
+                    <button v-if="taskDraft.assigneeId" type="button" class="task-assignee-remove" :aria-label="`移除负责人${currentAssignee ? ` ${currentAssignee.displayName}` : ''}`" title="移除负责人" :disabled="taskFieldsDisabled" @pointerdown.stop @click.stop="clearAssignee"><AppIcon name="clear" /></button>
+                  </div>
+                  <p v-if="assigneesError" class="task-legacy-type-notice is-error" role="alert">{{ assigneesError }} <button type="button" class="task-assignee-retry" :disabled="assigneesLoading" @click="loadAssignees">重新读取</button></p>
+                  <p v-else-if="assigneesLoading" class="task-legacy-type-notice" role="status">正在读取协作账号…</p>
+                  <p v-else-if="!activeAssignees.length" class="task-legacy-type-notice" role="status">没有已启用的非 admin 成员可分配。<button type="button" class="task-assignee-retry" @click="loadAssignees"><AppIcon name="refresh" />重新读取成员</button></p>
                 </div></div>
                 <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="calendar" /></span><div><label for="task-board-start">开始日期</label><div class="task-date-input"><span aria-hidden="true">{{ startDateInput || '年-月-日' }}</span><input id="task-board-start" v-model="startDateInput" type="date" lang="zh-CN" :max="dueDateInput || undefined" :disabled="taskFieldsDisabled" /></div></div></div>
                 <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="calendar" /></span><div><label for="task-board-due">截止日期</label><div class="task-date-input"><span aria-hidden="true">{{ dueDateInput || '年-月-日' }}</span><input id="task-board-due" v-model="dueDateInput" type="date" lang="zh-CN" :min="startDateInput || undefined" :disabled="taskFieldsDisabled" /></div></div></div>
@@ -1168,10 +1205,31 @@ onUnmounted(() => {
 .task-summary-field { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .task-summary-field > div { flex: 1; min-width: 0; }
 .task-field-icon { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border: 1px solid #52647e; border-radius: 50%; color: #b7c8de; }
-.task-field-icon.is-status { border-color: #6ee7b7; color: #6ee7b7; }
 .task-field-icon .app-icon { width: 19px; height: 19px; }
 .task-summary-field select, .task-summary-field input { min-height: 44px; padding: 6px; border-color: transparent; background-color: transparent; font-size: 12px; }
 .task-summary-field select:hover, .task-summary-field input:hover { border-color: #52647e; background-color: #1d2b42; }
+.task-assignee-control { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 44px; padding: 4px 8px 4px 6px; border: 1px solid transparent; border-radius: 6px; color: #eef4ff; }
+.task-assignee-control:hover { border-color: #52647e; background: #1d2b42; }
+.task-assignee-control:focus-within { outline: 3px solid #7dd3fc; outline-offset: 3px; }
+.task-assignee-control select.task-assignee-select { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.task-assignee-control select.task-assignee-select:disabled { cursor: not-allowed; }
+.task-assignee-select option { background: #121c2d; color: #eef4ff; }
+.task-assignee-empty-avatar { position: relative; display: inline-flex; flex: 0 0 34px; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px dashed #64748b; border-radius: 50%; color: #afbdd2; }
+.task-assignee-empty-avatar > .app-icon:first-child { width: 17px; height: 17px; }
+.task-assignee-empty-avatar.is-unavailable { border-color: #fca5a5; color: #fca5a5; }
+.task-assignee-empty-avatar > .task-assignee-add-icon { position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; padding: 2px; border: 1px solid #121c2d; border-radius: 50%; background: #60a5fa; color: #08111f; }
+.task-assignee-name { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #d7e3f2; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.task-assignee-chevron { flex: 0 0 16px; width: 16px; height: 16px; color: #afbdd2; transform: rotate(90deg); }
+.task-assignee-remove { position: relative; z-index: 2; display: inline-grid; flex: 0 0 44px; place-items: center; width: 44px; height: 44px; margin: -4px -8px -4px 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #afbdd2; opacity: 0; pointer-events: none; }
+.task-assignee-remove:hover { background: #3a2633; color: #fca5a5; }
+.task-assignee-remove:focus-visible { outline: 2px solid #7dd3fc; outline-offset: -3px; opacity: 1; pointer-events: auto; }
+.task-assignee-control:hover .task-assignee-remove,
+.task-assignee-control:focus-within .task-assignee-remove { opacity: 1; pointer-events: auto; }
+.task-assignee-retry { display: inline-flex; align-items: center; gap: 5px; min-height: 44px; padding: 4px 8px; border: 1px solid #52647e; border-radius: 5px; background: #18253a; color: #cfe2fa; }
+.task-assignee-retry .app-icon { width: 14px; height: 14px; }
+@media (hover: none) {
+  .task-assignee-remove { opacity: 1; pointer-events: auto; }
+}
 .task-date-input { position: relative; display: flex; align-items: center; min-height: 44px; padding: 6px; border: 1px solid transparent; border-radius: 6px; color: #eef4ff; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .task-date-input:hover { border-color: #52647e; background: #1d2b42; }
 .task-date-input:focus-within { outline: 3px solid #7dd3fc; outline-offset: 3px; }
@@ -1290,6 +1348,7 @@ onUnmounted(() => {
   .task-board-toolbar input { flex: 1 1 100%; order: 2; }
   .task-board-count { margin-left: auto; }
   .task-fields-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .task-summary-fields > .task-summary-field:nth-child(2) { grid-column: 1 / -1; }
   .task-fields-secondary { grid-template-columns: minmax(0, 1fr); }
   .task-detail-actions { margin-top: 14px; }
   .task-heading-fields { gap: 4px; }
