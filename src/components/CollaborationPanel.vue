@@ -5,6 +5,7 @@ import type { CollaborationRepository, CollaborationUser } from '../storage/coll
 import type { ProjectGraph } from '../domain/model';
 import { accountAvatarTheme, accountInitials } from '../domain/account';
 import AppIcon from './AppIcon.vue';
+import AppBrandMark from './AppBrandMark.vue';
 import ParentVersionPicker from './ParentVersionPicker.vue';
 import TaskPicker from './TaskPicker.vue';
 import { recommendedParentNodes } from '../domain/git-graph';
@@ -278,8 +279,11 @@ async function saveDraft() {
     @close="password = ''; currentPassword = ''; newPassword = ''; memberPassword = ''; resetPassword = ''; preview = null; drafts = undefined; trigger?.focus()">
     <header class="account-page-header">
       <a class="account-page-brand" href="#" @click.prevent="closeAccountPage">
-        <span class="account-brand-mark" aria-hidden="true">IQ</span>
-        <span>IQAN <strong>Archive</strong><small>协作账户中心</small></span>
+        <AppBrandMark class="account-brand-mark" />
+        <span class="account-brand-copy">
+          <span class="account-brand-title">IQAN <strong>Archive</strong></span>
+          <small>协作账户中心</small>
+        </span>
       </a>
       <button type="button" class="secondary account-return" @click="closeAccountPage"><AppIcon name="arrow" />返回工作台</button>
     </header>
@@ -472,15 +476,16 @@ async function saveDraft() {
 .account-page-dialog::backdrop { background: #070d18; }
 .account-page-header {
   position: sticky; z-index: 2; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  min-height: 68px; padding: 9px clamp(16px, 4vw, 40px); border-bottom: 1px solid #2b3c55;
+  min-height: 68px; padding: 10px 32px; border-bottom: 1px solid #2b3c55;
   background: #0d1728ee; backdrop-filter: blur(12px);
 }
-.account-page-brand { display: flex; align-items: center; gap: 10px; min-height: 44px; color: #f3f7ff; font-size: 16px; text-decoration: none; }
-.account-page-brand > span:last-child { display: grid; gap: 2px; }
-.account-page-brand strong { color: #c1d0e4; font-weight: 500; }
-.account-page-brand small { color: #aebed4; font-size: 10px; letter-spacing: .06em; }
-.account-brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid #547da9; border-radius: 8px; background: #142a46; color: #9acbff; font-size: 12px; font-weight: 800; letter-spacing: .04em; }
-.account-return { min-height: 44px; padding: 8px 12px; font-size: 12px; }
+.account-page-brand { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 44px; color: var(--ink); font-size: 20px; text-decoration: none; }
+.account-brand-copy { display: grid; gap: 2px; }
+.account-brand-title { line-height: 1.2; letter-spacing: -.03em; white-space: nowrap; }
+.account-page-brand strong { color: #c1d0e4; font-weight: 400; }
+.account-page-brand small { color: var(--muted); font-size: 11px; line-height: 1.3; white-space: nowrap; }
+.account-brand-mark { flex: 0 0 32px; width: 32px; height: 32px; color: #7db8ff; }
+.account-return { flex: 0 0 auto; min-height: 44px; padding: 8px 12px; font-size: 12px; white-space: nowrap; }
 .account-return .app-icon { transform: rotate(180deg); width: 17px; height: 17px; }
 .account-page-content { width: min(1040px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 24px; }
 .account-page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
@@ -564,10 +569,8 @@ async function saveDraft() {
 @media (max-width: 520px) {
   .account-avatar-trigger { padding-right: 5px; }
   .account-trigger-label, .account-avatar-trigger > .app-icon { display: none; }
-  .account-page-header { min-height: 60px; padding-inline: 12px; }
-  .account-page-brand { gap: 7px; font-size: 13px; }
-  .account-brand-mark { width: 30px; height: 30px; }
-  .account-page-brand small { font-size: 9px; }
+  .account-page-header { gap: 12px; padding-inline: 12px; }
+  .account-page-brand { gap: 8px; font-size: 16px; }
   .account-return { padding-inline: 8px; font-size: 11px; }
   .account-page-content { width: calc(100% - 24px); padding-top: 16px; }
   .account-page-heading { align-items: flex-start; flex-direction: column; }

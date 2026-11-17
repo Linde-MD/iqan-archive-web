@@ -16,6 +16,7 @@ import CollaborationPanel from './components/CollaborationPanel.vue';
 import { CollaborationRepository } from './storage/collaboration';
 import { projectWriteBlockedReason } from './storage/repository-sync';
 import AppIcon from './components/AppIcon.vue';
+import AppBrandMark from './components/AppBrandMark.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listProjectBackups, writeJsonBackup, writeSelectedJsonFile, type ProjectBackupList } from './files/archive-json';
 import { parseWorkspaceLocation, projectOverlayPath, projectPath, type ProjectView } from './workspace-routes';
@@ -611,12 +612,7 @@ onUnmounted(() => {
   <a class="skip-link" href="#workspace">跳至工作区</a>
   <header class="topbar">
     <a class="brand" href="#" aria-label="IQAN Archive 首页" @click.prevent="router.push('/')">
-      <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
-        <path d="M8 5v22M8 10h10a6 6 0 0 1 6 6v11" fill="none" stroke="currentColor" stroke-width="2" />
-        <circle cx="8" cy="7" r="3" fill="currentColor" />
-        <circle cx="8" cy="25" r="3" fill="currentColor" />
-        <circle cx="24" cy="25" r="3" fill="currentColor" />
-      </svg>
+      <AppBrandMark />
       <span>IQAN <strong>Archive</strong></span>
     </a>
     <div class="topbar-actions">
