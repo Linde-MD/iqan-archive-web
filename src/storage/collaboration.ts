@@ -447,7 +447,7 @@ export class CollaborationRepository implements RepositorySync {
       for (const graph of graphs) await this.putMirror(graph);
     });
     this.state.updatedAt = Date.now();
-    this.state.message = '共享数据已更新到本机副本；离线草稿仍保留，需手动同步。';
+    this.state.message = '共享数据已更新到本机副本。';
     await this.updateCounts();
   }
 

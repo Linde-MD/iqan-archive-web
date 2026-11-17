@@ -171,6 +171,16 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('没有草稿时刷新共享副本不提示需要手动同步', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    await s.client.refresh();
+    expect(s.client.state.draftCount).toBe(0);
+    expect(s.client.permissions.sharedWritable).toBe(true);
+    expect(s.client.state.message).not.toContain('离线草稿仍保留');
+    expect(s.client.state.message).not.toContain('需手动同步');
+  });
+
   it('登录后读取负责人目录并保留账号头像字段', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
@@ -256,6 +266,7 @@ describe('共享副本与离线草稿', () => {
     expect(cached.edges[0]?.parentId).toBe(first.id);
     s.network(true);
     await reopened.reconnect();
+    expect(reopened.state.draftCount).toBe(2);
     expect(reopened.permissions.sharedWritable).toBe(true);
     expect(projectWriteBlockedReason(reopened.permissions, current.project.id)).toContain('当前项目有待同步版本');
     expect(projectWriteBlockedReason(reopened.permissions, current.project.id)).not.toContain('未连接');
