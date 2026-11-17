@@ -7,6 +7,7 @@ import { DomainError, normalizeVersion, orderedBranches, requireCondition, type 
 import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/project-snapshot';
 import { validateGraph, validateTransition } from '../domain/graph';
 import { assertOfflineChanges } from '../domain/collaboration';
+import { applyProjectDelta, diffProjectGraphs, parseProjectDelta } from '../domain/project-changes';
 
 export interface CollaborationUser {
   id: string; username: string; displayName: string; email: string;
@@ -363,7 +364,7 @@ export class CollaborationRepository implements RepositorySync {
     for (const item of listing.projects) {
       const project = object(item);
       requireCondition(typeof project.id === 'string', 'RESPONSE', '项目身份无效。');
-      graphs.push(parseProjectSnapshot(await this.request(`/projects/${project.id}`)));
+      graphs.push(parseProjectSnapshot(await this.request(`/projects/${project.id}/graph`)));
     }
     requireCondition(this.state.source === source, 'SOURCE', '数据源已切换，请重新刷新。');
     await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts], async () => {
@@ -432,9 +433,26 @@ export class CollaborationRepository implements RepositorySync {
         && (pending.projectId === null || pending.projectId === result.projectId)
         && typeof result.revision === 'number' && Number.isSafeInteger(result.revision) && result.revision >= 0
         && typeof result.deleted === 'boolean', 'RESPONSE', '提交回执无效，已保留原请求。');
-      const graph = result.deleted ? null : parseProjectSnapshot(await this.request(`/projects/${result.projectId}`));
-      requireCondition(!graph || (graph.project.id === result.projectId && graph.project.revision >= result.revision),
-        'RESPONSE', '读取的项目身份或修订与提交回执不一致，请保留原请求并重试。');
+      const delta = result.delta === undefined ? null : parseProjectDelta(result.delta, result.projectId);
+      requireCondition(!delta || (!result.deleted && delta.revision === result.revision),
+        'RESPONSE', '提交回执与项目变更修订或删除状态不一致，已保留原请求。');
+      let graph: ProjectGraph | null = null;
+      if (!result.deleted) {
+        const key = this.key(result.projectId);
+        const mirror = await this.cache.mirrors.get(key);
+        const canApplyDelta = delta?.baseRevision === null
+          ? !mirror
+          : Boolean(delta && mirror && !mirror.deleted && mirror.graph.project.revision === delta.baseRevision);
+        if (delta && canApplyDelta) {
+          graph = parseProjectSnapshot(collaborationSnapshot(applyProjectDelta(mirror?.graph ?? null, delta)));
+          requireCondition(graph.project.id === result.projectId && graph.project.revision === result.revision,
+            'RESPONSE', '提交增量的项目身份或修订无效，已保留原请求。');
+        } else {
+          graph = parseProjectSnapshot(await this.request(`/projects/${result.projectId}/graph`));
+          requireCondition(graph.project.id === result.projectId && graph.project.revision >= result.revision,
+            'RESPONSE', '读取的项目身份或修订与提交回执不一致，请保留原请求并重试。');
+        }
+      }
       requireCondition(pending.source === this.state.source && pending.owner === this.state.user?.id, 'SOURCE', '提交期间账号或来源改变，已保留原请求供原账号恢复。');
       await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
         if (graph) await this.putMirror(graph);
@@ -495,9 +513,10 @@ export class CollaborationRepository implements RepositorySync {
     const sharedRevision = mirror.graph.project.revision;
     next.project.revision = sharedRevision;
     const suffix = metadata?.state ? 'state' : metadata ? 'command' : '';
+    const base = { ...current, project: { ...current.project, revision: sharedRevision } };
     const body = metadata?.state ? { revision: sharedRevision, nodeId: metadata.nodeId, action: metadata.state }
-      : metadata ? { revision: sharedRevision, command: metadata } : collaborationSnapshot(next);
-    const result = await this.mutate(suffix ? 'POST' : 'PUT', `/projects/${id}${suffix ? `/${suffix}` : ''}`, body, id);
+      : metadata ? { revision: sharedRevision, command: metadata } : diffProjectGraphs(base, next);
+    const result = await this.mutate(suffix ? 'POST' : 'PATCH', `/projects/${id}${suffix ? `/${suffix}` : ''}`, body, id);
     requireCondition(result, 'RESPONSE', '保存响应无效。');
     return result;
   }
@@ -521,7 +540,7 @@ export class CollaborationRepository implements RepositorySync {
     validateGraph(current);
     assertOfflineChanges(mirror.graph, current);
     await this.mutate('POST', `/projects/${id}/offline`,
-      { revision: mirror.graph.project.revision, snapshot: collaborationSnapshot(current) }, id, true);
+      diffProjectGraphs(mirror.graph, current), id, true);
   }
 
   async deleteProject(id: string, revision: number, confirmedName: string) {

@@ -2,13 +2,38 @@ import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { CollaborationDatabase, CollaborationRepository, collaborationSnapshot } from '../src/storage/collaboration';
-import { createProject, type ProjectGraph, type VersionNode } from '../src/domain/model';
+import { createProject, type ProjectGraph, type Task, type VersionNode } from '../src/domain/model';
 import { parseProjectSnapshot } from '../src/domain/project-snapshot';
 import { assertOfflineChanges } from '../src/domain/collaboration';
+import { createProjectDelta, type EntityChanges, type ProjectChanges } from '../src/domain/project-changes';
+import { orderedBranches } from '../src/domain/model';
 
 const databases: (ArchiveDatabase | CollaborationDatabase)[] = [];
 function createNode(graph: ProjectGraph, input: { version: string; description: string }): VersionNode {
   return { id: crypto.randomUUID(), projectId: graph.project.id, ...input, taskId: null, releasedAt: null, testingAt: null };
+}
+
+function applyChanges<T extends { id: string }>(items: T[], patch?: EntityChanges<T>): T[] {
+  if (!patch) return items;
+  const removed = new Set(patch.delete);
+  const next = items.filter(item => !removed.has(item.id));
+  for (const item of patch.upsert) {
+    const index = next.findIndex(previous => previous.id === item.id);
+    if (index < 0) next.push(item);
+    else next[index] = item;
+  }
+  return next;
+}
+
+function applyProjectChanges(graph: ProjectGraph, changes: ProjectChanges): ProjectGraph {
+  const next = structuredClone(graph);
+  if (changes.project) next.project = { ...next.project, ...changes.project };
+  next.nodes = applyChanges(next.nodes, changes.nodes);
+  next.edges = applyChanges(next.edges, changes.edges);
+  next.tasks = applyChanges(next.tasks, changes.tasks);
+  next.branches = orderedBranches(applyChanges(next.branches, changes.branches));
+  next.project.revision = graph.project.revision + 1;
+  return next;
 }
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -23,7 +48,7 @@ function setup() {
     role: 'admin', disabled: false, mustChangePassword: false, avatar: null,
   };
   let graph = parseProjectSnapshot(collaborationSnapshot(createProject('共享项目', '123')));
-  let offline = false, loseResponse = false, failRead = false;
+  let offline = false, loseResponse = false, failRead = false, legacyReceipt = false, graphReads = 0;
   const receipts = new Map<string, unknown>();
   const requests: { id: string; body: unknown }[] = [];
   const fetcher = vi.fn(async (url: string, init: RequestInit) => {
@@ -37,7 +62,9 @@ function setup() {
     if (path === '/instance') return response({ databaseId: source });
     if (path === '/auth/logout') return response({ loggedOut: true });
     if (path === '/projects' && init.method === 'GET') return response({ projects: [graph.project] });
-    if (path === `/projects/${graph.project.id}` && init.method === 'GET') {
+    if (path === `/projects/${graph.project.id}` && init.method === 'GET') return response(graph.project);
+    if (path === `/projects/${graph.project.id}/graph` && init.method === 'GET') {
+      graphReads++;
       if (failRead) throw new TypeError('read failed');
       return response(collaborationSnapshot(graph));
     }
@@ -45,18 +72,31 @@ function setup() {
     if (receipts.has(id)) return response(receipts.get(id));
     requests.push({ id, body });
     let next: ProjectGraph;
-    if (path.endsWith('/import') || path.endsWith('/offline')) {
+    let previous: ProjectGraph | null = graph;
+    if (path === '/projects' && init.method === 'POST') {
+      const input = body as { name: string; partNumber: string };
+      next = createProject(input.name, input.partNumber);
+      previous = null;
+    } else if (path.endsWith('/import')) {
       const envelope = body as { snapshot: unknown; revision?: number; expectedRevision?: number };
       next = parseProjectSnapshot(envelope.snapshot);
       if ((envelope.revision ?? envelope.expectedRevision) !== graph.project.revision)
         return response({ error: { code: 'STALE_REVISION', message: '共享项目已变化' } }, 409);
-      if (path.endsWith('/offline')) assertOfflineChanges(graph, next);
-    } else next = parseProjectSnapshot(body);
+    } else if (path.endsWith('/offline')) {
+      next = applyProjectChanges(graph, body as ProjectChanges);
+      assertOfflineChanges(graph, next);
+    } else if (init.method === 'PATCH') next = applyProjectChanges(graph, body as ProjectChanges);
+    else next = parseProjectSnapshot(body);
     if (next.nodes.some((node, index) => next.nodes.slice(index + 1).some(other => node.version === other.version)))
       return response({ error: { code: 'DUPLICATE_VERSION', message: '版本重复' } }, 400);
-    next.project.revision = graph.project.revision + 1;
+    next.project.revision = previous ? previous.project.revision + 1 : 0;
     graph = next;
-    const result = { projectId: graph.project.id, revision: graph.project.revision, deleted: false };
+    const useLegacyReceipt = legacyReceipt;
+    legacyReceipt = false;
+    const result = {
+      projectId: graph.project.id, revision: graph.project.revision, deleted: false,
+      ...(useLegacyReceipt ? {} : { delta: createProjectDelta(previous, graph) }),
+    };
     receipts.set(id, result);
     if (loseResponse) { loseResponse = false; throw new TypeError('lost after commit'); }
     return response(result);
@@ -71,14 +111,27 @@ function setup() {
   return {
     local, client, repository, db, cache, source, admin, fetcher, requests,
     graph: () => structuredClone(graph),
+    graphReads: () => graphReads,
     setGraph: (next: ProjectGraph) => { graph = next; },
     network: (value: boolean) => { offline = !value; },
     loseResponse: () => { loseResponse = true; },
     failRead: (value: boolean) => { failRead = value; },
+    legacyReceipt: () => { legacyReceipt = true; },
   };
 }
 
 describe('共享副本与离线草稿', () => {
+  it('新项目从创建回执建立本机副本而不请求完整图', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const readsBeforeCreate = s.graphReads();
+    const created = await s.client.create('新项目', 'PN-01');
+    expect(created.project.name).toBe('新项目');
+    expect(created.project.revision).toBe(1);
+    expect(s.graphReads()).toBe(readsBeforeCreate);
+    expect((await s.repository.get(created.project.id)).project.name).toBe('新项目');
+  });
+
   it('保留历史单人数据且只读，在线先共享提交再更新镜像；普通成员不能预览恢复', async () => {
     const s = setup();
     const legacy = await s.local.create('历史', 'old');
@@ -86,12 +139,36 @@ describe('共享副本与离线草稿', () => {
     await expect(s.repository.setPartNumber(legacy.project.id, 0, 'changed')).rejects.toThrow('只读');
     await s.client.login('admin', 'test', true);
     const current = (await s.repository.listProjects())[0]!;
+    const readsBeforeSave = s.graphReads();
     const saved = await s.repository.setPartNumber(current.id, current.revision, '456');
     expect(saved.project.partNumber).toBe('456');
+    expect(s.graphReads()).toBe(readsBeforeSave);
     expect(s.graph().project.partNumber).toBe('456');
     expect((await s.local.get(legacy.project.id)).project.partNumber).toBe('old');
     s.client.state.user!.role = 'member';
     await expect(s.repository.previewSnapshotRestore(s.graph(), current.id)).rejects.toThrow('管理员');
+  });
+
+  it('单任务修改只发送任务增量，并从提交回执更新副本而不重读完整图', async () => {
+    const s = setup();
+    const initial = s.graph();
+    const task: Task = {
+      id: crypto.randomUUID(), projectId: initial.project.id, parentTaskId: null, name: '原任务', description: '',
+      externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null, assigneeId: null,
+      startDate: null, dueDate: null, sortOrder: 0, comments: [],
+    };
+    initial.tasks.push(task);
+    s.setGraph(initial);
+    await s.client.login('admin', 'test', true);
+    const current = await s.repository.get(initial.project.id);
+    const readsBeforeSave = s.graphReads();
+    const updated = { ...task, name: '已更新任务' };
+    const saved = await s.repository.saveTask(initial.project.id, current.project.revision, updated);
+    expect(saved.tasks).toEqual([updated]);
+    expect(s.graphReads()).toBe(readsBeforeSave);
+    const request = s.requests.at(-1)?.body as ProjectChanges;
+    expect(Object.keys(request)).toEqual(['revision', 'tasks']);
+    expect(request.tasks).toEqual({ upsert: [updated], delete: [] });
   });
 
   it('相依离线版本和编辑跨重开保留，既有内容只读，重连不自动上传，确认后一次同步', async () => {
@@ -149,6 +226,7 @@ describe('共享副本与离线草稿', () => {
     const restored = s.graph();
     restored.nodes.push(createNode(restored, { version: 'backup', description: '来自备份' }));
     const preview = await s.repository.previewSnapshotRestore(restored, id);
+    s.legacyReceipt();
     // Fail only after the POST receipt so preview refresh can still read the old graph.
     const fetcher = globalThis.fetch;
     let injected = false;

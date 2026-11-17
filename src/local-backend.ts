@@ -32,8 +32,8 @@ export async function checkLocalBackend(port: number, signal: AbortSignal): Prom
     throw new Error('健康检查未返回有效 JSON；此端口可能不是 IQAN Archive 后端。');
   });
   if (!value || typeof value !== 'object' || !('product' in value) || value.product !== 'iqan-archive-server'
-    || !('apiVersion' in value) || value.apiVersion !== 1
-    || !('databaseVersion' in value) || value.databaseVersion !== 1
+    || !('apiVersion' in value) || value.apiVersion !== 2
+    || !('databaseVersion' in value) || value.databaseVersion !== 4
     || !('initialized' in value) || typeof value.initialized !== 'boolean') {
     throw new Error('服务标识或 API/数据库版本不兼容，请使用匹配的 IQAN Archive 后端。');
   }
