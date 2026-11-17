@@ -20,6 +20,14 @@ import { renderMarkdown } from '../utils/markdown';
 import { placeContextMenu } from '../utils/viewport';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string; focusNodeId?: string | null; panelRoute?: string[] }>();
+const sharedWritable = computed(() => {
+  const permissions = props.repository.permissions;
+  return !permissions || (permissions.sharedWritable && !permissions.draftProjectIds.includes(props.projectId));
+});
+const newVersionWritable = computed(() => props.repository.permissions?.newVersionWritable ?? true);
+const draftNodeIds = computed(() => props.repository.permissions?.draftNodeIds[props.projectId] ?? []);
+const selectedWritable = computed(() => sharedWritable.value || (newVersionWritable.value
+  && !!selectedNode.value && draftNodeIds.value.includes(selectedNode.value.id)));
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const emit = defineEmits<{
   busy: [value: boolean];
@@ -405,6 +413,9 @@ const deletionEngineeringWarnings = ref<string[]>([]);
 const deletionEngineeringScanning = ref(false);
 const deletionRevision = ref<number | null>(null);
 const nodeForm = ref({ version: '', description: '', parentIds: [] as string[], targetBranchId: '' });
+watch(sharedWritable, allowed => {
+  if (!allowed && panel.value === 'node-add') nodeForm.value.targetBranchId = '';
+});
 const branchForm = ref({ id: '', name: '', description: '', color: '#2563eb', headId: '' });
 const branchEditRevision = ref(0);
 const editorOpen = computed(() => !!(panel.value || branchDeleteTarget.value || deletionPlan.value));
@@ -818,7 +829,7 @@ watch(pendingNodeSwitch, async value => {
 });
 
 function startBranchDrag(event: DragEvent, branch: Branch) {
-  if (saving.value || editorOpen.value || !event.dataTransfer || !graph.value) {
+  if (!sharedWritable.value || saving.value || editorOpen.value || !event.dataTransfer || !graph.value) {
     event.preventDefault();
     return;
   }
@@ -893,12 +904,12 @@ const undoHistory = ref<UndoEntry[]>([]);
 const redoHistory = ref<UndoEntry[]>([]);
 const undoAvailable = computed(() => {
   const last = undoHistory.value.at(-1);
-  return !!last && !saving.value && graph.value?.project.revision === last.afterRevision;
+  return !!last && sharedWritable.value && !saving.value && graph.value?.project.revision === last.afterRevision;
 });
 const undoLabel = computed(() => undoHistory.value.at(-1)?.label ?? '');
 const redoAvailable = computed(() => {
   const last = redoHistory.value.at(-1);
-  return !!last && !saving.value && graph.value?.project.revision === last.afterRevision;
+  return !!last && sharedWritable.value && !saving.value && graph.value?.project.revision === last.afterRevision;
 });
 
 function clearHistory() {
@@ -1821,6 +1832,10 @@ function openNodeEdit() {
 }
 
 function openNodeEditFor(nodeId: string) {
+  if (!sharedWritable.value && !(newVersionWritable.value && draftNodeIds.value.includes(nodeId))) {
+    showError(new Error('当前共享版本只读；离线仅可新增版本并编辑本机待同步版本。'));
+    return;
+  }
   const node = nodeById.value.get(nodeId);
   if (!node) return;
   clearNodeClickTimer();
@@ -2590,6 +2605,11 @@ function openBranchDelete() {
 }
 
 function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delete' | 'branch' | 'merge') {
+  if (action === 'add' ? !newVersionWritable.value
+    : action === 'edit' || action === 'parents' ? !selectedWritable.value : !sharedWritable.value) {
+    showError(new Error('此操作当前只读，请连接并登录；有草稿的项目请先同步。'));
+    return;
+  }
   const count = selectedNodeIds.value.length;
   if (action === 'add') openNodeAdd(count === 1 ? selectedNodeIds.value : []);
   else if (action === 'edit' && count === 1) openNodeEdit();
@@ -2679,7 +2699,7 @@ function onIqanDialogClosed() {
         <button class="tool-button" :disabled="!undoAvailable" aria-label="撤销上一步" aria-keyshortcuts="Control+z Meta+z" :title="undoLabel ? `撤销：${undoLabel}（Ctrl/Cmd+Z）` : '撤销上一步（Ctrl/Cmd+Z）'" @click="undo">
           <AppIcon name="undo" /><span class="tool-caption">撤销</span>
         </button>
-        <button class="tool-button tool-button-accent" :disabled="saving" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
+        <button class="tool-button tool-button-accent" :disabled="saving || !newVersionWritable" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
         <button class="tool-button" :disabled="saving || editorOpen" aria-label="打开任务看板" title="进入项目任务看板" @click="openTaskBoard"><AppIcon name="tasks" /><span class="tool-caption">任务看板</span></button>
         <button class="tool-button" :disabled="saving || editorOpen" aria-label="查看软件对比文档" title="软件对比文档" @click="emit('documents')"><AppIcon name="documents" /><span class="tool-caption">软件对比文档</span></button>
         <button class="tool-button" :disabled="saving || editorOpen" aria-label="管理分支顺序" title="查看全部分支并调整顺序；顺序决定共享节点与连线的颜色及优先轨道" @click="openBranchManager"><AppIcon name="branch" /><span class="tool-caption">分支管理</span></button>
@@ -2688,28 +2708,28 @@ function onIqanDialogClosed() {
       <div class="graph-toolbar-row">
         <button class="tool-button" :disabled="saving || editorOpen || selectedNodeIds.length !== 1" aria-label="在 IQANdesign 中打开选中版本" title="重新扫描并检查文件后，请求本地启动器打开工程" @click="startIqanAction('open', selectedNodeIds)"><AppIcon name="file" /><span class="tool-caption">打开工程</span></button>
         <button class="tool-button tool-button-accent" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" aria-label="对比选中的两个版本" title="按当前选择顺序预览并对比两个工程文件" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" /><span class="tool-caption">对比工程</span></button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="新增子版本" title="为选中的一个版本新增子版本" @click="startNodeAction('add')"><AppIcon name="plus" /><span class="tool-caption">新增子版本</span></button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="编辑版本" title="编辑选中版本的版本号与说明；已放行版本仅可编辑说明" @click="startNodeAction('edit')"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" aria-label="设置父版本" :title="selectedNode?.releasedAt ? '可直接修改已放行版本的父节点；新父链祖先会自动补齐放行状态' : '搜索并设置选中版本的父节点'" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length < 2" aria-label="合并版本" title="选择至少两个版本后创建合并版本" @click="startNodeAction('merge')"><AppIcon name="merge" /><span class="tool-caption">合并</span></button>
-        <button class="tool-button tool-button-danger" :disabled="saving || selectedNodeIds.length < 2 || !selectedRelations.length" aria-label="清除父子关联" title="预览清除所选版本的全部直接父子边，包括与未选版本的关系；已放行父边不可修改" @click="openRelationPreview('clear')"><AppIcon name="clear" /><span class="tool-caption">清除关联</span></button>
-        <button class="tool-button" :disabled="saving || !canBuildLinearRelations" aria-label="构建线性关联" title="将所选游离版本按版本号从旧到新线性关联；不受当前显示排序影响" @click="openRelationPreview('linear')"><AppIcon name="link" /><span class="tool-caption">线性关联</span></button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1" :aria-label="selectedNode?.releasedAt ? '撤销放行' : '放行版本'" :title="selectedNode?.releasedAt ? '撤销选中版本的放行；不可破坏已放行后代闭包' : '放行选中版本及其全部祖先'" @click="startNodeAction('release')">
+        <button class="tool-button" :disabled="saving || !newVersionWritable || selectedNodeIds.length !== 1" aria-label="新增子版本" title="为选中的一个版本新增子版本" @click="startNodeAction('add')"><AppIcon name="plus" /><span class="tool-caption">新增子版本</span></button>
+        <button class="tool-button" :disabled="saving || !selectedWritable || selectedNodeIds.length !== 1" aria-label="编辑版本" title="编辑选中版本的版本号与说明；已放行版本仅可编辑说明" @click="startNodeAction('edit')"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
+        <button class="tool-button" :disabled="saving || !selectedWritable || selectedNodeIds.length !== 1" aria-label="设置父版本" :title="selectedNode?.releasedAt ? '可直接修改已放行版本的父节点；新父链祖先会自动补齐放行状态' : '搜索并设置选中版本的父节点'" @click="startNodeAction('parents')"><AppIcon name="link" /><span class="tool-caption">设置父版本</span></button>
+        <button class="tool-button" :disabled="saving || !sharedWritable || selectedNodeIds.length < 2" aria-label="合并版本" title="选择至少两个版本后创建合并版本" @click="startNodeAction('merge')"><AppIcon name="merge" /><span class="tool-caption">合并</span></button>
+        <button class="tool-button tool-button-danger" :disabled="saving || !sharedWritable || selectedNodeIds.length < 2 || !selectedRelations.length" aria-label="清除父子关联" title="预览清除所选版本的全部直接父子边，包括与未选版本的关系；已放行父边不可修改" @click="openRelationPreview('clear')"><AppIcon name="clear" /><span class="tool-caption">清除关联</span></button>
+        <button class="tool-button" :disabled="saving || !sharedWritable || !canBuildLinearRelations" aria-label="构建线性关联" title="将所选游离版本按版本号从旧到新线性关联；不受当前显示排序影响" @click="openRelationPreview('linear')"><AppIcon name="link" /><span class="tool-caption">线性关联</span></button>
+        <button class="tool-button" :disabled="saving || !sharedWritable || selectedNodeIds.length !== 1" :aria-label="selectedNode?.releasedAt ? '撤销放行' : '放行版本'" :title="selectedNode?.releasedAt ? '撤销选中版本的放行；不可破坏已放行后代闭包' : '放行选中版本及其全部祖先'" @click="startNodeAction('release')">
           <AppIcon :name="selectedNode?.releasedAt ? 'unrelease' : 'release'" /><span class="tool-caption">{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</span>
         </button>
-        <button class="tool-button" :disabled="saving || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" :aria-label="selectedNode?.testingAt ? '取消放行测试' : '设为放行测试中'" :title="selectedNode?.testingAt ? '取消本版本及测试中后代的放行测试' : '设置本版本及未放行祖先为放行测试中'" @click="toggleTestingSelectedNode">
+        <button class="tool-button" :disabled="saving || !sharedWritable || selectedNodeIds.length !== 1 || !!selectedNode?.releasedAt" :aria-label="selectedNode?.testingAt ? '取消放行测试' : '设为放行测试中'" :title="selectedNode?.testingAt ? '取消本版本及测试中后代的放行测试' : '设置本版本及未放行祖先为放行测试中'" @click="toggleTestingSelectedNode">
           <AppIcon name="release-testing" /><span class="tool-caption">{{ selectedNode?.testingAt ? '取消测试' : '放行测试' }}</span>
         </button>
-        <button class="tool-button tool-button-danger" :disabled="saving || selectedNodeIds.length === 0" aria-label="删除所选版本" title="预览删除所选版本及关系重连，确认后才执行" @click="startNodeAction('delete')"><AppIcon name="trash" /><span class="tool-caption">删除版本</span></button>
-        <button class="tool-button" :disabled="saving || (selectedNodeIds.length !== 1 && !selectedBranch)" aria-label="创建分支" title="从选中版本或分支头创建分支" @click="selectedBranch ? openBranchAdd(selectedBranch.headId) : startNodeAction('branch')"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
+        <button class="tool-button tool-button-danger" :disabled="saving || !sharedWritable || selectedNodeIds.length === 0" aria-label="删除所选版本" title="预览删除所选版本及关系重连，确认后才执行" @click="startNodeAction('delete')"><AppIcon name="trash" /><span class="tool-caption">删除版本</span></button>
+        <button class="tool-button" :disabled="saving || !sharedWritable || (selectedNodeIds.length !== 1 && !selectedBranch)" aria-label="创建分支" title="从选中版本或分支头创建分支" @click="selectedBranch ? openBranchAdd(selectedBranch.headId) : startNodeAction('branch')"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
       </div>
 
       <div v-if="selectedBranch" class="graph-branch-actions" :style="{ '--branch-color': selectedBranch.color }">
         <span class="branch-selected-indicator">{{ selectedBranch.name }}<small>· 头：{{ nodeById.get(selectedBranch.headId)?.version ?? '未知' }}</small></span>
-        <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑选中分支的名称、说明与颜色" @click="openBranchEdit()"><AppIcon name="edit" /><span class="tool-caption">编辑分支</span></button>
+        <button class="tool-button" :disabled="saving || !sharedWritable" aria-label="编辑分支" title="编辑选中分支的名称、说明与颜色" @click="openBranchEdit()"><AppIcon name="edit" /><span class="tool-caption">编辑分支</span></button>
         <button class="tool-button" :disabled="saving" aria-label="放行分支" title="放行选中分支的头版本及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
         <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从选中分支的头版本创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
-        <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，保留版本及父子关系；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
+        <button class="tool-button tool-button-danger" :disabled="saving || !sharedWritable" aria-label="删除分支" title="删除分支记录，保留版本及父子关系；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
       </div>
       <span role="status" class="selection-count">已选 {{ selectedNodeIds.length }} / {{ graph.nodes.length }} 个版本 · Ctrl/Cmd 点击离散多选 · Shift 点击连续多选</span>
     </div>
@@ -2884,7 +2904,7 @@ function onIqanDialogClosed() {
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
                     <span class="git-commit-content">
-                      <span class="git-commit-version"><AppIcon v-if="row.node.testingAt && !row.node.releasedAt" class="git-testing-icon" name="release-testing" />{{ row.node.version }}</span>
+                      <span class="git-commit-version"><AppIcon v-if="row.node.testingAt && !row.node.releasedAt" class="git-testing-icon" name="release-testing" />{{ row.node.version }}<small v-if="draftNodeIds.includes(row.node.id)"> · 待同步</small></span>
                       <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                     </span>
                   </button>
@@ -2898,7 +2918,7 @@ function onIqanDialogClosed() {
                       :class="{ selected: activeBranchId === branch.id }"
                       :style="{ '--branch-color': branch.color }"
                       :aria-pressed="activeBranchId === branch.id"
-                      :draggable="!saving && !editorOpen"
+                      :draggable="sharedWritable && !saving && !editorOpen"
                       :title="`${branch.name}；拖到版本行以移动分支指针，或通过编辑分支选择版本`"
                       @dragstart="startBranchDrag($event, branch)"
                       @dragend="endBranchDrag"
@@ -2956,7 +2976,7 @@ function onIqanDialogClosed() {
                     @contextmenu="openNodeMenu($event, row.node.id)"
                   >
                     <span class="git-commit-content">
-                      <span class="git-commit-version"><AppIcon v-if="row.node.testingAt && !row.node.releasedAt" class="git-testing-icon" name="release-testing" />{{ row.node.version }}</span>
+                      <span class="git-commit-version"><AppIcon v-if="row.node.testingAt && !row.node.releasedAt" class="git-testing-icon" name="release-testing" />{{ row.node.version }}<small v-if="draftNodeIds.includes(row.node.id)"> · 待同步</small></span>
                       <span class="git-commit-description">{{ row.node.description || '（无改动说明）' }}</span>
                     </span>
                   </button>
@@ -2965,7 +2985,7 @@ function onIqanDialogClosed() {
                       v-for="branch in row.branchHeads" :key="branch.id" class="git-branch-label"
                       :class="{ selected: activeBranchId === branch.id }"
                       :style="{ '--branch-color': branch.color }" :aria-pressed="activeBranchId === branch.id"
-                      :draggable="!saving && !editorOpen"
+                      :draggable="sharedWritable && !saving && !editorOpen"
                       title="拖到版本行以移动分支指针，或通过编辑分支选择版本"
                       @dragstart="startBranchDrag($event, branch)" @dragend="endBranchDrag"
                       @click="selectBranch(branch.id)" @contextmenu="openBranchMenu($event, branch.id)"
@@ -2985,10 +3005,10 @@ function onIqanDialogClosed() {
       <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : menu.kind === 'task' ? '任务操作' : '工程文件操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
           <button role="menuitem" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" />对比所选版本（已选 {{ selectedNodeIds.length }} 个）</button>
-          <button role="menuitem" :disabled="saving" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
-          <button role="menuitem" :disabled="saving || !selectedRelations.length" @click="openRelationPreview('clear')"><AppIcon name="clear" />清除父子关联</button>
-          <button role="menuitem" :disabled="saving || !canBuildLinearRelations" @click="openRelationPreview('linear')"><AppIcon name="link" />构建线性关联</button>
-          <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除所选版本</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable || !selectedRelations.length" @click="openRelationPreview('clear')"><AppIcon name="clear" />清除父子关联</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable || !canBuildLinearRelations" @click="openRelationPreview('linear')"><AppIcon name="link" />构建线性关联</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="openDeletion"><AppIcon name="trash" />删除所选版本</button>
         </template>
         <template v-else-if="menu.kind === 'node'">
           <div class="graph-menu-open-row" role="none">
@@ -3009,13 +3029,13 @@ function onIqanDialogClosed() {
             ><AppIcon :name="menuOpenLocationBusy ? 'scan' : menuOpenLocation === 'local' ? 'computer' : 'cloud'" /></span>
           </div>
           <button role="menuitem" disabled><AppIcon name="compare" />对比所选版本（需选中 2 个）</button>
-          <button role="menuitem" :disabled="saving" @click="openNodeAdd([menu.id]); closeMenu(false)"><AppIcon name="plus" />新增子版本</button>
-          <button role="menuitem" :disabled="saving" @click="openBranchAdd(menu.id)"><AppIcon name="branch" />创建分支</button>
-          <button role="menuitem" :disabled="saving" @click="openNodeEdit(); closeMenu(false)"><AppIcon name="edit" />编辑</button>
-          <button role="menuitem" :disabled="saving" @click="openParentEdit(); closeMenu(false)" :title="selectedNode?.releasedAt ? '更换父节点后会自动补齐新放行链' : undefined"><AppIcon name="link" />设置父版本</button>
-          <button role="menuitem" :disabled="saving" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
-          <button role="menuitem" :disabled="saving || !!selectedNode?.releasedAt" @click="toggleTestingSelectedNode(); closeMenu(false)"><AppIcon name="release-testing" />{{ selectedNode?.testingAt ? '取消放行测试' : '设为放行测试中' }}</button>
-          <button role="menuitem" :disabled="saving" @click="openDeletion"><AppIcon name="trash" />删除</button>
+          <button role="menuitem" :disabled="saving || !newVersionWritable" @click="openNodeAdd([menu.id]); closeMenu(false)"><AppIcon name="plus" />新增子版本</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="openBranchAdd(menu.id)"><AppIcon name="branch" />创建分支</button>
+          <button role="menuitem" :disabled="saving || !selectedWritable" @click="openNodeEdit(); closeMenu(false)"><AppIcon name="edit" />编辑</button>
+          <button role="menuitem" :disabled="saving || !selectedWritable" @click="openParentEdit(); closeMenu(false)" :title="selectedNode?.releasedAt ? '更换父节点后会自动补齐新放行链' : undefined"><AppIcon name="link" />设置父版本</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="releaseSelectedNode(); closeMenu(false)"><AppIcon name="release" />{{ selectedNode?.releasedAt ? '撤销放行' : '放行' }}</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable || !!selectedNode?.releasedAt" @click="toggleTestingSelectedNode(); closeMenu(false)"><AppIcon name="release-testing" />{{ selectedNode?.testingAt ? '取消放行测试' : '设为放行测试中' }}</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="openDeletion"><AppIcon name="trash" />删除</button>
         </template>
         <template v-else-if="menu.kind === 'task'">
           <button role="menuitem" :disabled="saving" @click="emit('taskBoard', menu.id); closeMenu(false)"><AppIcon name="tasks" />在任务看板中打开</button>
@@ -3046,9 +3066,9 @@ function onIqanDialogClosed() {
         </template>
         <template v-else-if="menu.kind === 'branch'">
           <button role="menuitem" :disabled="saving" @click="openBranchAdd(selectedBranch!.headId); closeMenu(false)"><AppIcon name="branch" />创建分支</button>
-          <button role="menuitem" :disabled="saving" @click="openBranchEdit(); closeMenu(false)"><AppIcon name="edit" />编辑分支</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="openBranchEdit(); closeMenu(false)"><AppIcon name="edit" />编辑分支</button>
           <button role="menuitem" :disabled="saving" @click="releaseBranch(); closeMenu(false)"><AppIcon name="release" />放行分支</button>
-          <button role="menuitem" :disabled="saving" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
+          <button role="menuitem" :disabled="saving || !sharedWritable" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
         </template>
       </div>
       </Teleport>
@@ -3161,10 +3181,10 @@ function onIqanDialogClosed() {
         <p class="form-help">{{ selectedBranch.description || '（无分支说明）' }}</p>
         <p class="workspace-details">头版本：{{ nodeById.get(selectedBranch.headId)?.version ?? '未知' }}</p>
         <div class="graph-detail-actions">
-          <button class="tool-button" :disabled="saving" aria-label="编辑分支" title="编辑分支名称、说明与颜色" @click="openBranchEdit()"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
-          <button class="tool-button" :disabled="saving" aria-label="放行分支" title="放行分支头及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
-          <button class="tool-button" :disabled="saving" aria-label="从此分支创建分支" title="从当前分支头创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
-          <button class="tool-button tool-button-danger" :disabled="saving" aria-label="删除分支" title="删除分支记录，版本及父子关系保留；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
+          <button class="tool-button" :disabled="saving || !sharedWritable" aria-label="编辑分支" title="编辑分支名称、说明与颜色" @click="openBranchEdit()"><AppIcon name="edit" /><span class="tool-caption">编辑</span></button>
+          <button class="tool-button" :disabled="saving || !sharedWritable" aria-label="放行分支" title="放行分支头及全部祖先" @click="releaseBranch"><AppIcon name="release" /><span class="tool-caption">放行分支</span></button>
+          <button class="tool-button" :disabled="saving || !sharedWritable" aria-label="从此分支创建分支" title="从当前分支头创建分支" @click="openBranchAdd(selectedBranch.headId)"><AppIcon name="branch" /><span class="tool-caption">创建分支</span></button>
+          <button class="tool-button tool-button-danger" :disabled="saving || !sharedWritable" aria-label="删除分支" title="删除分支记录，版本及父子关系保留；需确认" @click="openBranchDelete"><AppIcon name="trash" /><span class="tool-caption">删除分支</span></button>
         </div>
       </aside>
 
@@ -3202,7 +3222,7 @@ function onIqanDialogClosed() {
       <h3 tabindex="-1">删除分支记录</h3>
       <p>将删除“{{ graph?.branches.find(branch => branch.id === branchDeleteTarget)?.name }}”分支记录，不会删除版本、关系或磁盘文件。</p>
       <div class="actions">
-        <button class="danger" :disabled="saving" @click="confirmBranchDelete"><AppIcon name="trash" />确认删除分支</button>
+        <button class="danger" :disabled="saving || !sharedWritable" @click="confirmBranchDelete"><AppIcon name="trash" />确认删除分支</button>
         <button class="secondary" :disabled="saving" @click="branchDeleteTarget = null">取消</button>
       </div>
     </div>
@@ -3219,9 +3239,9 @@ function onIqanDialogClosed() {
             <small>头：{{ nodeById.get(branch.headId)?.version ?? '未知' }}</small>
           </span>
           <div class="branch-order-actions">
-            <button type="button" class="secondary icon-button" :disabled="saving || index === 0" :aria-label="`上移分支 ${branch.name}`" :title="`上移 ${branch.name}`" @click="moveBranchOrder(branch.id, -1)">↑</button>
-            <button type="button" class="secondary icon-button" :disabled="saving || index === orderedBranchList.length - 1" :aria-label="`下移分支 ${branch.name}`" :title="`下移 ${branch.name}`" @click="moveBranchOrder(branch.id, 1)">↓</button>
-            <button type="button" class="secondary" :disabled="saving" :aria-label="`编辑分支 ${branch.name}`" @click="openBranchEdit(branch.id)">编辑</button>
+            <button type="button" class="secondary icon-button" :disabled="saving || !sharedWritable || index === 0" :aria-label="`上移分支 ${branch.name}`" :title="`上移 ${branch.name}`" @click="moveBranchOrder(branch.id, -1)">↑</button>
+            <button type="button" class="secondary icon-button" :disabled="saving || !sharedWritable || index === orderedBranchList.length - 1" :aria-label="`下移分支 ${branch.name}`" :title="`下移 ${branch.name}`" @click="moveBranchOrder(branch.id, 1)">↓</button>
+            <button type="button" class="secondary" :disabled="saving || !sharedWritable" :aria-label="`编辑分支 ${branch.name}`" @click="openBranchEdit(branch.id)">编辑</button>
           </div>
         </li>
       </ol>
@@ -3235,7 +3255,8 @@ function onIqanDialogClosed() {
       <h3 tabindex="-1">{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
       <form @submit.prevent="submitNode">
         <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
-        <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' && !!selectedNode?.releasedAt)" placeholder="例如：1479-1 20260115" />
+        <p v-if="!sharedWritable" class="form-help">当前仅可保存未同步的新版本，既有共享版本、分支、任务及放行状态只读；重连后需手动同步。</p>
+        <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' ? !selectedWritable || !!selectedNode?.releasedAt : !newVersionWritable)" placeholder="例如：1479-1 20260115" />
         <label for="git-description">改动说明</label>
         <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" :disabled="saving" />
         <TaskPicker v-model="nodeTaskId" :tasks="graph.tasks" :disabled="saving" />
@@ -3250,7 +3271,7 @@ function onIqanDialogClosed() {
           </ul>
           <p v-else class="form-help">没有选择父版本：版本将显示在“未关联版本”列。</p>
           <label for="git-target-branch">{{ panel === 'merge' ? '合并目标分支' : '推进目标分支' }}</label>
-          <select id="git-target-branch" v-model="nodeForm.targetBranchId" :disabled="saving">
+          <select id="git-target-branch" v-model="nodeForm.targetBranchId" :disabled="saving || !sharedWritable">
             <option v-if="panel !== 'merge'" value="">不推进分支</option>
             <option
               v-for="branch in graph?.branches"
@@ -3261,7 +3282,7 @@ function onIqanDialogClosed() {
           </select>
         </template>
         <div class="actions">
-          <button type="submit" :disabled="saving || !nodeForm.version.trim() || (panel === 'merge' && (nodeForm.parentIds.length < 2 || !nodeForm.targetBranchId))">
+          <button type="submit" :disabled="saving || (panel === 'node-edit' ? !selectedWritable : !newVersionWritable) || !nodeForm.version.trim() || (panel === 'merge' && (!sharedWritable || nodeForm.parentIds.length < 2 || !nodeForm.targetBranchId))">
             <AppIcon name="check" />{{ panel === 'merge' ? '创建合并版本' : panel === 'node-edit' ? '保存版本' : '新增版本' }}
           </button>
           <button type="button" class="secondary" :disabled="saving" @click="panel = null">取消</button>
@@ -3306,7 +3327,7 @@ function onIqanDialogClosed() {
         </template>
         <p class="form-help">分支头：{{ nodeById.get(branchForm.headId)?.version ?? '未知' }}。删除分支记录不会删除版本历史。</p>
         <div class="actions">
-          <button type="submit" :disabled="saving || !branchForm.name.trim()"><AppIcon name="check" />{{ panel === 'branch-add' ? '创建分支' : '保存分支' }}</button>
+          <button type="submit" :disabled="saving || !sharedWritable || !branchForm.name.trim()"><AppIcon name="check" />{{ panel === 'branch-add' ? '创建分支' : '保存分支' }}</button>
           <button type="button" class="secondary" :disabled="saving" @click="panel = null">取消</button>
         </div>
       </form>

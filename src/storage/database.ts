@@ -6,6 +6,7 @@ import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
 import { DEFAULT_BACKEND_PORT, parseBackendPort } from '../local-backend';
+import type { RepositorySync } from './repository-sync';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
   return {
@@ -166,6 +167,28 @@ export class ArchiveDatabase extends Dexie {
       for (const node of await nodes.toArray()) await nodes.put({ ...node, testingAt: null });
     });
     this.version(13).stores({ backendSettings: 'id' });
+    this.version(14).stores({}).upgrade(async transaction => {
+      const projects = transaction.table<Project>('projects');
+      const tasks = transaction.table<Task>('tasks');
+      const [projectRows, taskRows] = await Promise.all([projects.toArray(), tasks.toArray()]);
+      const assignedProjectIds = new Set<string>();
+      for (const task of taskRows) {
+        if (task.assigneeId === null) continue;
+        assignedProjectIds.add(task.projectId);
+        await tasks.put({ ...task, assigneeId: null });
+      }
+      for (const project of projectRows) {
+        const needsRevision = (project.assigneeOptions?.length ?? 0) > 0 || assignedProjectIds.has(project.id);
+        if (needsRevision) {
+          requireCondition(Number.isSafeInteger(project.revision + 1), 'MIGRATION_REVISION', '项目修订号超出可用范围，负责人迁移已取消。');
+        }
+        await projects.put({
+          ...project,
+          assigneeOptions: [],
+          revision: needsRevision ? project.revision + 1 : project.revision,
+        });
+      }
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -174,7 +197,8 @@ export class ArchiveDatabase extends Dexie {
 }
 
 export class ArchiveRepository {
-  constructor(public readonly db: ArchiveDatabase) {}
+  constructor(public readonly db: ArchiveDatabase, private readonly sync?: RepositorySync) {}
+  get permissions() { return this.sync?.permissions; }
 
   async getBackendPort(): Promise<number> {
     const settings = await this.db.backendSettings.get('connection');
@@ -186,10 +210,16 @@ export class ArchiveRepository {
   }
 
   async listProjects(): Promise<Project[]> {
+    if (this.sync) return this.sync.listProjects();
     return this.db.projects.toArray();
   }
 
+  async listAssignees(): Promise<import('../domain/model').TaskAssignee[]> {
+    return this.sync?.listAssignees() ?? [];
+  }
+
   async create(name: string, partNumber: string): Promise<ProjectGraph> {
+    if (this.sync) return this.sync.create(name, partNumber);
     const graph = createProject(name, partNumber);
     validateGraph(graph);
     await this.db.projects.add(graph.project);
@@ -216,6 +246,7 @@ export class ArchiveRepository {
   }
 
   async get(projectId: string): Promise<ProjectGraph> {
+    if (this.sync) return this.sync.get(projectId);
     return this.db.transaction('r', this.tables, () => this.read(projectId));
   }
 
@@ -237,7 +268,9 @@ export class ArchiveRepository {
     revision: number,
     transform: (graph: ProjectGraph) => ProjectGraph,
     deletion = false,
+    operation?: unknown,
   ): Promise<ProjectGraph> {
+    if (this.sync) return this.sync.change(projectId, revision, transform, deletion, operation);
     return this.db.transaction('rw', this.tables, async () => {
       const current = await this.read(projectId);
       requireCondition(current.project.revision === revision, 'STALE_REVISION', '其他标签页已更新项目，请刷新后重试。');
@@ -263,6 +296,7 @@ export class ArchiveRepository {
   }
 
   async restoreUndo(projectId: string, revision: number, previous: ProjectGraph): Promise<ProjectGraph> {
+    if (this.sync) return this.sync.restoreUndo(projectId, revision, previous);
     return this.db.transaction('rw', this.tables, async () => {
       const current = await this.read(projectId);
       requireCondition(current.project.revision === revision, 'STALE_REVISION', '其他标签页已更新项目，撤销已取消，请重新读取版本图。');
@@ -308,6 +342,7 @@ export class ArchiveRepository {
   }
 
   async deleteProject(projectId: string, revision: number, confirmedName: string): Promise<void> {
+    if (this.sync) return this.sync.deleteProject(projectId, revision, confirmedName);
     await this.db.transaction('rw', [...this.tables, this.db.directoryBindings], async () => {
       const current = await this.read(projectId);
       requireCondition(current.project.revision === revision, 'STALE_REVISION', '项目已更新，请取消删除，重新读取项目并确认。');
@@ -344,27 +379,30 @@ export class ArchiveRepository {
   }
 
   async release(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => release(graph, nodeId, new Date().toISOString()));
+    return this.change(projectId, revision, graph => release(graph, nodeId, new Date().toISOString()), false, { state: 'release', nodeId });
   }
 
   async startTesting(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => startReleaseTesting(graph, nodeId, new Date().toISOString()));
+    return this.change(projectId, revision, graph => startReleaseTesting(graph, nodeId, new Date().toISOString()), false, { state: 'start-testing', nodeId });
   }
 
   async cancelTesting(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => cancelReleaseTesting(graph, nodeId));
+    return this.change(projectId, revision, graph => cancelReleaseTesting(graph, nodeId), false, { state: 'cancel-testing', nodeId });
   }
 
   async revoke(projectId: string, revision: number, nodeId: string): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => revokeRelease(graph, nodeId));
+    return this.change(projectId, revision, graph => revokeRelease(graph, nodeId), false, { state: 'revoke', nodeId });
   }
 
   async deleteNode(projectId: string, revision: number, plan: DeletionPlan, confirmedVersion: string | null): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => applyDeletion(graph, plan, confirmedVersion), true);
+    return this.change(projectId, revision, graph => applyDeletion(graph, plan, confirmedVersion), true, {
+      type: 'delete', plan: { nodeIds: [plan.nodeId], childParents: plan.childParents, branchHeads: plan.branchHeads },
+      confirmedVersions: confirmedVersion === null ? {} : { [plan.nodeId]: confirmedVersion },
+    });
   }
 
   async deleteNodes(projectId: string, revision: number, plan: MultiDeletionPlan, confirmedVersions: Readonly<Record<string, string>>): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => applyDeletionMany(graph, plan, confirmedVersions), true);
+    return this.change(projectId, revision, graph => applyDeletionMany(graph, plan, confirmedVersions), true, { type: 'delete', plan, confirmedVersions });
   }
 
   async addNode(projectId: string, revision: number, node: VersionNode, parentIds: readonly string[], targetBranchId: string | null): Promise<ProjectGraph> {
@@ -388,11 +426,11 @@ export class ArchiveRepository {
   }
 
   async saveNodeParents(projectId: string, revision: number, childId: string, parentIds: readonly string[]): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => setNodeParents(graph, childId, parentIds));
+    return this.change(projectId, revision, graph => setNodeParents(graph, childId, parentIds), false, { type: 'parents', nodeId: childId, parentIds });
   }
 
   async changeRelations(projectId: string, revision: number, nodeIds: readonly string[], action: BatchRelationAction): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => changeVersionRelations(graph, nodeIds, action));
+    return this.change(projectId, revision, graph => changeVersionRelations(graph, nodeIds, action), false, { type: 'relations', nodeIds, action });
   }
 
   async saveBranch(projectId: string, revision: number, branchId: string, update: BranchUpdate): Promise<ProjectGraph> {
@@ -404,11 +442,12 @@ export class ArchiveRepository {
   }
 
   async snapshot(projectId: string): Promise<ProjectSnapshot> {
+    if (this.sync) return this.sync.snapshot(projectId);
     const graph = await this.get(projectId);
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = clean.project;
     return {
-      schemaVersion: 7,
+      schemaVersion: 8,
       graph: {
         ...clean,
         project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },
@@ -438,11 +477,13 @@ export class ArchiveRepository {
   }
 
   async previewSnapshotRestore(graph: ProjectGraph, currentProjectId: string): Promise<SnapshotImportPlan> {
+    if (this.sync) return this.sync.previewSnapshotRestore(graph, currentProjectId);
     validateGraph(graph);
     return this.db.transaction('r', this.tables, () => this.planSnapshotImport(graph, currentProjectId));
   }
 
   async restoreSnapshot(graph: ProjectGraph, currentProjectId: string, preview: SnapshotImportPlan): Promise<ProjectGraph> {
+    if (this.sync) return this.sync.restoreSnapshot(graph, currentProjectId, preview);
     validateGraph(graph);
     return this.db.transaction('rw', [...this.tables, this.db.directoryBindings], async () => {
       const current = await this.planSnapshotImport(graph, currentProjectId);
@@ -478,6 +519,7 @@ export class ArchiveRepository {
   }
 
   async importSnapshot(graph: ProjectGraph): Promise<{ graph: ProjectGraph; copied: boolean }> {
+    requireCondition(!this.sync, 'ADMIN_IMPORT', '协作模式请使用管理员 JSON 恢复预览。');
     validateGraph(graph);
     return this.db.transaction('rw', [...this.tables, this.db.directoryBindings], async () => {
       const clean = configurationOnly(graph);
@@ -536,17 +578,15 @@ export class ArchiveRepository {
     const statusOptions = remapOptions(graph.project.statusOptions);
     const typeOptions = remapOptions(graph.project.typeOptions);
     const priorityOptions = remapOptions(graph.project.priorityOptions);
-    const assigneeOptions = remapOptions(graph.project.assigneeOptions);
     const optionIdMap = (original: Project['statusOptions'], remapped: Project['statusOptions']) =>
       new Map(original.map((option, index) => [option.id, remapped[index]!.id]));
     const statusIdMap = optionIdMap(graph.project.statusOptions, statusOptions);
     const typeIdMap = optionIdMap(graph.project.typeOptions, typeOptions);
     const priorityIdMap = optionIdMap(graph.project.priorityOptions, priorityOptions);
-    const assigneeIdMap = optionIdMap(graph.project.assigneeOptions, assigneeOptions);
     return {
       project: {
         ...graph.project, id: projectId, revision: 0, engineeringDirectoryHint: '', wordDirectoryHint: '',
-        statusOptions, typeOptions, priorityOptions, assigneeOptions,
+        statusOptions, typeOptions, priorityOptions, assigneeOptions: [],
       },
       nodes: graph.nodes.map(item => ({
         ...item,
@@ -570,7 +610,7 @@ export class ArchiveRepository {
         statusOptionId: item.statusOptionId === null ? null : statusIdMap.get(item.statusOptionId)!,
         typeOptionId: item.typeOptionId === null ? null : typeIdMap.get(item.typeOptionId)!,
         priorityOptionId: item.priorityOptionId === null ? null : priorityIdMap.get(item.priorityOptionId)!,
-        assigneeId: item.assigneeId === null ? null : assigneeIdMap.get(item.assigneeId)!,
+        assigneeId: item.assigneeId,
         comments: item.comments.map(comment => ({ ...comment, id: crypto.randomUUID() })),
       })),
     };

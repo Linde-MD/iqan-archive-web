@@ -306,14 +306,12 @@ describe('任务看板顺序变换', () => {
     expect(() => moveTaskInBoard(graph, 'a', graph.project.statusOptions[1]!.id, 'b')).toThrow('排序目标无效');
   });
 
-  it('删除被引用的 Status 与 assignee 后清除引用并重排合并泳道', () => {
+  it('删除 Status/priority 选项不影响账号负责人，且拒绝项目负责人选项', () => {
     const graph = fixture();
     const [backlog, pending] = graph.project.statusOptions;
-    const assignee = { id: 'person-1', name: '工程师 A' };
     const priority = { id: 'priority-high', name: '高', indicatorCount: 2, indicatorColor: '#f05252' };
-    graph.project.assigneeOptions = [assignee];
     graph.project.priorityOptions = [priority];
-    graph.tasks[0]!.assigneeId = assignee.id;
+    graph.tasks[0]!.assigneeId = 'member-account-id';
     graph.tasks[0]!.priorityOptionId = priority.id;
     const next = updateTaskOptions(graph, {
       statusOptions: graph.project.statusOptions.slice(1),
@@ -323,10 +321,14 @@ describe('任务看板顺序变换', () => {
     });
     expect(next.tasks.find(task => task.id === 'a')?.statusOptionId).toBeNull();
     expect(next.tasks.find(task => task.id === 'c')?.statusOptionId).toBe(pending!.id);
-    expect(next.tasks.find(task => task.id === 'b')?.assigneeId).toBeNull();
+    expect(next.tasks.find(task => task.id === 'b')?.assigneeId).toBe('member-account-id');
     expect(next.tasks.find(task => task.id === 'b')?.priorityOptionId).toBeNull();
     expect(next.tasks.filter(task => task.statusOptionId === null).map(task => task.sortOrder).sort()).toEqual([0, 1, 2]);
     expect(() => validateGraph(next)).not.toThrow();
+    expect(() => updateTaskOptions(graph, {
+      statusOptions: graph.project.statusOptions, typeOptions: graph.project.typeOptions,
+      priorityOptions: graph.project.priorityOptions, assigneeOptions: [{ id: 'legacy', name: '旧负责人' }],
+    })).toThrow('负责人必须引用协作账号');
   });
 
   it('拒绝非法日历日期和截止早于开始日期', () => {

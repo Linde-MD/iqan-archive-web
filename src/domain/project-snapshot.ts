@@ -65,7 +65,7 @@ export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
 
 export function parseProjectSnapshot(value: unknown): ProjectGraph {
   let root = record(value, '快照', ['schemaVersion', 'graph']);
-  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5 || root.schemaVersion === 6 || root.schemaVersion === 7, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4、5、6 和 7 配置文件。');
+  requireCondition(root.schemaVersion === 3 || root.schemaVersion === 4 || root.schemaVersion === 5 || root.schemaVersion === 6 || root.schemaVersion === 7 || root.schemaVersion === 8, 'SNAPSHOT_VERSION', '仅支持 schemaVersion 3、4、5、6、7 和 8 配置文件。');
   if (root.schemaVersion === 3) {
     const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
     requireCondition(Array.isArray(legacy.tasks), 'SNAPSHOT_TYPE', 'graph.tasks 必须为数组。');
@@ -142,6 +142,24 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
     const nodes = parseItems(legacy.nodes, 'graph.nodes', ['id', 'projectId', 'version', 'description', 'taskId', 'releasedAt'],
       item => ({ ...item, testingAt: null }));
     root = { schemaVersion: 7, graph: { ...legacy, nodes } };
+  }
+  if (root.schemaVersion === 7) {
+    const legacy = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
+    const legacyProject = record(legacy.project, 'graph.project', [
+      'id', 'name', 'partNumber', 'revision', 'statusOptions', 'typeOptions', 'priorityOptions', 'assigneeOptions',
+    ]);
+    const tasks = parseItems(legacy.tasks, 'graph.tasks', [
+      'id', 'projectId', 'parentTaskId', 'name', 'description', 'externalTaskId', 'statusOptionId', 'typeOptionId',
+      'priorityOptionId', 'assigneeId', 'startDate', 'dueDate', 'sortOrder', 'comments',
+    ], item => ({ ...item, assigneeId: null }));
+    root = {
+      schemaVersion: 8,
+      graph: {
+        ...legacy,
+        project: { ...legacyProject, assigneeOptions: [] },
+        tasks,
+      },
+    };
   }
   const source = record(root.graph, 'graph', ['project', 'nodes', 'edges', 'branches', 'tasks']);
   requireCondition(

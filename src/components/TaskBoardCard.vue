@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useSortable } from '@dnd-kit/vue/sortable';
-import type { Task } from '../domain/model';
+import type { Task, TaskAssignee } from '../domain/model';
+import TaskAssigneeAvatar from './TaskAssigneeAvatar.vue';
+import TaskStatusIcon from './TaskStatusIcon.vue';
 
 const props = defineProps<{
   task: Task;
@@ -12,7 +14,7 @@ const props = defineProps<{
   priorityName: string | null;
   priorityIndicatorCount: number | null;
   priorityIndicatorColor: string | null;
-  assigneeName: string | null;
+  assignee: TaskAssignee | null;
   selected: boolean;
   disabled: boolean;
   canMoveUp: boolean;
@@ -48,7 +50,7 @@ function openFromCard(event: MouseEvent) {
     @click="openFromCard"
   >
     <div class="task-card-topline">
-      <span class="task-card-status">{{ statusName }}</span>
+      <span class="task-card-status"><TaskStatusIcon :status-name="statusName" />{{ statusName }}</span>
       <div class="task-card-order-actions">
         <button type="button" class="secondary icon-button" :disabled="disabled || !canMoveUp" :aria-label="`上移任务 ${task.name}`" @pointerdown.stop @click="emit('moveUp')">↑</button>
         <button type="button" class="secondary icon-button" :disabled="disabled || !canMoveDown" :aria-label="`下移任务 ${task.name}`" @pointerdown.stop @click="emit('moveDown')">↓</button>
@@ -61,7 +63,10 @@ function openFromCard(event: MouseEvent) {
     <div class="task-card-meta">
       <span v-if="typeName">{{ typeName }}</span>
       <span v-if="priorityName" class="task-priority-accessible-text">优先级：{{ priorityName }}</span>
-      <span v-if="assigneeName">{{ assigneeName }}</span>
+      <span v-if="assignee" class="task-card-assignee">
+        <TaskAssigneeAvatar :assignee="assignee" />
+        <span>{{ assignee.displayName }}{{ assignee.disabled ? '（已停用）' : '' }}</span>
+      </span>
       <span v-if="task.startDate || task.dueDate" class="task-date-label">
         {{ task.startDate || '未定' }} – {{ task.dueDate || '未定' }}
       </span>
@@ -81,7 +86,8 @@ function openFromCard(event: MouseEvent) {
 .task-card.is-drop-target { border-color: #8bc3ff; box-shadow: 0 0 0 2px #60a5fa66; }
 .task-card.is-selected { border-color: #8bc3ff; background: #1a2e47; box-shadow: inset 3px 0 #7dc0ff; }
 .task-card-topline { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.task-card-status { min-width: 0; overflow: hidden; color: #afbdd2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-status { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; color: #afbdd2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-status :deep(.task-status-icon) { width: 15px; height: 15px; }
 .task-card-order-actions { display: flex; gap: 2px; margin-left: auto; }
 .task-card-order-actions .icon-button { min-width: 44px; width: 44px; height: 44px; min-height: 44px; font-size: 12px; }
 .task-card-title { display: flex; justify-content: flex-start; width: 100%; min-width: 0; min-height: 44px; margin-top: 4px; padding: 5px 0; border: 0; background: transparent; color: #eef4ff; text-align: left; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
@@ -90,5 +96,7 @@ function openFromCard(event: MouseEvent) {
 .task-card-title .task-reference-id { flex: 0 0 auto; margin: 0 6px 0 0; }
 .task-card-meta { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
 .task-card-meta > span { max-width: 100%; padding: 2px 6px; border: 1px solid #35445c; border-radius: 4px; color: #c1d0e4; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.task-card-meta > .task-card-assignee { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px 2px 3px; }
+.task-card-assignee > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-card-meta > .task-date-label { width: 100%; border-color: transparent; padding-left: 0; color: #afbdd2; font-variant-numeric: tabular-nums; }
 </style>

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentCopyUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri, buildOpenUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
+import { buildArchiveRootOpenUri, buildCompareUri, buildDocumentCopyUri, buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri, buildOpenUri, buildStartBackendUri, type ArchiveLocation } from '../src/domain/iqan-protocol';
 import fixture from '../specs/fixtures/launcher-uri-v1.json';
 
 const projectId = '550e8400-e29b-41d4-a716-446655440000';
 
 describe('Launcher 工程 URI v1', () => {
+  it('生成不含路径、端口或参数的固定后端启动请求', () => {
+    expect(buildStartBackendUri()).toBe('iqanarchive://start-backend?v=1');
+    expect(fixture.startBackendValid[0]!.uri).toBe(buildStartBackendUri());
+  });
   it('只能请求打开本机配置的共享或本地归档根目录', () => {
     expect(buildArchiveRootOpenUri('shared')).toBe('iqanarchive://open-archive-root?v=1&location=shared');
     expect(buildArchiveRootOpenUri('local')).toBe('iqanarchive://open-archive-root?v=1&location=local');

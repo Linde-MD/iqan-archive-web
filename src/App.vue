@@ -12,15 +12,22 @@ const ComparisonDocuments = defineAsyncComponent(() => import('./components/Comp
 const TaskBoard = defineAsyncComponent(() => import('./components/TaskBoard.vue'));
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import BackendSettings from './components/BackendSettings.vue';
+import CollaborationPanel from './components/CollaborationPanel.vue';
+import { CollaborationRepository } from './storage/collaboration';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listProjectBackups, writeJsonBackup, writeSelectedJsonFile, type ProjectBackupList } from './files/archive-json';
 import { parseWorkspaceLocation, projectOverlayPath, projectPath, type ProjectView } from './workspace-routes';
 
 const db = new ArchiveDatabase();
-const repository = new ArchiveRepository(db);
+const collaboration = new CollaborationRepository(new ArchiveRepository(db));
+const repository = new ArchiveRepository(db, collaboration);
+const canWrite = computed(() => collaboration.permissions.sharedWritable);
+const canImport = computed(() => canWrite.value && collaboration.state.user?.role === 'admin');
 const route = useRoute();
 const router = useRouter();
+const isAccountRoute = computed(() => /^\/account\/(login|profile|security|members|sync)$/.test(route.path));
+const assigneeRefreshKey = ref(0);
 let lastRouteFullPath = route.fullPath;
 const projects = ref<Project[]>([]);
 const name = ref('');
@@ -78,6 +85,7 @@ const partError = computed(() => submitted.value && !partNumber.value.trim());
 const workspaceBusy = computed(() => filesBusy.value || graphBusy.value || taskBoardBusy.value);
 const errorHeading = ref<HTMLElement | null>(null);
 let subscription: { unsubscribe(): void } | undefined;
+let collaborationSubscription: { unsubscribe(): void } | undefined;
 let loadAttempt = 0;
 
 function showError(cause: unknown) {
@@ -171,6 +179,7 @@ watch([() => route.fullPath, projects, loading], async ([fullPath]) => {
     return;
   }
   lastRouteFullPath = fullPath;
+  if (isAccountRoute.value) return;
   if (!location.projectId) {
     activeProjectId.value = '';
     view.value = 'files';
@@ -221,6 +230,10 @@ watch([() => route.fullPath, projects, loading], async ([fullPath]) => {
   }
 }, { immediate: true });
 
+watch(isAccountRoute, (isAccount, wasAccount) => {
+  if (wasAccount && !isAccount) assigneeRefreshKey.value += 1;
+});
+
 async function watchProjects() {
   const attempt = ++loadAttempt;
   subscription?.unsubscribe();
@@ -255,7 +268,7 @@ async function addProject() {
     await repository.create(name.value, partNumber.value);
     name.value = '';
     partNumber.value = '';
-    status.value = '项目已保存到当前浏览器。';
+    status.value = '项目已保存到共享 Access 并同步当前浏览器副本。';
     submitted.value = false;
   } catch (cause) {
     showError(cause);
@@ -318,6 +331,8 @@ async function savePartNumber() {
 async function exportProject(project: Project) {
   saving.value = true; error.value = ''; status.value = '';
   try {
+    const draft = collaboration.state.draftCount;
+    if (draft && !window.confirm(`本机共有 ${draft} 个待同步版本。导出的当前项目 JSON 将包含其待同步版本；这些版本尚未全部进入共享库，管理员恢复此文件会将其作为正式版本恢复到 Access。继续导出吗？`)) return;
     const root = archiveRoots.value[JSON_BACKUP_LOCATION];
     if (root) {
       if (!await checkPermission(root, false, 'readwrite')) throw new Error('请先授权共享根目录的读写权限。');
@@ -381,6 +396,7 @@ function exportSelectedProject() {
 }
 
 async function importProjectFromMenu() {
+  if (!canImport.value) { showError(new Error('仅已连接并登录的管理员可以恢复 JSON。')); return; }
   if (backupMenu.value) backupMenu.value.open = false;
   backupMenuTrigger.value?.focus();
   if (!archiveRoots.value[JSON_BACKUP_LOCATION]) {
@@ -576,12 +592,16 @@ async function cancelImport() {
 onMounted(() => {
   window.addEventListener('pointerdown', onBackupMenuOutsidePointerDown, true);
   void watchProjects();
+  void collaboration.initialize().catch(showError);
+  collaborationSubscription = liveQuery(() => collaboration.updateCounts()).subscribe({ error: showError });
 });
 onUnmounted(() => {
   window.removeEventListener('pointerdown', onBackupMenuOutsidePointerDown, true);
   ++loadAttempt;
   subscription?.unsubscribe();
+  collaborationSubscription?.unsubscribe();
   db.close();
+  collaboration.cache.close();
 });
 </script>
 
@@ -602,18 +622,26 @@ onUnmounted(() => {
         <summary ref="backupMenuTrigger" class="topbar-menu-trigger"><AppIcon name="folder" />JSON 备份</summary>
         <div class="topbar-menu-items">
           <button type="button" :disabled="loading || !projects.length || saving || workspaceBusy" @click="exportProjectFromMenu"><AppIcon name="download" />{{ archiveRoots.shared ? '导出 JSON' : supportsSaveFilePicker ? '选择位置导出 JSON' : '下载 JSON' }}</button>
-          <button type="button" :disabled="saving || workspaceBusy" @click="importProjectFromMenu"><AppIcon name="upload" />{{ archiveRoots.shared ? '导入恢复' : '选择 JSON 文件导入' }}</button>
+          <button type="button" :disabled="saving || workspaceBusy || !canImport" @click="importProjectFromMenu"><AppIcon name="upload" />管理员恢复 JSON</button>
           <button v-if="activeProject" type="button" :disabled="saving || workspaceBusy || !archiveRoots.shared" @click="openBackupManager"><AppIcon name="folder" />管理备份</button>
         </div>
       </details>
-      <input ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
+      <input id="manual-import-file" name="manualImportFile" ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
-      <BackendSettings :repository="repository" />
-      <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
+      <BackendSettings :repository="repository" :disabled="saving || workspaceBusy || collaboration.state.busy" @saved="collaboration.disconnect()" />
+      <CollaborationPanel :client="collaboration" :project-id="activeProjectId" :disabled="saving || workspaceBusy" />
     </div>
   </header>
 
-  <main id="workspace" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
+  <main id="workspace" v-show="!isAccountRoute" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
+    <section class="notice" aria-label="共享连接与副本状态">
+      <div>
+        <h2>{{ collaboration.state.connected && collaboration.state.authenticated ? '共享协作已连接' : collaboration.state.source ? '本机缓存视图 · 未连接或未登录' : '历史单人数据 · 只读' }}</h2>
+        <p>{{ collaboration.state.message || '请点击顶栏右上角账户头像登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
+        <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。其他成员的更新需在账号入口刷新。{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
+        <p v-if="collaboration.state.conflictMessage" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaboration.state.conflictMessage }}</p>
+      </div>
+    </section>
     <Transition name="surface">
       <div v-if="error" class="error" role="alert">
         <h2 ref="errorHeading" tabindex="-1">操作未完成</h2>
@@ -637,10 +665,10 @@ onUnmounted(() => {
         <p v-if="importPreview.plan.partMatches.length" class="form-help">零件号匹配：{{ importPreview.plan.partMatches.map(project => `${project.name}（${project.partNumber}）`).join('、') }}。</p>
         <p v-if="importPreview.plan.blockedReason" role="alert">{{ importPreview.plan.blockedReason }}</p>
         <p v-else-if="importPreview.plan.target" class="form-help">确认后将覆盖项目“{{ importPreview.plan.target.name }}”（零件号 {{ importPreview.plan.target.partNumber }}）的全部配置，未保存的编辑草稿也会丢失。其他项目和磁盘工程文件不变。</p>
-        <p v-else class="form-help">未匹配到已有零件号，确认后新增项目。</p>
-        <p class="form-help">JSON 不含本地文件或目录授权；导入后沿用当前归档根目录，按项目名称定位两个子目录并分别扫描。缺失子目录不会自动创建。</p>
+        <p v-else class="form-help">未匹配到已有零件号，确认后生成新的共享项目 ID 并新增项目，图内引用保持一致；不会复活已删除的项目身份。</p>
+        <p class="form-help">仅管理员可执行：先恢复共享 Access，再更新本机副本。备份包含的离线新版本也会恢复为共享版本。JSON 不含账号、本地文件或目录授权；沿用当前归档根目录，缺失子目录不会自动创建。</p>
         <div class="backup-actions">
-          <button ref="importConfirmButton" type="button" :disabled="saving || workspaceBusy || !!importPreview.plan.blockedReason" @click="confirmImport"><AppIcon name="check" />{{ saving ? '正在导入…' : importPreview.plan.target ? '确认覆盖项目' : '确认新增项目' }}</button>
+          <button ref="importConfirmButton" type="button" :disabled="saving || workspaceBusy || !canImport || !!importPreview.plan.blockedReason" @click="confirmImport"><AppIcon name="check" />{{ saving ? '正在导入…' : importPreview.plan.target ? '确认覆盖共享项目' : '确认新增共享项目' }}</button>
           <button type="button" class="secondary" :disabled="saving" @click="cancelImport">取消</button>
         </div>
     </section>
@@ -716,16 +744,16 @@ onUnmounted(() => {
             <path d="M12 18h16l6 7h18v27H12zM12 18v-6h17l6 6h17v7" fill="none" stroke="currentColor" stroke-width="2" />
           </svg>
           <h3>{{ readFailed ? '项目暂时无法读取' : '还没有项目档案' }}</h3>
-          <p>{{ readFailed ? '请处理上方错误，再重新连接存储。' : '填写项目名称与软件零件号，建立第一份工程档案。' }}</p>
+          <p>{{ readFailed ? '请处理上方错误，再重新连接存储。' : canWrite ? '共享副本暂无项目，可建立第一份工程档案。' : '没有可用离线项目，请连接后端并登录获取共享副本。' }}</p>
         </div>
         <TransitionGroup v-else name="list" tag="ul" class="project-list">
           <li v-for="project in projects" :key="project.id">
             <div class="project-info">
               <div class="project-title-line">
                 <h3>{{ project.name }}</h3>
-                <span class="project-state">已保存</span>
+                <span class="project-state">{{ collaboration.state.deletedProjectIds.includes(project.id) ? '共享已删除 · 仅本机草稿' : collaboration.state.source ? '共享副本' : '历史本机数据' }}</span>
               </div>
-              <button class="project-part-number" :disabled="saving || workspaceBusy" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
+              <button class="project-part-number" :disabled="saving || workspaceBusy || !canWrite" :aria-label="`修改 ${project.name} 的零件号`" :title="`修改零件号 ${project.partNumber}`" @click="editPartNumber(project)"><code>{{ project.partNumber }}</code></button>
             </div>
             <div class="project-actions">
               <button class="secondary icon-button compact-project-action" :disabled="workspaceBusy" :aria-label="`管理 ${project.name} 文件`" :title="`管理 ${project.name} 文件`" :aria-pressed="activeProjectId === project.id && view === 'files'" @click="navigateProject(project.id, 'files')"><AppIcon name="file" /></button>
@@ -774,7 +802,7 @@ onUnmounted(() => {
           <label for="part-number">软件零件号 <span>必填</span></label>
           <input id="part-number" v-model="partNumber" name="partNumber" required :disabled="saving" :aria-invalid="partError" :aria-describedby="partError ? 'part-error' : undefined" placeholder="例如：14798046801" />
           <p v-if="partError" id="part-error" class="field-error">请输入软件零件号，不能仅包含空白。</p>
-          <button type="submit" :disabled="saving || loading"><AppIcon name="plus" />{{ saving ? '正在保存…' : '创建项目' }}</button>
+          <button type="submit" :disabled="saving || loading || !canWrite"><AppIcon name="plus" />{{ saving ? '正在保存…' : '创建共享项目' }}</button>
         </form>
         </template>
       </section>
@@ -789,16 +817,16 @@ onUnmounted(() => {
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
     <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
     <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
-    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" @busy="taskBoardBusy = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
+    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" @busy="taskBoardBusy = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">
       <div class="notice-mark" aria-hidden="true">i</div>
       <div>
-        <h2 id="storage-title">配置保存在当前浏览器</h2>
-        <p>清除浏览器数据可能丢失配置；迁移前请导出 JSON。</p>
+        <h2 id="storage-title">共享 Access + 当前浏览器持久副本</h2>
+        <p>未同步版本仅保存在当前浏览器，清除浏览器数据可能丢失草稿和会话；迁移前请导出 JSON。后端断开不代表网页资源支持完全断网加载。</p>
       </div>
     </section>
-    <footer><span>IQAN Archive</span><span>静态前端 · 无需登录 · 不依赖启动器</span></footer>
+    <footer><span>IQAN Archive</span><span>可信团队协作 · 本机服务 + 共享 Access · 文件操作独立</span></footer>
   </main>
 </template>

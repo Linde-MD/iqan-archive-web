@@ -27,7 +27,7 @@ export function validateGraph(graph: ProjectGraph): void {
   validateOptions(project.statusOptions, 'Status');
   validateOptions(project.typeOptions, 'Type');
   validateOptions(project.priorityOptions, 'Priority');
-  validateOptions(project.assigneeOptions, 'Assignee');
+  requireCondition(project.assigneeOptions.length === 0, 'TASK_ASSIGNEE_OPTIONS', '负责人必须引用协作账号，不能使用项目选项。');
   for (const option of project.priorityOptions) {
     requireCondition(
       Number.isSafeInteger(option.indicatorCount) && option.indicatorCount! >= 1 && option.indicatorCount! <= 3,
@@ -53,7 +53,6 @@ export function validateGraph(graph: ProjectGraph): void {
     status: new Set(project.statusOptions.map(option => option.id)),
     type: new Set(project.typeOptions.map(option => option.id)),
     priority: new Set(project.priorityOptions.map(option => option.id)),
-    assignee: new Set(project.assigneeOptions.map(option => option.id)),
   };
   const versions = new Set<string>();
   const externalTaskIds = new Set<string>();
@@ -70,7 +69,8 @@ export function validateGraph(graph: ProjectGraph): void {
     requireCondition(task.statusOptionId === null || optionIds.status.has(task.statusOptionId), 'TASK_STATUS_REFERENCE', '任务引用的 Status 选项不存在。');
     requireCondition(task.typeOptionId === null || optionIds.type.has(task.typeOptionId), 'TASK_TYPE_REFERENCE', '任务引用的 Type 选项不存在。');
     requireCondition(task.priorityOptionId === null || optionIds.priority.has(task.priorityOptionId), 'TASK_PRIORITY_REFERENCE', '任务引用的 priority 选项不存在。');
-    requireCondition(task.assigneeId === null || optionIds.assignee.has(task.assigneeId), 'TASK_ASSIGNEE_REFERENCE', '任务引用的 assignee 不存在。');
+    requireCondition(task.assigneeId === null || (typeof task.assigneeId === 'string' && task.assigneeId.length > 0),
+      'TASK_ASSIGNEE_REFERENCE', '任务负责人账号 ID 无效。');
     requireCondition(Number.isSafeInteger(task.sortOrder) && task.sortOrder >= 0, 'TASK_ORDER', '任务顺序无效。');
     const orderKey = `${task.statusOptionId ?? ''}:${task.sortOrder}`;
     requireCondition(!taskOrderKeys.has(orderKey), 'TASK_ORDER_DUPLICATE', '同一 Status 泳道内的任务顺序不能重复。');
@@ -318,18 +318,17 @@ export function updateTaskOptions(
   options: Pick<ProjectGraph['project'], 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>,
 ): ProjectGraph {
   const next = structuredClone(graph);
+  requireCondition(options.assigneeOptions.length === 0, 'TASK_ASSIGNEE_OPTIONS', '负责人必须引用协作账号，不能使用项目选项。');
   const validIds = {
     status: new Set(options.statusOptions.map(option => option.id)),
     type: new Set(options.typeOptions.map(option => option.id)),
     priority: new Set(options.priorityOptions.map(option => option.id)),
-    assignee: new Set(options.assigneeOptions.map(option => option.id)),
   };
   Object.assign(next.project, structuredClone(options));
   for (const task of next.tasks) {
     if (task.statusOptionId && !validIds.status.has(task.statusOptionId)) task.statusOptionId = null;
     if (task.typeOptionId && !validIds.type.has(task.typeOptionId)) task.typeOptionId = null;
     if (task.priorityOptionId && !validIds.priority.has(task.priorityOptionId)) task.priorityOptionId = null;
-    if (task.assigneeId && !validIds.assignee.has(task.assigneeId)) task.assigneeId = null;
   }
   reindexTaskLanes(next.tasks);
   validateGraph(next);

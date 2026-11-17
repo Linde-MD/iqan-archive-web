@@ -42,7 +42,7 @@ describe('本机后端连接设置', () => {
     db.close();
     await db.open();
     expect(await repository.getBackendPort()).toBe(49999);
-    expect(await db.projects.get('existing')).toEqual(project);
+    expect(await db.projects.get('existing')).toEqual({ ...project, assigneeOptions: [] });
     expect(await db.archiveRoots.get('shared')).toEqual(root);
     await expect(repository.setBackendPort(1)).rejects.toThrow();
     expect(await repository.getBackendPort()).toBe(49999);
@@ -51,7 +51,7 @@ describe('本机后端连接设置', () => {
   });
 
   it('健康检测只访问固定回环地址，严格验证产品和协议，不携带凭据', async () => {
-    const health = { product: 'iqan-archive-server', apiVersion: 1, databaseVersion: 1, initialized: false };
+    const health = { product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: false };
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(health)));
     vi.stubGlobal('fetch', fetcher);
     const signal = new AbortController().signal;
@@ -59,7 +59,7 @@ describe('本机后端连接设置', () => {
     expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:47831/health', expect.objectContaining({
       credentials: 'omit', cache: 'no-store', redirect: 'error',
     }));
-    for (const changed of [{ product: 'other' }, { apiVersion: 2 }, { databaseVersion: 2 }, { initialized: 'yes' }]) {
+    for (const changed of [{ product: 'other' }, { apiVersion: 1 }, { databaseVersion: 2 }, { initialized: 'yes' }]) {
       fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ ...health, ...changed })));
       await expect(checkLocalBackend(47831, signal)).rejects.toThrow('不兼容');
     }

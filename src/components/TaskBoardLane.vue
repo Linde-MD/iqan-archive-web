@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { useDroppable } from '@dnd-kit/vue';
-import type { Task, TaskOption } from '../domain/model';
+import type { Task, TaskAssignee, TaskOption } from '../domain/model';
 import TaskBoardCard from './TaskBoardCard.vue';
 import AppIcon from './AppIcon.vue';
 
@@ -11,7 +11,7 @@ const props = defineProps<{
   selectedTaskId: string;
   typeNameById: ReadonlyMap<string, string>;
   priorityOptionById: ReadonlyMap<string, TaskOption>;
-  assigneeNameById: ReadonlyMap<string, string>;
+  assigneeById: ReadonlyMap<string, TaskAssignee>;
   disabled: boolean;
   saving: boolean;
   quickTask: { statusId: string | null; name: string; revision: number } | null;
@@ -107,7 +107,7 @@ onUnmounted(() => {
         :priority-name="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.name ?? null : null"
         :priority-indicator-count="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorCount ?? null : null"
         :priority-indicator-color="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorColor ?? null : null"
-        :assignee-name="task.assigneeId ? assigneeNameById.get(task.assigneeId) ?? null : null"
+        :assignee="task.assigneeId ? assigneeById.get(task.assigneeId) ?? null : null"
         :selected="selectedTaskId === task.id"
         :disabled="disabled" :can-move-up="index > 0" :can-move-down="index < tasks.length - 1"
         @open="emit('openTask', task.id)"

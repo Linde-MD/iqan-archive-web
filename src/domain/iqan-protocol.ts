@@ -83,6 +83,10 @@ export function buildArchiveRootOpenUri(location: ArchiveLocation): string {
   return `iqanarchive://open-archive-root?v=1&location=${location}`;
 }
 
+export function buildStartBackendUri(): string {
+  return 'iqanarchive://start-backend?v=1';
+}
+
 export function buildEngineeringCopyUri(
   projectId: string,
   sourceLocation: ArchiveLocation,

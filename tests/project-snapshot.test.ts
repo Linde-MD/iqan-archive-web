@@ -16,7 +16,6 @@ function graphFixture(prefix = ''): ProjectGraph {
   const graph = createProject('测试工程', '001');
   const projectId = graph.project.id;
   graph.project.priorityOptions = [{ id: `${prefix}priority-high`, name: '高', indicatorCount: 3, indicatorColor: '#f05252' }];
-  graph.project.assigneeOptions = [{ id: `${prefix}assignee-owner`, name: '负责人' }];
   const releasedAt = '2026-01-01T00:00:00.000Z';
   graph.nodes = [
     { id: `${prefix}node-root`, projectId, version: 'R', description: '根版本', taskId: null, releasedAt, testingAt: null },
@@ -41,7 +40,7 @@ function graphFixture(prefix = ''): ProjectGraph {
     statusOptionId: graph.project.statusOptions[0]!.id,
     typeOptionId: graph.project.typeOptions[0]!.id,
     priorityOptionId: graph.project.priorityOptions[0]!.id,
-    assigneeId: graph.project.assigneeOptions[0]!.id,
+    assigneeId: `${prefix}account-owner`,
     startDate: '2026-01-02', dueDate: '2026-01-03', sortOrder: 0,
     comments: [{ id: `${prefix}comment-1`, text: '**完成**', createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' }],
   }];
@@ -50,7 +49,7 @@ function graphFixture(prefix = ''): ProjectGraph {
 
 function snapshot(graph: ProjectGraph): ProjectSnapshot {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     graph: {
       project: {
         id: graph.project.id, name: graph.project.name,
@@ -67,7 +66,7 @@ function snapshot(graph: ProjectGraph): ProjectSnapshot {
 }
 
 describe('项目 JSON 快照验证', () => {
-  it('解析 schemaVersion 7 并往返任务选项、日期和 Markdown 评论', () => {
+  it('解析 schemaVersion 8 并往返账号负责人、任务选项、日期和 Markdown 评论', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));
     expect(parsed).toEqual({
@@ -77,6 +76,23 @@ describe('项目 JSON 快照验证', () => {
     });
 
     expect(parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(snapshot(graph))))).toEqual(parsed);
+  });
+
+  it('schemaVersion 7 迁移清除旧项目负责人选项和任务分配', () => {
+    const current = snapshot(graphFixture());
+    const legacy = {
+      ...current,
+      schemaVersion: 7,
+      graph: {
+        ...current.graph,
+        project: { ...current.graph.project, assigneeOptions: [{ id: 'legacy-owner', name: '旧负责人' }] },
+        tasks: current.graph.tasks.map(task => ({ ...task, assigneeId: 'legacy-owner' })),
+      },
+    };
+
+    const migrated = parseProjectSnapshot(legacy);
+    expect(migrated.project.assigneeOptions).toEqual([]);
+    expect(migrated.tasks[0]!.assigneeId).toBeNull();
   });
 
   it('显式迁移 schemaVersion 5 的任务并拒绝新版缺失父任务字段', () => {
@@ -139,7 +155,7 @@ describe('项目 JSON 快照验证', () => {
     ]);
     expect(migrated.project.priorityOptions.map(option => option.name)).toEqual(['最高', '较高', '普通', '较低', '最低']);
     expect(migrated.project.assigneeOptions).toEqual([]);
-    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5、6 和 7');
+    expect(() => parseProjectSnapshot({ ...legacy, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5、6、7 和 8');
   });
 
   it('schemaVersion 6 快照保留用户保存的旧类型名称及任务关联', () => {
@@ -192,7 +208,7 @@ describe('项目 JSON 快照验证', () => {
 
   it('拒绝未知版本、额外字段、错误类型、无效关系及不合法 Task ID', () => {
     const source = snapshot(graphFixture());
-    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5、6 和 7');
+    expect(() => parseProjectSnapshot({ ...source, schemaVersion: 2 })).toThrow('仅支持 schemaVersion 3、4、5、6、7 和 8');
     expect(() => parseProjectSnapshot({ ...source, executable: 'no' })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, extra: true } })).toThrow('字段');
     expect(() => parseProjectSnapshot({ ...source, graph: { ...source.graph, nodes: [{ ...source.graph.nodes[0], releasedAt: 12 }] } })).toThrow('文本或 null');
