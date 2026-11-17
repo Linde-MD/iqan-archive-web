@@ -26,6 +26,7 @@ const canWrite = computed(() => collaboration.permissions.sharedWritable);
 const canImport = computed(() => canWrite.value && collaboration.state.user?.role === 'admin');
 const route = useRoute();
 const router = useRouter();
+const isAccountRoute = computed(() => /^\/account\/(login|profile|security|members|sync)$/.test(route.path));
 let lastRouteFullPath = route.fullPath;
 const projects = ref<Project[]>([]);
 const name = ref('');
@@ -177,6 +178,7 @@ watch([() => route.fullPath, projects, loading], async ([fullPath]) => {
     return;
   }
   lastRouteFullPath = fullPath;
+  if (isAccountRoute.value) return;
   if (!location.projectId) {
     activeProjectId.value = '';
     view.value = 'files';
@@ -623,15 +625,14 @@ onUnmounted(() => {
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
       <BackendSettings :repository="repository" :disabled="saving || workspaceBusy || collaboration.state.busy" @saved="collaboration.disconnect()" />
       <CollaborationPanel :client="collaboration" :project-id="activeProjectId" :disabled="saving || workspaceBusy" />
-      <span class="local-label"><AppIcon name="shield" />  工程版本工作台</span>
     </div>
   </header>
 
-  <main id="workspace" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
+  <main id="workspace" v-show="!isAccountRoute" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
     <section class="notice" aria-label="共享连接与副本状态">
       <div>
         <h2>{{ collaboration.state.connected && collaboration.state.authenticated ? '共享协作已连接' : collaboration.state.source ? '本机缓存视图 · 未连接或未登录' : '历史单人数据 · 只读' }}</h2>
-        <p>{{ collaboration.state.message || '请从顶栏登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
+        <p>{{ collaboration.state.message || '请点击顶栏右上角账户头像登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
         <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。其他成员的更新需在账号入口刷新。{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
         <p v-if="collaboration.state.conflictMessage" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaboration.state.conflictMessage }}</p>
       </div>
