@@ -6,7 +6,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, wat
 import { useRouter } from 'vue-router';
 import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
-import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskComment, type TaskOption } from '../domain/model';
+import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { renderMarkdown } from '../utils/markdown';
 import { startTaskDragScroll } from '../utils/task-drag-scroll';
@@ -15,8 +15,8 @@ import MarkdownEditor from './MarkdownEditor.vue';
 import TaskBoardLane from './TaskBoardLane.vue';
 import TaskList from './TaskList.vue';
 
-type OptionKey = 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions';
-type OptionKind = 'status' | 'type' | 'priority' | 'assignee';
+type OptionKey = 'statusOptions' | 'typeOptions' | 'priorityOptions';
+type OptionKind = 'status' | 'type' | 'priority';
 
 const props = defineProps<{
   repository: ArchiveRepository;
@@ -25,6 +25,7 @@ const props = defineProps<{
   focusTaskId: string | null;
   detailTaskId: string;
   optionsOpen: boolean;
+  assigneeRefreshKey: number;
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
@@ -33,6 +34,9 @@ const emit = defineEmits<{
 }>();
 
 const graph = shallowRef<ProjectGraph>();
+const assignees = shallowRef<TaskAssignee[]>([]);
+const assigneesLoading = ref(false);
+const assigneesError = ref('');
 const sharedWritable = computed(() => {
   const permissions = props.repository.permissions;
   return !permissions || (permissions.sharedWritable && !permissions.draftProjectIds.includes(props.projectId));
@@ -66,7 +70,7 @@ const taskDetailView = ref<HTMLElement>();
 const optionsDialog = ref<HTMLDialogElement>();
 const optionKind = ref<OptionKind>('status');
 const optionName = ref('');
-const optionNameDrafts = ref<Record<OptionKind, string>>({ status: '', type: '', priority: '', assignee: '' });
+const optionNameDrafts = ref<Record<OptionKind, string>>({ status: '', type: '', priority: '' });
 const optionDraft = ref<TaskOption[]>([]);
 const optionDraftRevision = ref(-1);
 const dragSaving = ref(false);
@@ -97,7 +101,7 @@ const taskFieldsDisabled = computed(() => !sharedWritable.value || (taskDraftSta
 const optionDraftStale = computed(() => !graph.value || optionDraftRevision.value !== graph.value.project.revision);
 const optionKey = computed<OptionKey>(() => `${optionKind.value}Options` as OptionKey);
 const currentOptionLabel = computed(() => ({
-  status: 'Status', type: 'Type', priority: '优先级', assignee: '负责人',
+  status: 'Status', type: 'Type', priority: '优先级',
 }[optionKind.value]));
 const startDateInput = computed({
   get: () => taskDraft.value?.startDate ?? '',
@@ -111,7 +115,19 @@ const dueDateInput = computed({
 const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ?? []).map(option => [option.id, option.name])));
 const legacyTypeNames = computed(() => legacyTaskTypeNames(graph.value?.project.typeOptions ?? []));
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
-const assigneeNameById = computed(() => new Map((graph.value?.project.assigneeOptions ?? []).map(option => [option.id, option.name])));
+const assigneeById = computed(() => new Map(assignees.value.map(assignee => [assignee.id, assignee])));
+const activeAssignees = computed(() => assignees.value.filter(assignee => !assignee.disabled));
+const assigneeNameById = computed(() => new Map(assignees.value.map(assignee => [
+  assignee.id, `${assignee.displayName}${assignee.disabled ? '（已停用）' : ''}`,
+])));
+const assigneeSearchById = computed(() => new Map(assignees.value.map(assignee => [
+  assignee.id, `${assignee.displayName} ${assignee.username}`,
+])));
+const currentDisabledAssignee = computed(() => {
+  const id = taskDraft.value?.assigneeId;
+  const assignee = id ? assigneeById.value.get(id) : undefined;
+  return assignee?.disabled ? assignee : null;
+});
 const taskIdSearch = computed(() => parseTaskIdSearch(query.value));
 const taskIdSearchError = computed(() => searchMode.value === 'id' && taskIdSearch.value.kind === 'invalid'
   ? taskIdSearch.value.message : '');
@@ -121,7 +137,7 @@ const taskMatches = computed(() => {
     if (!search) return true;
     if (searchMode.value === 'id') return matchesTaskIdSearch(task.externalTaskId, taskIdSearch.value);
     if (searchMode.value === 'assignee') {
-      const assignee = task.assigneeId ? assigneeNameById.value.get(task.assigneeId) ?? '' : '';
+      const assignee = task.assigneeId ? assigneeSearchById.value.get(task.assigneeId) ?? '' : '';
       return assignee.toLocaleLowerCase().includes(search);
     }
     return `${task.name} ${task.description}`.toLocaleLowerCase().includes(search);
@@ -544,7 +560,7 @@ function openOptions(updateRoute = true) {
   optionKind.value = 'status';
   optionDraft.value = structuredClone(current.project.statusOptions);
   optionDraftRevision.value = current.project.revision;
-  optionNameDrafts.value = { status: '', type: '', priority: '', assignee: '' };
+  optionNameDrafts.value = { status: '', type: '', priority: '' };
   optionName.value = '';
   if (!optionsDialog.value?.open) optionsDialog.value?.showModal();
   if (updateRoute) emit('navigateChild', ['options']);
@@ -587,7 +603,7 @@ function addOption() {
 
 function taskReferenceCount(optionId: string): number {
   const field = ({
-    status: 'statusOptionId', type: 'typeOptionId', priority: 'priorityOptionId', assignee: 'assigneeId',
+    status: 'statusOptionId', type: 'typeOptionId', priority: 'priorityOptionId',
   } as const)[optionKind.value];
   return graph.value?.tasks.filter(task => task[field] === optionId).length ?? 0;
 }
@@ -796,6 +812,18 @@ function formatTime(value: string): string {
   }).format(date);
 }
 
+async function loadAssignees() {
+  assigneesLoading.value = true;
+  assigneesError.value = '';
+  try {
+    assignees.value = await props.repository.listAssignees();
+  } catch (cause) {
+    assigneesError.value = cause instanceof Error ? cause.message : '读取负责人账号失败。';
+  } finally {
+    assigneesLoading.value = false;
+  }
+}
+
 async function focusRequestedTask() {
   const targetId = props.focusTaskId;
   if (!targetId || !graph.value?.tasks.some(task => task.id === targetId)) return;
@@ -815,8 +843,10 @@ async function focusRequestedTask() {
 
 watch([graph, () => props.focusTaskId], () => { void focusRequestedTask(); }, { flush: 'post' });
 watch([saving, quickTask], ([isSaving, draft]) => emit('busy', isSaving || !!draft), { immediate: true });
+watch(() => props.assigneeRefreshKey, () => { void loadAssignees(); });
 
 onMounted(() => {
+  void loadAssignees();
   removeQuickRouteGuard = router.beforeEach(() => {
     if (saving.value) return false;
     if (!quickTask.value) return true;
@@ -885,7 +915,7 @@ onUnmounted(() => {
     <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
     <div v-else-if="statusMessage && !taskDraft" class="task-board-message" role="status">{{ statusMessage }}</div>
 
-    <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
+    <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :assignee-name-by-id="assigneeNameById" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
     <div v-if="graph && taskView === 'board'" class="task-board-layout">
       <div ref="boardScroll" class="task-board-scroll">
         <DragDropProvider :plugins="dragPlugins" @drag-start="onDragStart" @drag-move="onDragMove" @drag-over="onDragOver" @drag-end="onDragEnd">
@@ -950,9 +980,16 @@ onUnmounted(() => {
                 <div class="task-summary-field"><span class="task-field-icon is-status"><AppIcon name="status" /></span><div><label for="task-board-status">状态</label><select id="task-board-status" v-model="taskDraft.statusOptionId" :disabled="taskFieldsDisabled">
                   <option :value="null">未分组</option><option v-for="option in graph.project.statusOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
                 </select></div></div>
-                <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="user" /></span><div><label for="task-board-assignee">负责人</label><select id="task-board-assignee" v-model="taskDraft.assigneeId" :disabled="taskFieldsDisabled">
-                  <option :value="null">未分配</option><option v-for="option in graph.project.assigneeOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
-                </select></div></div>
+                <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="user" /></span><div><label for="task-board-assignee">负责人</label><select id="task-board-assignee" v-model="taskDraft.assigneeId" :disabled="taskFieldsDisabled || assigneesLoading || !!assigneesError">
+                  <option :value="null">未分配</option>
+                  <option v-if="taskDraft.assigneeId && !assigneeById.has(taskDraft.assigneeId)" :value="taskDraft.assigneeId" disabled>账号信息不可用，保留现有负责人</option>
+                  <option v-if="currentDisabledAssignee" :value="currentDisabledAssignee.id" disabled>{{ currentDisabledAssignee.displayName }}（已停用）</option>
+                  <option v-for="assignee in activeAssignees" :key="assignee.id" :value="assignee.id">{{ assignee.displayName }}（@{{ assignee.username }}）</option>
+                </select>
+                <p v-if="assigneesError" class="task-legacy-type-notice is-error" role="alert">{{ assigneesError }}</p>
+                <p v-else-if="assigneesLoading" class="task-legacy-type-notice" role="status">正在读取协作账号…</p>
+                <p v-else-if="!activeAssignees.length" class="task-legacy-type-notice" role="status">暂无可分配成员。</p>
+                </div></div>
                 <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="calendar" /></span><div><label for="task-board-start">开始日期</label><div class="task-date-input"><span aria-hidden="true">{{ startDateInput || '年-月-日' }}</span><input id="task-board-start" v-model="startDateInput" type="date" lang="zh-CN" :max="dueDateInput || undefined" :disabled="taskFieldsDisabled" /></div></div></div>
                 <div class="task-summary-field"><span class="task-field-icon"><AppIcon name="calendar" /></span><div><label for="task-board-due">截止日期</label><div class="task-date-input"><span aria-hidden="true">{{ dueDateInput || '年-月-日' }}</span><input id="task-board-due" v-model="dueDateInput" type="date" lang="zh-CN" :min="startDateInput || undefined" :disabled="taskFieldsDisabled" /></div></div></div>
               </div>
@@ -1039,7 +1076,7 @@ onUnmounted(() => {
     <form method="dialog" @submit.prevent>
       <header class="task-options-heading"><div><p class="eyebrow">PROJECT SETTINGS</p><h2 id="task-options-title">任务选项</h2></div><button type="button" class="secondary icon-button" aria-label="关闭任务选项" @click="closeOptions"><AppIcon name="clear" /></button></header>
       <div class="task-option-tabs" role="group" aria-label="选项类别">
-        <button v-for="kind in (['status', 'type', 'priority', 'assignee'] as const)" :key="kind" type="button" class="secondary" :aria-pressed="optionKind === kind" @click="selectOptionKind(kind)">{{ { status: 'Status', type: 'Type', priority: '优先级', assignee: '负责人' }[kind] }}</button>
+        <button v-for="kind in (['status', 'type', 'priority'] as const)" :key="kind" type="button" class="secondary" :aria-pressed="optionKind === kind" @click="selectOptionKind(kind)">{{ { status: 'Status', type: 'Type', priority: '优先级' }[kind] }}</button>
       </div>
       <div class="task-option-add">
         <label for="task-option-name">新增{{ currentOptionLabel }}</label>

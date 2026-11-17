@@ -3,7 +3,7 @@ import { reactive } from 'vue';
 import { ArchiveRepository, type SnapshotImportPlan } from './database';
 import type { RepositorySync } from './repository-sync';
 import { backendAddress } from '../local-backend';
-import { DomainError, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot } from '../domain/model';
+import { DomainError, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAssignee } from '../domain/model';
 import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/project-snapshot';
 import { validateGraph, validateTransition } from '../domain/graph';
 import { assertOfflineChanges } from '../domain/collaboration';
@@ -22,15 +22,32 @@ interface Pending {
   key: string; source: string; owner: string; requestId: string; method: string; path: string;
   body: unknown; projectId: string | null; clearDraft: boolean;
 }
+interface CachedAssignee extends TaskAssignee { key: string; source: string }
 
 export class CollaborationDatabase extends Dexie {
   contexts!: Table<Context, string>;
   mirrors!: Table<Mirror, string>;
   drafts!: Table<Draft, string>;
   pending!: Table<Pending, string>;
+  assignees!: Table<CachedAssignee, string>;
   constructor(name = 'iqan-archive-collaboration') {
     super(name);
     this.version(1).stores({ contexts: 'id', mirrors: 'key, source', drafts: 'key', pending: 'key' });
+    this.version(2).stores({ assignees: 'key, source' }).upgrade(async transaction => {
+      const pending = transaction.table<Pending>('pending');
+      requireCondition(await pending.count() === 0, 'PENDING_MIGRATION',
+        '存在结果未确认的协作提交。请先使用旧版重新连接并处理提交，再重试本次更新。');
+      const mirrors = transaction.table<Mirror>('mirrors');
+      for (const mirror of await mirrors.toArray()) {
+        const graph = structuredClone(mirror.graph);
+        const changed = graph.project.assigneeOptions.length > 0
+          || graph.tasks.some(task => task.assigneeId !== null);
+        if (!changed) continue;
+        graph.project.assigneeOptions = [];
+        for (const task of graph.tasks) task.assigneeId = null;
+        await mirrors.put({ ...mirror, graph });
+      }
+    });
   }
 }
 
@@ -55,10 +72,18 @@ function user(value: unknown): CollaborationUser {
   };
 }
 
+function taskAssignee(value: unknown): TaskAssignee {
+  const row = object(value);
+  requireCondition(typeof row.id === 'string' && row.id.length > 0
+    && typeof row.username === 'string' && typeof row.displayName === 'string'
+    && typeof row.disabled === 'boolean', 'RESPONSE', '负责人账号响应格式无效。');
+  return { id: row.id, username: row.username, displayName: row.displayName, disabled: row.disabled };
+}
+
 export function collaborationSnapshot(graph: ProjectGraph): ProjectSnapshot {
   const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = graph.project;
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     graph: {
       ...graph,
       project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },
@@ -216,6 +241,33 @@ export class CollaborationRepository implements RepositorySync {
     const value = object(await this.request('/users'));
     requireCondition(Array.isArray(value.users), 'RESPONSE', '成员列表响应无效。');
     return value.users.map(user);
+  }
+
+  async listAssignees(): Promise<TaskAssignee[]> {
+    await this.context();
+    const source = this.state.source;
+    if (!source) return [];
+    const cached = await this.cache.assignees.where('source').equals(source).toArray();
+    if (!this.state.connected || !this.state.authenticated) return cached;
+
+    try {
+      const value = object(await this.request('/assignees'));
+      requireCondition(Array.isArray(value.assignees), 'RESPONSE', '负责人账号列表响应无效。');
+      const assignees = value.assignees.map(taskAssignee);
+      requireCondition(new Set(assignees.map(assignee => assignee.id)).size === assignees.length,
+        'RESPONSE', '负责人账号列表包含重复 ID。');
+      requireCondition(this.state.source === source, 'SOURCE', '数据源已切换，请重新读取负责人账号。');
+      await this.cache.transaction('rw', this.cache.assignees, async () => {
+        await this.cache.assignees.where('source').equals(source).delete();
+        await this.cache.assignees.bulkPut(assignees.map(assignee => ({
+          ...assignee, key: `${source}:${assignee.id}`, source,
+        })));
+      });
+      return assignees;
+    } catch (cause) {
+      if (!this.state.connected && cached.length) return cached;
+      throw cause;
+    }
   }
 
   async createUser(input: { username: string; password: string; displayName: string; email: string }) {

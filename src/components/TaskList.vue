@@ -9,13 +9,13 @@ const props = defineProps<{
   rows: TaskListRow[];
   nested: boolean;
   selectedTaskId: string;
+  assigneeNameById: ReadonlyMap<string, string>;
   disabled: boolean;
 }>();
 const emit = defineEmits<{ open: [id: string]; toggle: [id: string] }>();
 const tasksById = computed(() => new Map(props.graph.tasks.map(task => [task.id, task])));
 const statuses = computed(() => new Map(props.graph.project.statusOptions.map(option => [option.id, option.name])));
 const types = computed(() => new Map(props.graph.project.typeOptions.map(option => [option.id, option.name])));
-const assignees = computed(() => new Map(props.graph.project.assigneeOptions.map(option => [option.id, option.name])));
 const priorities = computed(() => new Map(props.graph.project.priorityOptions.map(option => [option.id, option])));
 const idColumnWidth = computed(() => {
   const digits = props.graph.tasks.reduce((max, task) => Math.max(max, task.externalTaskId?.length ?? 0), 6);
@@ -49,7 +49,7 @@ const idColumnWidth = computed(() => {
             </div>
           </td>
           <td><span class="task-list-status">{{ row.task.statusOptionId ? statuses.get(row.task.statusOptionId) : '未分组' }}</span></td>
-          <td>{{ row.task.assigneeId ? assignees.get(row.task.assigneeId) : '—' }}</td>
+          <td>{{ row.task.assigneeId ? assigneeNameById.get(row.task.assigneeId) ?? '账号信息不可用' : '—' }}</td>
           <td><template v-if="row.task.parentTaskId && tasksById.has(row.task.parentTaskId)"><code v-if="tasksById.get(row.task.parentTaskId)?.externalTaskId" class="task-reference-id">{{ tasksById.get(row.task.parentTaskId)?.externalTaskId }}</code> {{ tasksById.get(row.task.parentTaskId)?.name }}</template><span v-else class="muted">—</span></td>
           <td>{{ row.task.typeOptionId ? types.get(row.task.typeOptionId) : '—' }}</td>
           <td><template v-if="row.task.priorityOptionId && priorities.has(row.task.priorityOptionId)"><span class="task-list-priority" :style="{ color: priorities.get(row.task.priorityOptionId)?.indicatorColor }" aria-hidden="true">{{ '!'.repeat(priorities.get(row.task.priorityOptionId)?.indicatorCount ?? 1) }}</span><span class="visually-hidden">{{ '!'.repeat(priorities.get(row.task.priorityOptionId)?.indicatorCount ?? 1) }} </span>{{ priorities.get(row.task.priorityOptionId)?.name }}</template><span v-else class="muted">—</span></td>

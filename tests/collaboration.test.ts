@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { CollaborationDatabase, CollaborationRepository, collaborationSnapshot } from '../src/storage/collaboration';
@@ -39,6 +40,48 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   await Promise.all(databases.splice(0).map(db => db.delete()));
+});
+
+it('collaboration cache v1→v2 clears legacy task owners and blocks unresolved writes', async () => {
+  const name = `collab-assignee-migration-${crypto.randomUUID()}`;
+  const source = crypto.randomUUID();
+  const graph = createProject('旧共享项目', '123');
+  graph.project.assigneeOptions = [{ id: 'legacy-owner', name: '旧负责人' }];
+  graph.tasks.push({
+    id: 'task', projectId: graph.project.id, parentTaskId: null, name: '任务', description: '',
+    externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null,
+    assigneeId: 'legacy-owner', startDate: null, dueDate: null, sortOrder: 0, comments: [],
+  });
+  const old = new Dexie(name);
+  old.version(1).stores({ contexts: 'id', mirrors: 'key, source', drafts: 'key', pending: 'key' });
+  await old.table('mirrors').put({
+    key: `${source}:${graph.project.id}`, source, graph, version: 0, updatedAt: 1, deleted: false,
+  });
+  await old.table('drafts').put({
+    key: `${source}:${graph.project.id}`, owner: 'owner', nodes: [], edges: [],
+  });
+  old.close();
+
+  const upgraded = new CollaborationDatabase(name);
+  databases.push(upgraded);
+  await upgraded.open();
+  const mirror = await upgraded.mirrors.get(`${source}:${graph.project.id}`);
+  expect(mirror?.graph.project.assigneeOptions).toEqual([]);
+  expect(mirror?.graph.tasks[0]?.assigneeId).toBeNull();
+  expect(await upgraded.drafts.get(`${source}:${graph.project.id}`)).toMatchObject({ owner: 'owner' });
+  await upgraded.close();
+
+  const blockedName = `collab-assignee-pending-${crypto.randomUUID()}`;
+  const pendingDb = new Dexie(blockedName);
+  pendingDb.version(1).stores({ contexts: 'id', mirrors: 'key, source', drafts: 'key', pending: 'key' });
+  await pendingDb.table('pending').put({
+    key: 'source:owner', source, owner: 'owner', requestId: crypto.randomUUID(),
+    method: 'PATCH', path: '/projects/id', body: {}, projectId: 'id', clearDraft: false,
+  });
+  pendingDb.close();
+  const blocked = new CollaborationDatabase(blockedName);
+  databases.push(blocked);
+  await expect(blocked.open()).rejects.toThrow('结果未确认的协作提交');
 });
 
 function setup() {

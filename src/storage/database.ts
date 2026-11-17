@@ -167,6 +167,28 @@ export class ArchiveDatabase extends Dexie {
       for (const node of await nodes.toArray()) await nodes.put({ ...node, testingAt: null });
     });
     this.version(13).stores({ backendSettings: 'id' });
+    this.version(14).stores({}).upgrade(async transaction => {
+      const projects = transaction.table<Project>('projects');
+      const tasks = transaction.table<Task>('tasks');
+      const [projectRows, taskRows] = await Promise.all([projects.toArray(), tasks.toArray()]);
+      const assignedProjectIds = new Set<string>();
+      for (const task of taskRows) {
+        if (task.assigneeId === null) continue;
+        assignedProjectIds.add(task.projectId);
+        await tasks.put({ ...task, assigneeId: null });
+      }
+      for (const project of projectRows) {
+        const needsRevision = (project.assigneeOptions?.length ?? 0) > 0 || assignedProjectIds.has(project.id);
+        if (needsRevision) {
+          requireCondition(Number.isSafeInteger(project.revision + 1), 'MIGRATION_REVISION', '项目修订号超出可用范围，负责人迁移已取消。');
+        }
+        await projects.put({
+          ...project,
+          assigneeOptions: [],
+          revision: needsRevision ? project.revision + 1 : project.revision,
+        });
+      }
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -190,6 +212,10 @@ export class ArchiveRepository {
   async listProjects(): Promise<Project[]> {
     if (this.sync) return this.sync.listProjects();
     return this.db.projects.toArray();
+  }
+
+  async listAssignees(): Promise<import('../domain/model').TaskAssignee[]> {
+    return this.sync?.listAssignees() ?? [];
   }
 
   async create(name: string, partNumber: string): Promise<ProjectGraph> {
@@ -421,7 +447,7 @@ export class ArchiveRepository {
     const clean = configurationOnly(graph);
     const { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions } = clean.project;
     return {
-      schemaVersion: 7,
+      schemaVersion: 8,
       graph: {
         ...clean,
         project: { id, name, partNumber, revision, statusOptions, typeOptions, priorityOptions, assigneeOptions },
@@ -552,17 +578,15 @@ export class ArchiveRepository {
     const statusOptions = remapOptions(graph.project.statusOptions);
     const typeOptions = remapOptions(graph.project.typeOptions);
     const priorityOptions = remapOptions(graph.project.priorityOptions);
-    const assigneeOptions = remapOptions(graph.project.assigneeOptions);
     const optionIdMap = (original: Project['statusOptions'], remapped: Project['statusOptions']) =>
       new Map(original.map((option, index) => [option.id, remapped[index]!.id]));
     const statusIdMap = optionIdMap(graph.project.statusOptions, statusOptions);
     const typeIdMap = optionIdMap(graph.project.typeOptions, typeOptions);
     const priorityIdMap = optionIdMap(graph.project.priorityOptions, priorityOptions);
-    const assigneeIdMap = optionIdMap(graph.project.assigneeOptions, assigneeOptions);
     return {
       project: {
         ...graph.project, id: projectId, revision: 0, engineeringDirectoryHint: '', wordDirectoryHint: '',
-        statusOptions, typeOptions, priorityOptions, assigneeOptions,
+        statusOptions, typeOptions, priorityOptions, assigneeOptions: [],
       },
       nodes: graph.nodes.map(item => ({
         ...item,
@@ -586,7 +610,7 @@ export class ArchiveRepository {
         statusOptionId: item.statusOptionId === null ? null : statusIdMap.get(item.statusOptionId)!,
         typeOptionId: item.typeOptionId === null ? null : typeIdMap.get(item.typeOptionId)!,
         priorityOptionId: item.priorityOptionId === null ? null : priorityIdMap.get(item.priorityOptionId)!,
-        assigneeId: item.assigneeId === null ? null : assigneeIdMap.get(item.assigneeId)!,
+        assigneeId: item.assigneeId,
         comments: item.comments.map(comment => ({ ...comment, id: crypto.randomUUID() })),
       })),
     };

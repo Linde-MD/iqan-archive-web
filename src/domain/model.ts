@@ -91,6 +91,13 @@ export interface TaskComment {
   updatedAt: string;
 }
 
+export interface TaskAssignee {
+  id: string;
+  username: string;
+  displayName: string;
+  disabled: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -164,7 +171,7 @@ export interface ProjectGraph {
 }
 
 export interface ProjectSnapshot {
-  schemaVersion: 7;
+  schemaVersion: 8;
   graph: Omit<ProjectGraph, 'project' | 'branches'> & {
     project: Pick<Project, 'id' | 'name' | 'partNumber' | 'revision' | 'statusOptions' | 'typeOptions' | 'priorityOptions' | 'assigneeOptions'>;
     branches: Array<Omit<Branch, 'order'>>;

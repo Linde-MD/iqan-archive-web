@@ -27,6 +27,7 @@ const canImport = computed(() => canWrite.value && collaboration.state.user?.rol
 const route = useRoute();
 const router = useRouter();
 const isAccountRoute = computed(() => /^\/account\/(login|profile|security|members|sync)$/.test(route.path));
+const assigneeRefreshKey = ref(0);
 let lastRouteFullPath = route.fullPath;
 const projects = ref<Project[]>([]);
 const name = ref('');
@@ -228,6 +229,10 @@ watch([() => route.fullPath, projects, loading], async ([fullPath]) => {
     deletion.value = null;
   }
 }, { immediate: true });
+
+watch(isAccountRoute, (isAccount, wasAccount) => {
+  if (wasAccount && !isAccount) assigneeRefreshKey.value += 1;
+});
 
 async function watchProjects() {
   const attempt = ++loadAttempt;
@@ -812,7 +817,7 @@ onUnmounted(() => {
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
     <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
     <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
-    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" @busy="taskBoardBusy = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
+    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" @busy="taskBoardBusy = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">

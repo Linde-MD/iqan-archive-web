@@ -347,9 +347,9 @@ describe('Dexie 原子持久化', () => {
     expect(await repo.db.directoryBindings.where('projectId').equals(graph.project.id).count()).toBe(1);
   });
 
-  it('未知未来 schema 不被 v13 客户端降级打开', async () => {
+  it('未知未来 schema 不被 v14 客户端降级打开', async () => {
     const future = repository();
-    future.db.version(14).stores({ projects: 'id' });
+    future.db.version(15).stores({ projects: 'id' });
     await future.db.open();
     const name = future.db.name;
     future.db.close();
@@ -537,7 +537,7 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes[0]).not.toHaveProperty('command');
     repo.db.close();
     await repo.db.open();
-    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(7);
+    expect((await repo.snapshot(graph.project.id)).schemaVersion).toBe(8);
     const snapshot = (await repo.snapshot(graph.project.id)).graph;
     expect(snapshot.nodes).toEqual(stored.nodes);
     expect(snapshot.tasks).toEqual(stored.tasks);
@@ -547,6 +547,33 @@ describe('Dexie 原子持久化', () => {
       typeOptions: stored.project.typeOptions, priorityOptions: stored.project.priorityOptions,
       assigneeOptions: stored.project.assigneeOptions,
     });
+  });
+
+  it('v13→v14 清除旧负责人引用、保留其他任务数据并推进受影响项目修订', async () => {
+    const name = `assignee-migration-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(13).stores({
+      projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId',
+      branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId', archiveRoots: 'id', backendSettings: 'id',
+    });
+    await old.table('projects').put({
+      id: 'project', name: '旧项目', partNumber: '123', revision: 4,
+      statusOptions: [], typeOptions: [], priorityOptions: [],
+      assigneeOptions: [{ id: 'legacy-owner', name: '旧负责人' }],
+    });
+    await old.table('tasks').put({
+      id: 'task', projectId: 'project', parentTaskId: null, name: '任务', description: '',
+      externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null,
+      assigneeId: 'legacy-owner', startDate: null, dueDate: null, sortOrder: 0, comments: [],
+    });
+    old.close();
+
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    await db.open();
+    expect(await db.projects.get('project')).toMatchObject({ revision: 5, assigneeOptions: [] });
+    expect(await db.tasks.get('task')).toMatchObject({ assigneeId: null, name: '任务' });
   });
 
   it('外部 Task ID 修改不改节点身份，同项目唯一、跨项目可重复、多个 null 可共存', async () => {

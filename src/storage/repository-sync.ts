@@ -1,9 +1,10 @@
-import type { Project, ProjectGraph, ProjectSnapshot } from '../domain/model';
+import type { Project, ProjectGraph, ProjectSnapshot, TaskAssignee } from '../domain/model';
 import type { SnapshotImportPlan } from './database';
 
 export interface RepositorySync {
   readonly permissions: { sharedWritable: boolean; newVersionWritable: boolean; draftNodeIds: Readonly<Record<string, readonly string[]>>; draftProjectIds: readonly string[] };
   listProjects(): Promise<Project[]>;
+  listAssignees(): Promise<TaskAssignee[]>;
   get(id: string): Promise<ProjectGraph>;
   snapshot(id: string): Promise<ProjectSnapshot>;
   create(name: string, partNumber: string): Promise<ProjectGraph>;
