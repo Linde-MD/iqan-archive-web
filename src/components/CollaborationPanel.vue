@@ -244,7 +244,7 @@ async function saveDraft() {
       </span>
       <span class="account-trigger-label">
         <strong>{{ state.user?.displayName || state.user?.username || '登录协作' }}</strong>
-        <small>{{ state.authenticated ? (state.connected ? '共享协作已连接' : '缓存账号 · 未连接') : '需要登录或重新验证' }}</small>
+        <small>{{ state.authenticated ? (state.connected ? (state.pending ? '已连接 · 提交待确认' : '共享协作已连接') : '缓存账号 · 未连接') : '需要登录或重新验证' }}</small>
       </span>
       <AppIcon name="chevron-right" />
     </button>

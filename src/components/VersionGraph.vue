@@ -6,6 +6,7 @@ import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFile
 import { buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
+import { projectWriteBlockedReason } from '../storage/repository-sync';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
 import { compareVersions, type VersionOrder } from '../domain/version-order';
@@ -20,10 +21,8 @@ import { renderMarkdown } from '../utils/markdown';
 import { placeContextMenu } from '../utils/viewport';
 
 const props = defineProps<{ repository: ArchiveRepository; projectId: string; focusNodeId?: string | null; panelRoute?: string[] }>();
-const sharedWritable = computed(() => {
-  const permissions = props.repository.permissions;
-  return !permissions || (permissions.sharedWritable && !permissions.draftProjectIds.includes(props.projectId));
-});
+const sharedWriteBlockedReason = computed(() => projectWriteBlockedReason(props.repository.permissions, props.projectId));
+const sharedWritable = computed(() => !sharedWriteBlockedReason.value);
 const newVersionWritable = computed(() => props.repository.permissions?.newVersionWritable ?? true);
 const draftNodeIds = computed(() => props.repository.permissions?.draftNodeIds[props.projectId] ?? []);
 const selectedWritable = computed(() => sharedWritable.value || (newVersionWritable.value
@@ -1833,7 +1832,7 @@ function openNodeEdit() {
 
 function openNodeEditFor(nodeId: string) {
   if (!sharedWritable.value && !(newVersionWritable.value && draftNodeIds.value.includes(nodeId))) {
-    showError(new Error('当前共享版本只读；离线仅可新增版本并编辑本机待同步版本。'));
+    showError(new Error(sharedWriteBlockedReason.value));
     return;
   }
   const node = nodeById.value.get(nodeId);
@@ -2607,7 +2606,7 @@ function openBranchDelete() {
 function startNodeAction(action: 'add' | 'edit' | 'parents' | 'release' | 'delete' | 'branch' | 'merge') {
   if (action === 'add' ? !newVersionWritable.value
     : action === 'edit' || action === 'parents' ? !selectedWritable.value : !sharedWritable.value) {
-    showError(new Error('此操作当前只读，请连接并登录；有草稿的项目请先同步。'));
+    showError(new Error(sharedWriteBlockedReason.value));
     return;
   }
   const count = selectedNodeIds.value.length;
@@ -3255,7 +3254,7 @@ function onIqanDialogClosed() {
       <h3 tabindex="-1">{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
       <form @submit.prevent="submitNode">
         <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
-        <p v-if="!sharedWritable" class="form-help">当前仅可保存未同步的新版本，既有共享版本、分支、任务及放行状态只读；重连后需手动同步。</p>
+        <p v-if="sharedWriteBlockedReason" class="form-help">{{ sharedWriteBlockedReason }}</p>
         <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' ? !selectedWritable || !!selectedNode?.releasedAt : !newVersionWritable)" placeholder="例如：1479-1 20260115" />
         <label for="git-description">改动说明</label>
         <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" :disabled="saving" />

@@ -14,6 +14,7 @@ import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import BackendSettings from './components/BackendSettings.vue';
 import CollaborationPanel from './components/CollaborationPanel.vue';
 import { CollaborationRepository } from './storage/collaboration';
+import { projectWriteBlockedReason } from './storage/repository-sync';
 import AppIcon from './components/AppIcon.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listProjectBackups, writeJsonBackup, writeSelectedJsonFile, type ProjectBackupList } from './files/archive-json';
@@ -45,6 +46,7 @@ const error = ref('');
 const status = ref('');
 const submitted = ref(false);
 const activeProjectId = ref('');
+const sharedWriteBlockedReason = computed(() => projectWriteBlockedReason(repository.permissions, activeProjectId.value));
 const activeProject = computed(() => projects.value.find(project => project.id === activeProjectId.value) ?? null);
 const projectsCollapsed = ref(false);
 const filesPanelBusy = ref(false);
@@ -636,10 +638,12 @@ onUnmounted(() => {
   <main id="workspace" v-show="!isAccountRoute" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
     <section class="notice" aria-label="共享连接与副本状态">
       <div>
-        <h2>{{ collaboration.state.connected && collaboration.state.authenticated ? '共享协作已连接' : collaboration.state.source ? '本机缓存视图 · 未连接或未登录' : '历史单人数据 · 只读' }}</h2>
+        <h2>{{ collaboration.state.connected && collaboration.state.authenticated ? (collaboration.state.pending ? '共享协作已连接 · 提交待确认' : '共享协作已连接') : collaboration.state.source ? '本机缓存视图 · 未连接或未登录' : '历史单人数据 · 只读' }}</h2>
         <p>{{ collaboration.state.message || '请点击顶栏右上角账户头像登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
         <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。其他成员的更新需在账号入口刷新。{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
         <p v-if="collaboration.state.conflictMessage" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaboration.state.conflictMessage }}</p>
+        <p v-if="sharedWriteBlockedReason" role="status">{{ sharedWriteBlockedReason }}</p>
+        <button v-if="collaboration.state.pending" type="button" class="secondary" :disabled="saving || workspaceBusy" @click="router.push({ path: '/account/sync', query: { from: route.fullPath } })">前往处理未确认提交</button>
       </div>
     </section>
     <Transition name="surface">

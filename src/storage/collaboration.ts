@@ -115,8 +115,16 @@ export class CollaborationRepository implements RepositorySync {
 
   get permissions() {
     const available = Boolean(this.state.source && this.state.user && !this.state.user.mustChangePassword && !this.state.pending);
+    let sharedWriteBlockedReason = '';
+    if (!this.state.source) sharedWriteBlockedReason = '历史单人数据目前只读，请登录后由管理员通过 JSON 恢复迁入共享库。';
+    else if (!this.state.user) sharedWriteBlockedReason = '请先登录共享账号；未登录时本机副本只读。';
+    else if (this.state.user.mustChangePassword) sharedWriteBlockedReason = '首次登录请先修改初始密码，再进行共享修改。';
+    else if (this.state.pending) sharedWriteBlockedReason = '存在结果未确认的提交，新的共享修改已暂停。请打开账号菜单的“协作与同步”，确认连接和登录后点击“重试未确认提交”；不要重复创建或恢复。';
+    else if (!this.state.connected) sharedWriteBlockedReason = '当前未连接本机后端，共享版本只读；仅可新增版本并编辑本机待同步版本。请在“协作与同步”中重新连接。';
+    else if (!this.state.authenticated) sharedWriteBlockedReason = '当前会话尚未验证，共享内容只读；请在账号入口重新连接或登录。';
     return {
-      sharedWritable: available && this.state.connected && this.state.authenticated,
+      sharedWritable: sharedWriteBlockedReason === '',
+      sharedWriteBlockedReason,
       newVersionWritable: available && (!this.state.connected || this.state.authenticated),
       draftNodeIds: this.state.draftNodeIds,
       draftProjectIds: this.state.draftProjectIds,

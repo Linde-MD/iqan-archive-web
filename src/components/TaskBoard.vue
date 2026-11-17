@@ -8,6 +8,7 @@ import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDro
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
+import { projectWriteBlockedReason } from '../storage/repository-sync';
 import { renderMarkdown } from '../utils/markdown';
 import { startTaskDragScroll } from '../utils/task-drag-scroll';
 import AppIcon from './AppIcon.vue';
@@ -40,10 +41,8 @@ const assignees = shallowRef<TaskAssignee[]>([]);
 const assigneesLoading = ref(false);
 const assigneesError = ref('');
 let assigneesReloadQueued = false;
-const sharedWritable = computed(() => {
-  const permissions = props.repository.permissions;
-  return !permissions || (permissions.sharedWritable && !permissions.draftProjectIds.includes(props.projectId));
-});
+const sharedWriteBlockedReason = computed(() => projectWriteBlockedReason(props.repository.permissions, props.projectId));
+const sharedWritable = computed(() => !sharedWriteBlockedReason.value);
 const router = useRouter();
 const loading = ref(true);
 const saving = ref(false);
@@ -919,6 +918,7 @@ onUnmounted(() => {
         <button type="button" :disabled="!sharedWritable || loading || saving || !!quickTask" @click="createTask()"><AppIcon name="plus" />新建任务</button>
       </div>
     </header>
+    <p v-if="sharedWriteBlockedReason" class="form-help" role="status">{{ sharedWriteBlockedReason }}</p>
     <div class="task-view-controls">
       <div class="task-view-switch" role="group" aria-label="任务视图">
         <button type="button" :aria-pressed="taskView === 'board'" @click="taskView = 'board'">看板</button>

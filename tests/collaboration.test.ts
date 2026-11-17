@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { computed } from 'vue';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { CollaborationDatabase, CollaborationRepository, collaborationSnapshot } from '../src/storage/collaboration';
 import { createProject, type ProjectGraph, type Task, type VersionNode } from '../src/domain/model';
@@ -8,6 +9,7 @@ import { parseProjectSnapshot } from '../src/domain/project-snapshot';
 import { assertOfflineChanges } from '../src/domain/collaboration';
 import { createProjectDelta, type EntityChanges, type ProjectChanges } from '../src/domain/project-changes';
 import { orderedBranches } from '../src/domain/model';
+import { projectWriteBlockedReason } from '../src/storage/repository-sync';
 
 const databases: (ArchiveDatabase | CollaborationDatabase)[] = [];
 const testAvatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
@@ -238,6 +240,7 @@ describe('共享副本与离线草稿', () => {
     await s.client.login('admin', 'test', true);
     s.network(false);
     await expect(s.client.reconnect()).rejects.toThrow('无法访问');
+    expect(s.client.permissions.sharedWriteBlockedReason).toContain('未连接本机后端');
     let current = await s.repository.get(s.graph().project.id);
     const first = createNode(current, { version: 'V1', description: '草稿一' });
     current = await s.repository.addNode(current.project.id, current.project.revision, first, [], null);
@@ -253,12 +256,17 @@ describe('共享副本与离线草稿', () => {
     expect(cached.edges[0]?.parentId).toBe(first.id);
     s.network(true);
     await reopened.reconnect();
+    expect(reopened.permissions.sharedWritable).toBe(true);
+    expect(projectWriteBlockedReason(reopened.permissions, current.project.id)).toContain('当前项目有待同步版本');
+    expect(projectWriteBlockedReason(reopened.permissions, current.project.id)).not.toContain('未连接');
+    expect(projectWriteBlockedReason(reopened.permissions, 'other-project')).toBe('');
     expect(s.graph().nodes).toHaveLength(0);
     const preview = await reopened.previewDrafts(current.project.id);
     await reopened.syncDrafts(current.project.id, preview.graph.project.revision);
     expect(s.graph().nodes).toHaveLength(2);
     expect(reopened.state.draftCount).toBe(0);
     expect(await s.cache.drafts.count()).toBe(0);
+    expect(projectWriteBlockedReason(reopened.permissions, current.project.id)).toBe('');
   });
 
   it('共享已提交但响应丢失时锁定原内容，重连及重开后用同一请求确认，无重复版本', async () => {
@@ -272,13 +280,23 @@ describe('共享副本与离线草稿', () => {
     expect(s.client.state.pending).toBe(true);
     await expect(s.repository.addNode(current.project.id, current.project.revision, node, [], null)).rejects.toThrow('未确认');
     const reopened = new CollaborationRepository(s.local, s.cache);
+    const writable = computed(() => reopened.permissions.sharedWritable);
+    const blockedReason = computed(() => projectWriteBlockedReason(reopened.permissions, current.project.id));
     await reopened.initialize();
     expect(reopened.state.pending).toBe(true);
+    expect(reopened.state.connected).toBe(true);
+    expect(reopened.state.authenticated).toBe(true);
+    expect(writable.value).toBe(false);
+    expect(blockedReason.value).toContain('重试未确认提交');
+    expect(blockedReason.value).not.toContain('未连接');
+    expect(blockedReason.value).not.toContain('离线');
     await reopened.retryPending();
     current = await reopened.get(current.project.id);
     expect(current.nodes).toHaveLength(1);
     expect(s.requests).toHaveLength(1);
     expect(await s.cache.pending.count()).toBe(0);
+    expect(writable.value).toBe(true);
+    expect(blockedReason.value).toBe('');
   });
 
   it('管理员恢复到共享库后读取失败不覆盖旧副本，原请求恢复后双库一致', async () => {
