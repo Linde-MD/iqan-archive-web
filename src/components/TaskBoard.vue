@@ -4,7 +4,7 @@ import { AutoScroller, defaultPreset } from '@dnd-kit/dom';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskSearchMode } from '../domain/task-board';
+import { filterProjectTasks, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
@@ -29,6 +29,7 @@ const props = defineProps<{
   detailTaskId: string;
   optionsOpen: boolean;
   assigneeRefreshKey: number;
+  currentAccountId: string | null;
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
@@ -50,6 +51,7 @@ const error = ref('');
 const statusMessage = ref('');
 const query = ref('');
 const searchMode = ref<TaskSearchMode>('keyword');
+const taskScope = ref<TaskScope>('all');
 const taskView = ref<'board' | 'list'>('board');
 const nestedTasks = ref(true);
 const expandedTaskIds = ref(new Set<string>());
@@ -141,21 +143,13 @@ const currentDisabledAssignee = computed(() => {
 const taskIdSearch = computed(() => parseTaskIdSearch(query.value));
 const taskIdSearchError = computed(() => searchMode.value === 'id' && taskIdSearch.value.kind === 'invalid'
   ? taskIdSearch.value.message : '');
-const taskMatches = computed(() => {
-  const search = query.value.trim().toLocaleLowerCase();
-  return (graph.value?.tasks ?? []).filter(task => {
-    if (!search) return true;
-    if (searchMode.value === 'id') return matchesTaskIdSearch(task.externalTaskId, taskIdSearch.value);
-    if (searchMode.value === 'assignee') {
-      const assignee = task.assigneeId ? assigneeSearchById.value.get(task.assigneeId) ?? '' : '';
-      return assignee.toLocaleLowerCase().includes(search);
-    }
-    return `${task.name} ${task.description}`.toLocaleLowerCase().includes(search);
-  });
-});
+const filterActive = computed(() => taskScope.value === 'mine' || !!query.value.trim());
+const taskMatches = computed(() => filterProjectTasks(
+  graph.value?.tasks ?? [], taskScope.value, props.currentAccountId, searchMode.value, query.value, assigneeSearchById.value,
+));
 const listRows = computed(() => projectTaskList(
   graph.value?.tasks ?? [], new Set(taskMatches.value.map(task => task.id)), nestedTasks.value,
-  expandedTaskIds.value, !!query.value.trim(), collapsedSearchTaskIds.value,
+  expandedTaskIds.value, filterActive.value, collapsedSearchTaskIds.value,
 ));
 const lanes = computed(() => {
   const current = dragState.value?.preview ?? graph.value;
@@ -202,12 +196,13 @@ const optionDraftChanged = computed(() => {
 });
 
 watch(searchMode, () => { query.value = ''; });
-watch([query, searchMode], () => { collapsedSearchTaskIds.value = new Set(); });
+watch(() => props.currentAccountId, () => { taskScope.value = 'all'; });
+watch([query, searchMode, taskScope], () => { collapsedSearchTaskIds.value = new Set(); });
 
 function toggleListTask(id: string) {
   const row = listRows.value.find(item => item.task.id === id);
   if (!row) return;
-  if (query.value.trim()) {
+  if (filterActive.value) {
     const collapsed = new Set(collapsedSearchTaskIds.value);
     if (row.expanded) collapsed.add(id);
     else collapsed.delete(id);
@@ -851,13 +846,15 @@ async function loadAssignees() {
 
 async function focusRequestedTask() {
   const targetId = props.focusTaskId;
-  if (!targetId || !graph.value?.tasks.some(task => task.id === targetId)) return;
+  const target = graph.value?.tasks.find(task => task.id === targetId);
+  if (!targetId || !target) return;
   if (hasUnsavedTaskChanges.value && !window.confirm('当前任务修改尚未保存。放弃修改并返回任务看板吗？')) return;
   taskDraft.value = null;
   taskDraftRevision.value = -1;
   taskDraftBaseline.value = '';
   selectedTaskId.value = targetId;
   taskView.value = 'board';
+  if (taskScope.value === 'mine' && target.assigneeId !== props.currentAccountId) taskScope.value = 'all';
   if (!taskMatches.value.some(task => task.id === targetId)) query.value = '';
   await nextTick();
   const card = [...document.querySelectorAll<HTMLElement>('[data-task-card-id]')]
@@ -866,7 +863,9 @@ async function focusRequestedTask() {
   card?.querySelector<HTMLButtonElement>('.task-card-title')?.focus({ preventScroll: true });
 }
 
-watch([graph, () => props.focusTaskId], () => { void focusRequestedTask(); }, { flush: 'post' });
+watch([() => props.focusTaskId, () => graph.value?.tasks.some(task => task.id === props.focusTaskId)], () => {
+  void focusRequestedTask();
+}, { flush: 'post' });
 watch([saving, quickTask], ([isSaving, draft]) => emit('busy', isSaving || !!draft), { immediate: true });
 watch(() => props.assigneeRefreshKey, () => { void loadAssignees(); });
 watch(() => taskDraft.value?.id, taskId => {
@@ -919,6 +918,12 @@ onUnmounted(() => {
       </div>
     </header>
     <p v-if="sharedWriteBlockedReason" class="form-help" role="status">{{ sharedWriteBlockedReason }}</p>
+    <div class="task-scope-switch" role="group" aria-label="任务范围">
+      <button type="button" :aria-pressed="taskScope === 'all'" :disabled="!!dragState" @click="taskScope = 'all'">全部任务</button>
+      <button type="button" :aria-pressed="taskScope === 'mine'" :disabled="!currentAccountId || !!dragState"
+        :aria-describedby="!currentAccountId ? 'task-scope-login-help' : undefined" @click="taskScope = 'mine'">我负责的任务</button>
+      <span v-if="!currentAccountId" id="task-scope-login-help" class="form-help">登录后可按本人筛选</span>
+    </div>
     <div class="task-view-controls">
       <div class="task-view-switch" role="group" aria-label="任务视图">
         <button type="button" :aria-pressed="taskView === 'board'" @click="taskView = 'board'">看板</button>
@@ -935,12 +940,12 @@ onUnmounted(() => {
       </select>
       <input id="task-board-search" v-model="query" type="search" :aria-label="searchMode === 'id' ? 'Task ID 精确值或范围' : searchMode === 'assignee' ? '负责人名称' : '任务关键字'"
         :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading || !!quickTask" />
-      <span class="task-board-count">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
+      <span class="task-board-count" role="status">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
     </div>
     <p v-if="taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
     <p v-if="loading" class="task-board-state" role="status">正在读取任务…</p>
     <p v-else-if="!graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
-    <p v-else-if="!taskMatches.length" class="task-board-state">没有匹配的任务。</p>
+    <p v-else-if="!taskMatches.length" class="task-board-state">{{ taskScope === 'mine' ? (query.trim() ? '没有符合当前搜索条件的本人任务。' : '当前项目没有分配给你的任务。') : '没有匹配的任务。' }}</p>
     <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
     <div v-else-if="statusMessage && !taskDraft" class="task-board-message" role="status">{{ statusMessage }}</div>
 
@@ -1151,6 +1156,10 @@ onUnmounted(() => {
 .task-board-header h2 { overflow-wrap: anywhere; }
 .task-board-header-actions { flex-wrap: wrap; }
 .task-board-header-actions button { min-height: 44px; }
+.task-scope-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.task-scope-switch button { min-height: 44px; padding: 8px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
+.task-scope-switch button:hover:not(:disabled) { background: var(--surface-raised); }
+.task-scope-switch button[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
 .task-view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
 .task-view-switch { display: flex; gap: 4px; padding: 3px; border: 1px solid #35445c; border-radius: 7px; background: #101a2a; }
 .task-view-switch button { min-height: 44px; padding: 8px 14px; border: 1px solid transparent; background: transparent; color: #afbdd2; }

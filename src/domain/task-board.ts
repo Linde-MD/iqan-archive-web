@@ -2,6 +2,7 @@ import { validateGraph } from './graph';
 import { normalizeExternalTaskId, requireCondition, type ProjectGraph, type Task } from './model';
 
 export type TaskSearchMode = 'id' | 'keyword' | 'assignee';
+export type TaskScope = 'all' | 'mine';
 
 export type TaskIdSearch =
   | { kind: 'empty' }
@@ -56,6 +57,24 @@ export function matchesTaskIdSearch(taskId: string | null, search: TaskIdSearch)
     return compareNumericIds(taskId, search.start) >= 0 && compareNumericIds(taskId, search.end) <= 0;
   }
   return false;
+}
+
+export function filterProjectTasks(
+  tasks: readonly Task[], scope: TaskScope, accountId: string | null,
+  searchMode: TaskSearchMode, query: string, assigneeSearchById: ReadonlyMap<string, string>,
+): Task[] {
+  const search = query.trim().toLocaleLowerCase();
+  const idSearch = searchMode === 'id' ? parseTaskIdSearch(query) : null;
+  return tasks.filter(task => {
+    if (scope === 'mine' && (!accountId || task.assigneeId !== accountId)) return false;
+    if (!search) return true;
+    if (idSearch) return matchesTaskIdSearch(task.externalTaskId, idSearch);
+    if (searchMode === 'assignee') {
+      const assignee = task.assigneeId ? assigneeSearchById.get(task.assigneeId) ?? '' : '';
+      return assignee.toLocaleLowerCase().includes(search);
+    }
+    return `${task.name} ${task.description}`.toLocaleLowerCase().includes(search);
+  });
 }
 
 export interface TaskListRow {

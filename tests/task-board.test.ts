@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
-import { compareTaskListIds, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
+import { compareTaskListIds, filterProjectTasks, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
 import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
@@ -20,6 +20,38 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('本人范围按账号 ID 匹配，可叠加搜索，不包含同名账号或未分配任务', () => {
+    const graph = fixture();
+    const [mine, colleague, anotherMine] = graph.tasks;
+    mine!.assigneeId = 'account-me';
+    mine!.externalTaskId = '10';
+    mine!.description = '验证主控';
+    anotherMine!.assigneeId = 'account-me';
+    anotherMine!.externalTaskId = '20';
+    colleague!.assigneeId = 'account-other';
+    colleague!.externalTaskId = '11';
+    colleague!.description = '验证主控';
+    const names = new Map([['account-me', '同名'], ['account-other', '同名']]);
+    expect(filterProjectTasks(graph.tasks, 'mine', 'account-me', 'assignee', '同名', names).map(task => task.id)).toEqual(['b', 'c']);
+    expect(filterProjectTasks(graph.tasks, 'mine', 'account-me', 'keyword', '验证', names).map(task => task.id)).toEqual(['b']);
+    expect(filterProjectTasks(graph.tasks, 'mine', 'account-me', 'id', '10-11', names).map(task => task.id)).toEqual(['b']);
+    expect(filterProjectTasks(graph.tasks, 'mine', null, 'keyword', '', names)).toEqual([]);
+    expect(filterProjectTasks(graph.tasks, 'all', null, 'keyword', '', names)).toEqual(graph.tasks);
+  });
+
+  it('本人子任务在嵌套表中可见，非本人父任务只作为上下文', () => {
+    const graph = fixture();
+    const [child, parent] = graph.tasks;
+    child!.parentTaskId = parent!.id;
+    child!.assigneeId = 'account-me';
+    parent!.assigneeId = 'account-other';
+    const matches = filterProjectTasks(graph.tasks, 'mine', 'account-me', 'keyword', '', new Map());
+    const ids = new Set(matches.map(task => task.id));
+    const rows = projectTaskList(graph.tasks, ids, true, new Set(), true, new Set());
+    expect(rows.map(row => [row.task.id, row.matches, row.expanded])).toEqual([['a', false, true], ['b', true, false]]);
+    expect(projectTaskList(graph.tasks, ids, false, new Set(), true, new Set()).map(row => row.task.id)).toEqual(['b']);
+  });
+
   it('新任务编号按项目全部编号数值递增，忽略空值和前导零，不丢失精度', () => {
     const graph = fixture();
     expect(suggestNextTaskId([])).toBe('1');
