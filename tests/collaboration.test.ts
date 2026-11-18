@@ -173,6 +173,120 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('只在写入前且超过一分钟启动后台检测，检测不阻塞写入且并发触发会合并', async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const connection = s.db.backendConnection.state;
+    const original = s.fetcher.getMockImplementation()!;
+    const probes: (() => void)[] = [];
+    s.fetcher.mockImplementation(async (url, init) => {
+      if (new URL(url).pathname === '/health') return new Promise<Response>(resolve => {
+        probes.push(() => resolve(new Response(JSON.stringify({
+          product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: true,
+        }))));
+      });
+      if (new URL(url).pathname === '/users/member1') return new Response(JSON.stringify({
+        user: { ...s.admin, username: 'member1', role: 'member' },
+      }));
+      return original(url, init);
+    });
+    clock += 60_000;
+    await s.client.manageUser('member1', false);
+    expect(probes).toHaveLength(0);
+    clock++;
+    await s.client.request('/instance');
+    expect(probes).toHaveLength(0);
+    await s.client.manageUser('member1', false);
+    await vi.waitFor(() => expect(probes).toHaveLength(1));
+    await s.client.manageUser('member1', false);
+    expect(probes).toHaveLength(1);
+    expect(connection.host).toBe('test-device');
+    expect(connection.testing).toBe(false);
+    probes[0]!();
+    await vi.waitFor(() => expect(connection.lastTestedAt).toBe(clock));
+    expect(connection.notice).toBeNull();
+    expect(s.client.state.authenticated).toBe(true);
+  });
+
+  it.each(['none', 'multiple', 'changed'])('后台检测 %s 等写入回执和本机副本处理完成后才生效', async mode => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const original = s.fetcher.getMockImplementation()!;
+    vi.mocked(s.local.getBackendHosts).mockResolvedValue(['test-device', 'other-device']);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    s.fetcher.mockImplementation(async (url, init) => {
+      const target = new URL(url);
+      if (target.pathname === '/health') return new Response(JSON.stringify({
+        product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: true,
+      }), { status: mode === 'multiple' || (mode === 'changed' && target.hostname === 'other-device') ? 200 : 503 });
+      const result = await original(url, init);
+      if (target.pathname === '/projects' && init.method === 'POST') await gate;
+      return result;
+    });
+    const connection = s.db.backendConnection.state;
+    const generation = connection.generation;
+    clock += 60_001;
+    const operation = s.client.create('后台检测项目', '999');
+    await vi.waitFor(() => expect(connection.lastTestedAt).toBe(clock));
+    expect(connection.host).toBe('test-device');
+    expect(connection.generation).toBe(generation);
+    expect(connection.notice).toBeNull();
+    release();
+    const created = await operation;
+    expect(await s.cache.pending.count()).toBe(0);
+    expect(await s.cache.mirrors.get(`${s.source}:${created.project.id}`)).toBeDefined();
+    expect(connection.host).toBe(mode === 'changed' ? 'other-device' : '');
+    expect(connection.notice?.title).toBe(mode === 'changed' ? '检测到主机已切换' : '后端连接异常');
+    expect(s.client.state.authenticated).toBe(false);
+    const writes = s.fetcher.mock.calls.filter(([url, init]) => new URL(url).pathname === '/projects' && init.method === 'POST');
+    expect(writes).toHaveLength(1);
+    expect(new URL(writes[0]![0]).hostname).toBe('test-device');
+    for (const [, init] of s.fetcher.mock.calls.filter(([url]) => new URL(url).pathname === '/health')) {
+      expect(new Headers(init.headers).has('Authorization')).toBe(false);
+    }
+  });
+
+  it('后台切换不清理未确认写入，也不把请求重发给新主机', async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    vi.mocked(s.local.getBackendHosts).mockResolvedValue(['other-device']);
+    clock += 60_001;
+    s.loseResponse();
+    await expect(s.client.create('未确认写入', '999')).rejects.toThrow('无法访问后端');
+    await vi.waitFor(() => expect(s.db.backendConnection.state.host).toBe('other-device'));
+    expect(await s.cache.pending.count()).toBe(1);
+    expect(s.client.state.pending).toBe(true);
+    expect(s.requests).toHaveLength(1);
+  });
+
+  it('账号操作及界面忙碌期间延迟应用，设置读取失败会明确提示', async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const original = s.fetcher.getMockImplementation()!;
+    s.fetcher.mockImplementation(async (url, init) => new URL(url).pathname === '/users/member1'
+      ? new Response(JSON.stringify({ user: { ...s.admin, username: 'member1', role: 'member' } }))
+      : original(url, init));
+    vi.mocked(s.local.getBackendHosts).mockRejectedValue(new Error('无法读取设备设置'));
+    s.client.state.busy = true;
+    clock += 60_001;
+    await s.client.manageUser('member1', false);
+    await vi.waitFor(() => expect(s.db.backendConnection.state.lastTestedAt).toBe(clock));
+    expect(s.db.backendConnection.state.host).toBe('test-device');
+    expect(s.db.backendConnection.state.notice).toBeNull();
+    s.client.state.busy = false;
+    expect(s.db.backendConnection.state.host).toBe('');
+    expect(s.db.backendConnection.state.notice?.message).toContain('无法读取设备设置');
+  });
+
   it('成员重置归一化账号且不静默忽略空密码，删除使用同一成员地址', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);

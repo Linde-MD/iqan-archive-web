@@ -8,6 +8,8 @@ import AppIcon from './AppIcon.vue';
 const props = defineProps<{ repository: ArchiveRepository; disabled?: boolean }>();
 const emit = defineEmits<{ saved: [] }>();
 const dialog = ref<HTMLDialogElement>();
+const noticeDialog = ref<HTMLDialogElement>();
+const noticeHeading = ref<HTMLElement>();
 const trigger = ref<HTMLButtonElement>();
 const hostInput = ref<HTMLInputElement>();
 const testTrigger = ref<HTMLButtonElement>();
@@ -32,6 +34,20 @@ const completedCount = computed(() => hosts.value.filter(host => probes.value.ha
 const availableCount = computed(() => hosts.value.filter(host => probes.value.get(host)?.available).length);
 let request: AbortController | undefined;
 let loadAttempt = 0;
+let noticeReturnTarget: HTMLElement | null = null;
+
+watch(() => connection.notice, async notice => {
+  await nextTick();
+  if (notice !== connection.notice) return;
+  if (notice && noticeDialog.value) {
+    noticeReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!noticeDialog.value.open) noticeDialog.value.showModal();
+    noticeHeading.value?.focus();
+  } else if (noticeDialog.value?.open) {
+    noticeDialog.value.close();
+    if (noticeReturnTarget?.isConnected) noticeReturnTarget.focus();
+  }
+}, { flush: 'post' });
 
 watch([hosts, newHost], () => { fieldError.value = ''; error.value = ''; message.value = ''; }, { flush: 'sync' });
 
@@ -254,9 +270,18 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
       <p class="backend-safety">团队仅运行一台后端 · HTTP 不加密，仅用于获准的可信局域网</p>
     </footer>
   </dialog>
+  <dialog ref="noticeDialog" class="branch-move-dialog backend-notice" aria-labelledby="backend-notice-title"
+    @cancel.prevent="connection.notice = null">
+    <h2 id="backend-notice-title" ref="noticeHeading" tabindex="-1">{{ connection.notice?.title }}</h2>
+    <p>{{ connection.notice?.message }}</p>
+    <p class="form-help">当前操作未自动重发；结果未确认时，请保留原请求，勿重复提交。</p>
+    <button type="button" @click="connection.notice = null">我知道了</button>
+  </dialog>
 </template>
 
 <style scoped>
+.backend-notice p { overflow-wrap: anywhere; line-height: 1.7; }
+.backend-notice h2 { font-size: 18px; }
 .backend-settings { width: min(720px, calc(100% - 24px)); max-height: calc(min(100dvh, 100vh) - 24px); padding: 0; scroll-padding: 16px 0 200px; overscroll-behavior: contain; }
 .backend-settings-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 24px 24px 20px; }
 .backend-heading { display: flex; gap: 12px; align-items: center; min-width: 0; }

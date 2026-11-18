@@ -2,7 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import { reactive, watch } from 'vue';
 import { ArchiveRepository, type SnapshotImportPlan } from './database';
 import type { RepositorySync } from './repository-sync';
-import { backendAddress, backendRequestOptions } from '../local-backend';
+import { BACKEND_RECHECK_INTERVAL_MS, backendAddress, backendRequestOptions, probeBackendHosts, type BackendProbe } from '../local-backend';
 import { DomainError, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAssignee } from '../domain/model';
 import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/project-snapshot';
 import { validateGraph, validateTransition } from '../domain/graph';
@@ -116,9 +116,59 @@ export class CollaborationRepository implements RepositorySync {
   private remember = false;
   private expiresAt = 0;
   private writing = false;
+  private mutations = 0;
+  private activeRequests = 0;
+  private background: AbortController | undefined;
+  private backgroundResult: { generation: number; results: BackendProbe[]; error: string } | undefined;
 
   constructor(readonly local: ArchiveRepository, readonly cache = new CollaborationDatabase()) {
-    watch(() => local.db.backendConnection.state.generation, () => this.disconnect(), { flush: 'sync' });
+    watch(() => local.db.backendConnection.state.generation, () => {
+      this.background?.abort();
+      this.background = undefined;
+      this.backgroundResult = undefined;
+      this.disconnect();
+    }, { flush: 'sync' });
+    watch(() => this.state.busy, () => this.applyBackgroundResult(), { flush: 'sync' });
+  }
+
+  private async mutation<T>(action: () => Promise<T>): Promise<T> {
+    this.mutations++;
+    try { return await action(); }
+    finally { this.mutations--; this.applyBackgroundResult(); }
+  }
+
+  private checkConnectionInBackground() {
+    const connection = this.local.db.backendConnection.state;
+    if (this.background || this.backgroundResult || Date.now() - connection.lastTestedAt <= BACKEND_RECHECK_INTERVAL_MS) return;
+    const controller = new AbortController();
+    const generation = connection.generation;
+    this.background = controller;
+    void (async () => {
+      try {
+        const hosts = await this.local.getBackendHosts();
+        controller.signal.throwIfAborted();
+        const results = await probeBackendHosts(hosts, controller.signal);
+        if (controller.signal.aborted || generation !== connection.generation) return;
+        connection.lastTestedAt = Date.now();
+        this.backgroundResult = { generation, results, error: '' };
+      } catch (cause) {
+        if (controller.signal.aborted || generation !== connection.generation) return;
+        connection.lastTestedAt = Date.now();
+        this.backgroundResult = {
+          generation, results: [], error: `后台连接测试失败，已暂停后续联网写入。${cause instanceof Error ? cause.message : '请检查设备设置后重新测试。'}`,
+        };
+      } finally {
+        if (this.background === controller) this.background = undefined;
+        this.applyBackgroundResult();
+      }
+    })();
+  }
+
+  private applyBackgroundResult() {
+    if (this.mutations || this.activeRequests || this.writing || this.state.busy || !this.backgroundResult) return;
+    const { generation, results, error } = this.backgroundResult;
+    this.backgroundResult = undefined;
+    this.local.db.backendConnection.applyBackgroundResults(results, generation, error);
   }
 
   get permissions() {
@@ -161,6 +211,15 @@ export class CollaborationRepository implements RepositorySync {
 
   async request(path: string, method = 'GET', body?: unknown, requestId?: string): Promise<unknown> {
     const connection = this.local.db.backendConnection.state;
+    requireCondition(connection.host && !connection.testing, 'BACKEND_HOST', '尚未选定唯一后端主机，请在后端主机设置中测试连接或重新连接。');
+    this.activeRequests++;
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) this.checkConnectionInBackground();
+    try { return await this.performRequest(path, method, body, requestId); }
+    finally { this.activeRequests--; this.applyBackgroundResult(); }
+  }
+
+  private async performRequest(path: string, method: string, body?: unknown, requestId?: string): Promise<unknown> {
+    const connection = this.local.db.backendConnection.state;
     const { host, generation } = connection;
     requireCondition(host && !connection.testing, 'BACKEND_HOST', '尚未选定唯一后端主机，请在后端主机设置中测试连接或重新连接。');
     const headers: Record<string, string> = {};
@@ -178,7 +237,7 @@ export class CollaborationRepository implements RepositorySync {
       if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
       this.state.connected = false;
       this.state.authenticated = false;
-      throw new CollaborationError('无法访问后端，已保留本机副本与草稿。请检查所选设备的 80 端口、网页来源授权及共享目录；不会自动切换其他主机。');
+      throw new CollaborationError('无法访问后端，已保留本机副本与草稿。请检查所选设备的 80 端口、网页来源授权及共享目录；不会自动重发本次请求。');
     }
     if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
     let value: unknown;
@@ -228,14 +287,16 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   async login(username: string, password: string, remember: boolean) {
-    if (!this.local.db.backendConnection.state.host) await this.local.testBackendHosts(new AbortController().signal);
-    const value = object(await this.request('/auth/login', 'POST', { username, password, remember }));
-    requireCondition(typeof value.token === 'string' && typeof value.expiresAt === 'number', 'RESPONSE', '登录响应无效。');
-    this.token = value.token; this.expiresAt = value.expiresAt; this.remember = remember;
-    this.state.user = user(value.user);
-    this.state.connected = true; this.state.authenticated = true;
-    if (this.state.user.mustChangePassword) return;
-    await this.verifySession();
+    return this.mutation(async () => {
+      if (!this.local.db.backendConnection.state.host) await this.local.testBackendHosts(new AbortController().signal);
+      const value = object(await this.request('/auth/login', 'POST', { username, password, remember }));
+      requireCondition(typeof value.token === 'string' && typeof value.expiresAt === 'number', 'RESPONSE', '登录响应无效。');
+      this.token = value.token; this.expiresAt = value.expiresAt; this.remember = remember;
+      this.state.user = user(value.user);
+      this.state.connected = true; this.state.authenticated = true;
+      if (this.state.user.mustChangePassword) return;
+      await this.verifySession();
+    });
   }
 
   async reconnect() {
@@ -257,18 +318,22 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   async logout() {
-    if (this.state.authenticated) await this.request('/auth/logout', 'POST', {});
-    await this.cache.contexts.put({ id: 'active', source: this.state.source, actorId: null, user: null, token: '', expiresAt: 0 });
-    this.token = ''; this.state.user = null; this.remember = false; this.state.authenticated = false;
-    await this.updateCounts();
+    return this.mutation(async () => {
+      if (this.state.authenticated) await this.request('/auth/logout', 'POST', {});
+      await this.cache.contexts.put({ id: 'active', source: this.state.source, actorId: null, user: null, token: '', expiresAt: 0 });
+      this.token = ''; this.state.user = null; this.remember = false; this.state.authenticated = false;
+      await this.updateCounts();
+    });
   }
 
   async changePassword(currentPassword: string, newPassword: string) {
     requireCondition(currentPassword !== newPassword, 'PASSWORD_REUSE', '新密码必须与当前密码不同。');
-    await this.request('/auth/password', 'POST', { currentPassword, newPassword });
-    await this.cache.contexts.put({ id: 'active', source: this.state.source, actorId: null, user: null, token: '', expiresAt: 0 });
-    this.token = ''; this.state.user = null; this.state.authenticated = false;
-    this.state.message = '密码已修改，旧会话已撤销，请重新登录。';
+    return this.mutation(async () => {
+      await this.request('/auth/password', 'POST', { currentPassword, newPassword });
+      await this.cache.contexts.put({ id: 'active', source: this.state.source, actorId: null, user: null, token: '', expiresAt: 0 });
+      this.token = ''; this.state.user = null; this.state.authenticated = false;
+      this.state.message = '密码已修改，旧会话已撤销，请重新登录。';
+    });
   }
 
   async listUsers() {
@@ -311,25 +376,29 @@ export class CollaborationRepository implements RepositorySync {
 
   async createUser(input: { username: string; password: string; displayName: string; email: string }) {
     this.assertOnline(true);
-    return user(object(await this.request('/users', 'POST', input)).user);
+    return this.mutation(async () => user(object(await this.request('/users', 'POST', input)).user));
   }
 
   async manageUser(username: string, disabled: boolean, newPassword?: string) {
     this.assertOnline(true);
-    return user(object(await this.request(memberPath(username), 'PATCH',
-      newPassword === undefined ? { disabled } : { disabled, newPassword })).user);
+    return this.mutation(async () => user(object(await this.request(memberPath(username), 'PATCH',
+      newPassword === undefined ? { disabled } : { disabled, newPassword })).user));
   }
 
   async deleteUser(username: string) {
     this.assertOnline(true);
-    const result = object(await this.request(memberPath(username), 'DELETE'));
-    requireCondition(result.deleted === true, 'RESPONSE', '账号删除结果未确认，请刷新成员列表核对后再操作。');
+    return this.mutation(async () => {
+      const result = object(await this.request(memberPath(username), 'DELETE'));
+      requireCondition(result.deleted === true, 'RESPONSE', '账号删除结果未确认，请刷新成员列表核对后再操作。');
+    });
   }
 
   async saveProfile(input: { displayName: string; email: string; avatar: string | null }) {
     this.assertOnline();
-    this.state.user = user(object(await this.request('/auth/profile', 'PUT', input)).user);
-    await this.persistContext();
+    return this.mutation(async () => {
+      this.state.user = user(object(await this.request('/auth/profile', 'PUT', input)).user);
+      await this.persistContext();
+    });
   }
 
   async listProjects() {
@@ -568,7 +637,7 @@ export class CollaborationRepository implements RepositorySync {
       }
       if (committed) throw new CollaborationError(`共享已提交，但本机副本更新未完成。请重试未确认提交，勿重复操作。${cause instanceof Error ? cause.message : ''}`);
       throw cause;
-    } finally { this.writing = false; }
+    } finally { this.writing = false; this.applyBackgroundResult(); }
   }
 
   async create(name: string, partNumber: string): Promise<ProjectGraph> {

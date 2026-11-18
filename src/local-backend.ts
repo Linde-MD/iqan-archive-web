@@ -2,6 +2,7 @@ import { reactive } from 'vue';
 
 export const DEFAULT_BACKEND_HOSTS = ['nb4cn25opxos', 'nb4cn35rxxr8', 'nb4cn25xl5pv', 'nb4cn25omeyo'] as const;
 export const BACKEND_PROBE_TIMEOUT_MS = 3_000;
+export const BACKEND_RECHECK_INTERVAL_MS = 60_000;
 
 export function parseBackendHosts(value: unknown): string[] {
   if (!Array.isArray(value)) throw new Error('设备名必须为列表。');
@@ -72,7 +73,10 @@ export async function checkLocalBackend(host: string, signal: AbortSignal): Prom
 }
 
 export class BackendConnection {
-  readonly state = reactive({ host: '', generation: 0, testing: false, results: [] as BackendProbe[] });
+  readonly state = reactive({
+    host: '', generation: 0, testing: false, lastTestedAt: 0, results: [] as BackendProbe[],
+    notice: null as { title: string; message: string } | null,
+  });
   private active: AbortController | undefined;
 
   reset() {
@@ -81,6 +85,8 @@ export class BackendConnection {
     this.state.host = '';
     this.state.results = [];
     this.state.testing = false;
+    this.state.lastTestedAt = 0;
+    this.state.notice = null;
     this.state.generation++;
   }
 
@@ -91,22 +97,9 @@ export class BackendConnection {
     const combined = AbortSignal.any([signal, controller.signal]);
     this.state.testing = true;
     try {
-      const names = parseBackendHosts(hosts);
-      if (!names.length) throw new Error('尚未设置后端设备名。请先保存至少一个设备名，再测试连接。');
-      const results = await Promise.all(names.map(async host => {
-        let result: BackendProbe;
-        try {
-          const health = await checkLocalBackend(host, combined);
-          result = { host, available: true, initialized: health.initialized, error: '' };
-        } catch (cause) {
-          if (combined.aborted) throw cause;
-          result = { host, available: false, initialized: false, error: cause instanceof Error ? cause.message : '检测失败，请重试。' };
-        }
-        combined.throwIfAborted();
-        this.state.results.push(result);
-        return result;
-      }));
+      const results = await probeBackendHosts(hosts, combined, result => this.state.results.push(result));
       combined.throwIfAborted();
+      this.state.lastTestedAt = Date.now();
       this.state.results = results;
       const available = results.filter(result => result.available);
       if (available.length !== 1) {
@@ -124,4 +117,40 @@ export class BackendConnection {
       }
     }
   }
+
+  applyBackgroundResults(results: BackendProbe[], generation: number, error = '') {
+    if (this.state.generation !== generation) return;
+    this.state.results = results;
+    const available = results.filter(result => result.available);
+    const previous = this.state.host;
+    const next = !error && available.length === 1 ? available[0]!.host : '';
+    if (next && next === previous) return;
+    this.state.host = next;
+    this.state.generation++;
+    this.state.notice = next
+      ? { title: '检测到主机已切换', message: `后端地址已从 ${previous} 切换为 ${next}。本次操作未自动重发，请重新连接或登录验证后再继续共享写入。` }
+      : { title: '后端连接异常', message: error || (available.length === 0
+        ? '后台检测没有可连接的兼容后端，已清除主机选择并暂停后续联网写入。请检查设备后重新测试连接。'
+        : `后台检测发现多台可连接主机（${available.map(result => result.host).join('、')}），已清除主机选择并暂停后续联网写入。请停止多余后端后重新测试。`) };
+  }
+}
+
+export async function probeBackendHosts(
+  hosts: string[], signal: AbortSignal, completed?: (result: BackendProbe) => void,
+): Promise<BackendProbe[]> {
+  const names = parseBackendHosts(hosts);
+  if (!names.length) throw new Error('尚未设置后端设备名。请先保存至少一个设备名，再测试连接。');
+  return Promise.all(names.map(async host => {
+    let result: BackendProbe;
+    try {
+      const health = await checkLocalBackend(host, signal);
+      result = { host, available: true, initialized: health.initialized, error: '' };
+    } catch (cause) {
+      if (signal.aborted) throw cause;
+      result = { host, available: false, initialized: false, error: cause instanceof Error ? cause.message : '检测失败，请重试。' };
+    }
+    signal.throwIfAborted();
+    completed?.(result);
+    return result;
+  }));
 }

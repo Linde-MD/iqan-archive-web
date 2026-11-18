@@ -431,10 +431,10 @@ async function saveDraft() {
         <div class="actions"><button type="submit" :disabled="busy">创建成员</button><button type="button" class="secondary" :disabled="busy" @click="loadMembers">刷新成员</button></div>
       </form>
       <ul class="collaboration-members"><li v-for="member in members" :key="member.id">
-        <span>{{ member.username }} · {{ member.displayName }} · {{ member.disabled ? '已停用' : '启用' }}</span>
-        <div class="actions">
+        <div class="account-member-identity"><strong>{{ member.displayName }}</strong><code>@{{ member.username }}</code><span class="account-member-status">{{ member.disabled ? '已停用' : '已启用' }}</span></div>
+        <div class="account-member-actions">
           <button type="button" class="secondary" :disabled="busy || member.role === 'admin'" @click="run(async () => { const updated = await client.manageUser(member.username, !member.disabled); members = members.map(item => item.id === updated.id ? updated : item); message = `成员 ${updated.username} 已${updated.disabled ? '停用' : '启用'}。`; })">{{ member.disabled ? '启用' : '停用' }}</button>
-          <button v-if="member.role === 'member'" type="button" class="danger" :disabled="busy" :aria-label="`删除成员 ${member.username}`" @click="confirmMemberDeletion(member)">删除账号</button>
+          <button v-if="member.role === 'member'" type="button" class="secondary account-member-delete" :disabled="busy" :aria-label="`删除成员 ${member.username}`" @click="confirmMemberDeletion(member)">删除账号</button>
         </div>
       </li></ul>
       <section v-if="deletingMember" class="account-delete-confirmation" aria-labelledby="delete-member-title">
@@ -616,6 +616,14 @@ async function saveDraft() {
 .collaboration-members { padding: 0; list-style: none; }
 .collaboration-members li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); color: #d7e5f8; font-size: 12px; }
 .collaboration-members button { width: auto; flex: 0 0 auto; }
+.account-member-identity { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.account-member-identity strong { font-size: 13px; overflow-wrap: anywhere; }
+.account-member-identity code { color: var(--muted); overflow-wrap: anywhere; }
+.account-member-status { padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 5px; font-size: 11px; white-space: nowrap; }
+.account-member-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.account-member-actions button { min-width: 76px; min-height: 44px; }
+.account-member-actions .account-member-delete { border-color: var(--danger); color: var(--danger); background: transparent; }
+.account-member-actions .account-member-delete:hover { background: var(--surface-raised); }
 @media (max-width: 700px) {
   .account-page-content { width: min(100% - 28px, 620px); padding-top: 20px; }
   .account-profile-banner { grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 14px; }
@@ -623,6 +631,8 @@ async function saveDraft() {
   .account-profile-metrics { grid-column: 1 / -1; justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--border); }
 }
 @media (max-width: 520px) {
+  .collaboration-members li { align-items: stretch; flex-direction: column; }
+  .account-member-actions { justify-content: flex-end; }
   .account-avatar-trigger { padding-right: 5px; }
   .account-trigger-label, .account-avatar-trigger > .app-icon { display: none; }
   .account-page-header { gap: 12px; padding-inline: 12px; }

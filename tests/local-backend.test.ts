@@ -118,6 +118,18 @@ describe('后端设备发现', () => {
     expect(connection.state.testing).toBe(false);
   });
 
+  it('手动重新连接后忽略迟到的后台检测结果', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response()));
+    const connection = new BackendConnection();
+    await connection.test(['pc-a'], new AbortController().signal);
+    const generation = connection.state.generation;
+    await connection.test(['pc-b'], new AbortController().signal);
+    connection.applyBackgroundResults([{ host: 'pc-old', available: true, initialized: true, error: '' }], generation);
+    expect(connection.state.host).toBe('pc-b');
+    expect(connection.state.notice).toBeNull();
+    expect(connection.state.results.map(result => result.host)).toEqual(['pc-b']);
+  });
+
   it.each(['headers', 'body'])('健康检测的 3 秒阈值包含 %s 等待，并保留用户取消', async phase => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn((_url: string, options: RequestInit) => {
