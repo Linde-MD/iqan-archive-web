@@ -73,15 +73,17 @@ export function compareVersionNodes(a: VersionNode, b: VersionNode, order: Versi
   return (order === 'oldest' ? 1 : -1) * (compareVersions(a.version, b.version) || compareText(a.id, b.id));
 }
 
-/** Parent constraints take precedence over version order in the flat list. */
+/** Topology takes precedence; newest-first visits children before parents. */
 export function orderedVersionNodes(graph: ProjectGraph, order: VersionOrder): VersionNode[] {
   validateGraph(graph);
   const indegree = new Map(graph.nodes.map(node => [node.id, 0]));
-  const children = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  const adjacent = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   for (const edge of graph.edges) {
-    indegree.set(edge.childId, indegree.get(edge.childId)! + 1);
-    children.get(edge.parentId)!.push(edge.childId);
+    const from = order === 'oldest' ? edge.parentId : edge.childId;
+    const to = order === 'oldest' ? edge.childId : edge.parentId;
+    indegree.set(to, indegree.get(to)! + 1);
+    adjacent.get(from)!.push(to);
   }
   const ready = graph.nodes.filter(node => indegree.get(node.id) === 0);
   const result: VersionNode[] = [];
@@ -89,7 +91,7 @@ export function orderedVersionNodes(graph: ProjectGraph, order: VersionOrder): V
     ready.sort((a, b) => compareVersionNodes(a, b, order));
     const node = ready.shift()!;
     result.push(node);
-    for (const id of children.get(node.id)!) {
+    for (const id of adjacent.get(node.id)!) {
       indegree.set(id, indegree.get(id)! - 1);
       if (indegree.get(id) === 0) ready.push(byId.get(id)!);
     }

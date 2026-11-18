@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { compareVersions, orderedVersionNodes } from '../src/domain/version-order';
 import { layoutDag, LAYOUT } from '../src/domain/layout';
+import { layoutGitGraph } from '../src/domain/git-graph';
 
 function fixture(versions: string[]) {
   const graph = createProject('排序测试', '001');
@@ -117,7 +118,24 @@ describe('版本排序', () => {
     expect(orderedVersionNodes(graph, 'oldest').map(node => node.version)).toEqual(sorted);
   });
 
-  it('无关系的根和同父兄弟按方向排布；父子/合并深度不倒置', () => {
+  it('有父子边的日期版本链随方向切换，文件列表与分支图一致且不改数据', () => {
+    const versions = ['V1.0-1 20260831', 'V1.0-1 20260901', 'V1.0-1 20260903'];
+    const graph = fixture(versions);
+    graph.edges = [
+      { id: 'a', projectId: graph.project.id, parentId: 'n0', childId: 'n1' },
+      { id: 'b', projectId: graph.project.id, parentId: 'n1', childId: 'n2' },
+    ];
+    graph.nodes.reverse();
+    const before = structuredClone(graph);
+    for (const order of ['newest', 'oldest', 'newest'] as const) {
+      const sorted = orderedVersionNodes(graph, order);
+      expect(sorted.map(node => node.version)).toEqual(order === 'oldest' ? versions : [...versions].reverse());
+      expect(layoutGitGraph(graph, order).rows.map(row => row.node.id)).toEqual(sorted.map(node => node.id));
+      expect(graph).toEqual(before);
+    }
+  });
+
+  it('无关系的根和同父兄弟按方向排布；父子/合并顺序随方向变化且拓扑优先于版本号', () => {
     const graph = fixture(['V1.0-10', 'V1.0-2', 'V2.0-0', 'V0.0-1']);
     for (const order of ['oldest', 'newest'] as const) {
       const sorted = orderedVersionNodes(graph, order);
@@ -133,9 +151,11 @@ describe('版本排序', () => {
     ];
     for (const order of ['oldest', 'newest'] as const) {
       const ids = orderedVersionNodes(graph, order).map(node => node.id);
+      expect(layoutGitGraph(graph, order).rows.map(row => row.node.id)).toEqual(ids);
       const layout = layoutDag(graph, order);
       for (const edge of graph.edges) {
-        expect(ids.indexOf(edge.parentId)).toBeLessThan(ids.indexOf(edge.childId));
+        if (order === 'oldest') expect(ids.indexOf(edge.parentId)).toBeLessThan(ids.indexOf(edge.childId));
+        else expect(ids.indexOf(edge.childId)).toBeLessThan(ids.indexOf(edge.parentId));
         expect(layout.positions.get(edge.parentId)!.x).toBeLessThan(layout.positions.get(edge.childId)!.x);
       }
       const small = layout.positions.get('n1')!.y;

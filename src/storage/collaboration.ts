@@ -1,8 +1,8 @@
 import Dexie, { type Table } from 'dexie';
-import { reactive } from 'vue';
+import { reactive, watch } from 'vue';
 import { ArchiveRepository, type SnapshotImportPlan } from './database';
 import type { RepositorySync } from './repository-sync';
-import { backendAddress } from '../local-backend';
+import { backendAddress, backendRequestOptions } from '../local-backend';
 import { DomainError, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAssignee } from '../domain/model';
 import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/project-snapshot';
 import { validateGraph, validateTransition } from '../domain/graph';
@@ -111,7 +111,9 @@ export class CollaborationRepository implements RepositorySync {
   private expiresAt = 0;
   private writing = false;
 
-  constructor(readonly local: ArchiveRepository, readonly cache = new CollaborationDatabase()) {}
+  constructor(readonly local: ArchiveRepository, readonly cache = new CollaborationDatabase()) {
+    watch(() => local.db.backendConnection.state.generation, () => this.disconnect(), { flush: 'sync' });
+  }
 
   get permissions() {
     const available = Boolean(this.state.source && this.state.user && !this.state.user.mustChangePassword && !this.state.pending);
@@ -152,7 +154,9 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   async request(path: string, method = 'GET', body?: unknown, requestId?: string): Promise<unknown> {
-    const port = await this.local.getBackendPort();
+    const connection = this.local.db.backendConnection.state;
+    const { host, generation } = connection;
+    requireCondition(host && !connection.testing, 'BACKEND_HOST', '尚未选定唯一后端主机，请在后端主机设置中测试连接或重新连接。');
     const headers: Record<string, string> = {};
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -160,21 +164,25 @@ export class CollaborationRepository implements RepositorySync {
     if (this.state.source && requestId) headers['X-Archive-Database'] = this.state.source;
     let response: Response;
     try {
-      response = await fetch(`${backendAddress(port)}${path}`, {
+      response = await fetch(`${backendAddress(host)}${path}`, backendRequestOptions({
         method, headers, body: body === undefined ? null : JSON.stringify(body),
-        credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(65_000),
-      });
+        signal: AbortSignal.timeout(65_000),
+      }));
     } catch {
+      if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
       this.state.connected = false;
       this.state.authenticated = false;
-      throw new CollaborationError('无法访问后端，已保留本机副本与草稿。请检查服务、端口、网页来源授权及共享目录。');
+      throw new CollaborationError('无法访问后端，已保留本机副本与草稿。请检查所选设备的 80 端口、网页来源授权及共享目录；不会自动切换其他主机。');
     }
+    if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
     let value: unknown;
     try { value = await response.json(); }
     catch {
+      if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
       this.state.connected = false;
       throw new CollaborationError('后端响应不完整，操作结果未确认；请使用“重试未确认提交”，不要重复创建。');
     }
+    if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
         this.state.connected = true; this.state.authenticated = false;
@@ -214,17 +222,23 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   async login(username: string, password: string, remember: boolean) {
+    if (!this.local.db.backendConnection.state.host) await this.local.testBackendHosts(new AbortController().signal);
     const value = object(await this.request('/auth/login', 'POST', { username, password, remember }));
     requireCondition(typeof value.token === 'string' && typeof value.expiresAt === 'number', 'RESPONSE', '登录响应无效。');
     this.token = value.token; this.expiresAt = value.expiresAt; this.remember = remember;
     this.state.user = user(value.user);
     this.state.connected = true; this.state.authenticated = true;
     if (this.state.user.mustChangePassword) return;
-    await this.reconnect();
+    await this.verifySession();
   }
 
   async reconnect() {
     requireCondition(this.token, 'LOGIN', '请先登录。');
+    await this.local.testBackendHosts(new AbortController().signal);
+    await this.verifySession();
+  }
+
+  private async verifySession() {
     this.state.user = user(object(await this.request('/auth/me')).user);
     this.state.connected = true; this.state.authenticated = true;
     if (this.state.user.mustChangePassword) return;

@@ -103,6 +103,7 @@ function setup() {
     const body: unknown = init.body ? JSON.parse(String(init.body)) : undefined;
     const headers = new Headers(init.headers);
     const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
+    if (path === '/health') return response({ product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: true });
     if (path === '/auth/login') return response({ token: 'test-token', expiresAt: Date.now() + 100_000, user: admin });
     if (path === '/auth/me') return response({ user: admin });
     if (path === '/instance') return response({ databaseId: source });
@@ -156,6 +157,7 @@ function setup() {
   const cache = new CollaborationDatabase(`collab-${crypto.randomUUID()}`);
   databases.push(db, cache);
   const local = new ArchiveRepository(db);
+  vi.spyOn(local, 'getBackendHosts').mockResolvedValue(['test-device']);
   const client = new CollaborationRepository(local, cache);
   const repository = new ArchiveRepository(db, client);
   return {
@@ -171,6 +173,58 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it.each(['network', 'json'])('旧请求的迟到 %s 失败不会断开已重新验证的新连接', async kind => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    let fail!: () => void;
+    if (kind === 'network') {
+      s.fetcher.mockImplementationOnce(() => new Promise<Response>((_, reject) => {
+        fail = () => reject(new TypeError('old connection failed'));
+      }));
+    } else {
+      const stream = new ReadableStream({ start(controller) { fail = () => controller.error(new Error('old body failed')); } });
+      s.fetcher.mockResolvedValueOnce(new Response(stream));
+    }
+    const request = s.client.request('/projects');
+    const rejected = expect(request).rejects.toMatchObject({ code: 'CONNECTION_CHANGED' });
+    await s.client.reconnect();
+    expect(s.client.state.connected).toBe(true);
+    fail();
+    await rejected;
+    expect(s.client.state.connected).toBe(true);
+    expect(s.client.state.authenticated).toBe(true);
+  });
+
+  it('所有 API 使用唯一主机，正常请求不重探测，重新连接才重新发现', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    await s.client.refresh();
+    expect(s.fetcher.mock.calls.every(([url]) => url.startsWith('http://test-device/'))).toBe(true);
+    expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/health'))).toHaveLength(1);
+    vi.mocked(s.local.getBackendHosts).mockResolvedValue(['other-device']);
+    await s.client.reconnect();
+    expect(s.db.backendConnection.state.host).toBe('other-device');
+    const before = s.fetcher.mock.calls.length;
+    await s.client.refresh();
+    expect(s.fetcher.mock.calls.slice(before).every(([url]) => url.startsWith('http://other-device/'))).toBe(true);
+    expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/health'))).toHaveLength(2);
+  });
+
+  it('新探测清除选择，旧 API 的迟到响应不能恢复在线状态', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    let finish!: (value: Response) => void;
+    s.fetcher.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const request = s.client.request('/projects');
+    const rejected = expect(request).rejects.toMatchObject({ code: 'CONNECTION_CHANGED' });
+    s.db.backendConnection.reset();
+    finish(new Response(JSON.stringify({ projects: [] })));
+    await rejected;
+    expect(s.client.state.connected).toBe(false);
+    expect(s.client.permissions.sharedWritable).toBe(false);
+    await expect(s.client.request('/projects')).rejects.toThrow('唯一后端主机');
+  });
+
   it('没有草稿时刷新共享副本不提示需要手动同步', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
@@ -249,7 +303,7 @@ describe('共享副本与离线草稿', () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
     s.network(false);
-    await expect(s.client.reconnect()).rejects.toThrow('无法访问');
+    await expect(s.client.reconnect()).rejects.toThrow('没有可连接');
     expect(s.client.permissions.sharedWriteBlockedReason).toContain('未连接本机后端');
     let current = await s.repository.get(s.graph().project.id);
     const first = createNode(current, { version: 'V1', description: '草稿一' });

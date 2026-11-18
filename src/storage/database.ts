@@ -5,7 +5,7 @@ import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
-import { DEFAULT_BACKEND_PORT, parseBackendPort } from '../local-backend';
+import { BackendConnection, DEFAULT_BACKEND_HOSTS, parseBackendHosts } from '../local-backend';
 import type { RepositorySync } from './repository-sync';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
@@ -50,7 +50,8 @@ export class ArchiveDatabase extends Dexie {
   tasks!: Table<Task, string>;
   directoryBindings!: Table<DirectoryBinding, [string, DirectoryRole]>;
   archiveRoots!: Table<ArchiveRootBinding, string>;
-  backendSettings!: Table<{ id: 'connection'; port: number }, string>;
+  backendSettings!: Table<{ id: 'connection'; hosts: string[] }, string>;
+  readonly backendConnection = new BackendConnection();
 
   constructor(name = 'iqan-archive-web') {
     super(name);
@@ -189,6 +190,9 @@ export class ArchiveDatabase extends Dexie {
         });
       }
     });
+    this.version(15).stores({}).upgrade(async transaction => {
+      await transaction.table('backendSettings').put({ id: 'connection', hosts: [...DEFAULT_BACKEND_HOSTS] });
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -200,13 +204,24 @@ export class ArchiveRepository {
   constructor(public readonly db: ArchiveDatabase, private readonly sync?: RepositorySync) {}
   get permissions() { return this.sync?.permissions; }
 
-  async getBackendPort(): Promise<number> {
+  async getBackendHosts(): Promise<string[]> {
     const settings = await this.db.backendSettings.get('connection');
-    return settings ? parseBackendPort(settings.port) : DEFAULT_BACKEND_PORT;
+    return settings ? parseBackendHosts(settings.hosts) : [...DEFAULT_BACKEND_HOSTS];
   }
 
-  async setBackendPort(port: number): Promise<void> {
-    await this.db.backendSettings.put({ id: 'connection', port: parseBackendPort(port) });
+  async setBackendHosts(hosts: string[]): Promise<void> {
+    await this.db.backendSettings.put({ id: 'connection', hosts: parseBackendHosts(hosts) });
+    this.db.backendConnection.reset();
+  }
+
+  async testBackendHosts(signal: AbortSignal) {
+    this.db.backendConnection.reset();
+    const generation = this.db.backendConnection.state.generation;
+    const hosts = await this.getBackendHosts();
+    signal.throwIfAborted();
+    if (generation !== this.db.backendConnection.state.generation)
+      throw new DOMException('连接测试已被更新的设置或测试取消。', 'AbortError');
+    return this.db.backendConnection.test(hosts, signal);
   }
 
   async listProjects(): Promise<Project[]> {
