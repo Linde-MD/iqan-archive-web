@@ -19,10 +19,17 @@ export type ProjectDelta = Omit<ProjectChanges, 'revision'> & {
   revision: number;
 };
 
+function comparisonJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item !== null && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+      : item);
+}
+
 function changes<T extends { id: string }>(before: readonly T[], after: readonly T[]): EntityChanges<T> | undefined {
   const previous = new Map(before.map(item => [item.id, item]));
   const next = new Map(after.map(item => [item.id, item]));
-  const upsert = after.filter(item => JSON.stringify(previous.get(item.id)) !== JSON.stringify(item));
+  const upsert = after.filter(item => comparisonJson(previous.get(item.id)) !== comparisonJson(item));
   const removed = before.filter(item => !next.has(item.id)).map(item => item.id);
   return upsert.length || removed.length ? { upsert, delete: removed } : undefined;
 }
@@ -34,7 +41,7 @@ function projectFields(graph: ProjectGraph): ProjectSnapshot['graph']['project']
 
 export function diffProjectGraphs(before: ProjectGraph, after: ProjectGraph): ProjectChanges {
   const changeset: ProjectChanges = { revision: before.project.revision };
-  if (JSON.stringify(projectFields(before)) !== JSON.stringify(projectFields({ ...after, project: { ...after.project, revision: before.project.revision } }))) {
+  if (comparisonJson(projectFields(before)) !== comparisonJson({ ...projectFields(after), revision: before.project.revision })) {
     changeset.project = projectFields(after);
   }
   const nodes = changes(before.nodes, after.nodes);
@@ -48,6 +55,10 @@ export function diffProjectGraphs(before: ProjectGraph, after: ProjectGraph): Pr
   if (tasks) changeset.tasks = tasks;
   if (branches) changeset.branches = branches;
   return changeset;
+}
+
+export function hasProjectChanges({ project, nodes, edges, tasks, branches }: ProjectChanges): boolean {
+  return Boolean(project || nodes || edges || tasks || branches);
 }
 
 export function createProjectDelta(before: ProjectGraph | null, after: ProjectGraph): ProjectDelta {

@@ -784,16 +784,17 @@ function beginEditComment(comment: TaskComment) {
 }
 
 async function saveComment() {
-  if (!taskDraft.value || !commentText.value.trim()) return;
+  const text = commentText.value.trim();
+  if (!taskDraft.value || !text) return;
   const current = structuredClone(toRaw(taskDraft.value));
   const now = new Date().toISOString();
   const comments = [...current.comments];
   if (editingCommentId.value) {
     const index = comments.findIndex(comment => comment.id === editingCommentId.value);
     if (index < 0) return;
-    comments[index] = { ...comments[index]!, text: commentText.value.trim(), updatedAt: now };
+    if (comments[index]!.text !== text) comments[index] = { ...comments[index]!, text, updatedAt: now };
   } else {
-    comments.push({ id: crypto.randomUUID(), text: commentText.value.trim(), createdAt: now, updatedAt: now });
+    comments.push({ id: crypto.randomUUID(), text, createdAt: now, updatedAt: now });
   }
   if (await saveTask({ ...current, comments }, '评论已保存。')) {
     commentEditorOpen.value = false;

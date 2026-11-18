@@ -7,7 +7,7 @@ import { DomainError, normalizeVersion, orderedBranches, requireCondition, type 
 import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/project-snapshot';
 import { validateGraph, validateTransition } from '../domain/graph';
 import { assertOfflineChanges } from '../domain/collaboration';
-import { applyProjectDelta, diffProjectGraphs, parseProjectDelta } from '../domain/project-changes';
+import { applyProjectDelta, diffProjectGraphs, hasProjectChanges, parseProjectDelta } from '../domain/project-changes';
 
 export interface CollaborationUser {
   id: string; username: string; displayName: string; email: string;
@@ -410,6 +410,10 @@ export class CollaborationRepository implements RepositorySync {
 
   async saveProfile(input: { displayName: string; email: string; avatar: string | null }) {
     this.assertOnline();
+    const current = this.state.user;
+    if (current && input.displayName.length <= 80 && input.email.length <= 254
+      && input.displayName.trim() === current.displayName && input.email.trim() === current.email
+      && input.avatar === current.avatar) return;
     return this.mutation(async () => {
       this.state.user = user(object(await this.request('/auth/profile', 'PUT', input)).user);
       await this.persistContext();
@@ -490,9 +494,12 @@ export class CollaborationRepository implements RepositorySync {
     requireCondition(allNodes.every(item => item.id === nodeId || item.version !== node.version), 'DUPLICATE_VERSION', '版本号已存在，请修改草稿版本号。');
     requireCondition(node.taskId === null || mirror.graph.tasks.some(task => task.id === node.taskId), 'TASK_REFERENCE', '所选任务已失效，请重新选择或清空。');
     requireCondition(parentIds.every(parent => parent !== nodeId && allNodes.some(item => item.id === parent)), 'PARENT_REFERENCE', '存在失效或自身父引用，请移除后重新选择。');
+    const previousEdges = new Map(draft.edges.filter(edge => edge.childId === nodeId).map(edge => [edge.parentId, edge]));
     next.edges = next.edges.filter(edge => edge.childId !== nodeId);
-    next.edges.push(...[...new Set(parentIds)].map(parentId => ({ id: crypto.randomUUID(), projectId: id, parentId, childId: nodeId })));
-    serializeProjectSnapshot(collaborationSnapshot(this.overlay(mirror, next)));
+    next.edges.push(...[...new Set(parentIds)].map(parentId =>
+      previousEdges.get(parentId) ?? { id: crypto.randomUUID(), projectId: id, parentId, childId: nodeId }));
+    const nextGraph = this.overlay(mirror, next);
+    serializeProjectSnapshot(collaborationSnapshot(nextGraph));
     const parents = new Map<string, string[]>();
     for (const edge of [...mirror.graph.edges, ...next.edges]) parents.set(edge.childId, [...(parents.get(edge.childId) ?? []), edge.parentId]);
     const visited = new Set<string>(), pending = [...parentIds];
@@ -501,13 +508,15 @@ export class CollaborationRepository implements RepositorySync {
       requireCondition(current !== nodeId, 'CYCLE', '父版本关系会形成循环。');
       if (!visited.has(current)) { visited.add(current); pending.push(...(parents.get(current) ?? [])); }
     }
+    const changed = hasProjectChanges(diffProjectGraphs(this.overlay(mirror, draft), nextGraph));
     await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
       requireCondition(!await this.cache.pending.get(actor), 'PENDING', '请先重试结果未确认的提交。');
       requireCondition((await this.cache.mirrors.get(mirror.key))?.version === revision, 'STALE_REVISION', '草稿或副本已变化，请重新打开。');
+      if (!changed) return;
       await this.cache.drafts.put(next);
       await this.cache.mirrors.put({ ...mirror, version: revision + 1 });
     });
-    await this.updateCounts();
+    if (changed) await this.updateCounts();
   }
 
   async updateCounts() {
@@ -674,6 +683,7 @@ export class CollaborationRepository implements RepositorySync {
         && (!this.state.connected || this.state.authenticated), 'LOGIN', '请先登录并完成初始改密；退出后的副本只读。');
       requireCondition(!draft || draft.owner === this.state.user.id, 'DRAFT_OWNER', '此草稿仅原账号可以修改或同步。');
       assertOfflineChanges({ ...mirror.graph, project: { ...mirror.graph.project, revision } }, next);
+      if (!deletion && !hasProjectChanges(diffProjectGraphs(current, next))) return current;
       serializeProjectSnapshot(collaborationSnapshot(next));
       const existing = new Set(mirror.graph.nodes.map(node => node.id));
       await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
@@ -695,8 +705,11 @@ export class CollaborationRepository implements RepositorySync {
     next.project.revision = sharedRevision;
     const suffix = metadata?.state ? 'state' : metadata ? 'command' : '';
     const base = { ...current, project: { ...current.project, revision: sharedRevision } };
+    const changes = diffProjectGraphs(base, next);
+    this.assertOnline();
+    if (!deletion && !hasProjectChanges(changes)) return current;
     const body = metadata?.state ? { revision: sharedRevision, nodeId: metadata.nodeId, action: metadata.state }
-      : metadata ? { revision: sharedRevision, command: metadata } : diffProjectGraphs(base, next);
+      : metadata ? { revision: sharedRevision, command: metadata } : changes;
     const result = await this.mutate(suffix ? 'POST' : 'PATCH', `/projects/${id}${suffix ? `/${suffix}` : ''}`, body, id);
     requireCondition(result, 'RESPONSE', '保存响应无效。');
     return result;

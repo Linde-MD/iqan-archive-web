@@ -444,6 +444,62 @@ describe('共享副本与离线草稿', () => {
     expect(s.client.state.message).not.toContain('需手动同步');
   });
 
+  it('无变化的项目、任务、父关系和个人资料编辑不发请求或后台探测', async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const s = setup();
+    const initial = s.graph();
+    const id = initial.project.id;
+    const first = createNode(initial, { version: '1', description: '' });
+    const second = createNode(initial, { version: '2', description: '' });
+    const child = createNode(initial, { version: '3', description: '说明' });
+    initial.nodes.push(first, second, child);
+    initial.edges.push(...[first, second].map(parent => ({
+      id: crypto.randomUUID(), projectId: id, parentId: parent.id, childId: child.id,
+    })));
+    const task: Task = {
+      id: 'task', projectId: id, name: '任务', parentTaskId: null, description: '',
+      externalTaskId: null, statusOptionId: null, typeOptionId: null, priorityOptionId: null,
+      assigneeId: null, startDate: null, dueDate: null, sortOrder: 0, comments: [],
+    };
+    initial.tasks.push(task);
+    s.setGraph(initial);
+    await s.client.login('admin', 'test', true);
+    const before = await s.repository.get(id);
+    const revision = before.project.revision;
+    const mirrors = await s.cache.mirrors.toArray();
+    const context = await s.cache.contexts.get('active');
+
+    clock += 60_001;
+    s.fetcher.mockClear();
+    expect(await s.repository.setPartNumber(id, revision, ' 123 ')).toEqual(before);
+    expect(await s.repository.saveNode(id, revision, child.id, { description: ' 说明 ' })).toEqual(before);
+    expect(await s.repository.saveNodeParents(id, revision, child.id, [second.id, first.id])).toEqual(before);
+    expect(await s.repository.saveTask(id, revision, { ...task, name: ' 任务 ' })).toEqual(before);
+    await s.client.saveProfile({ displayName: ` ${s.admin.displayName} `, email: ` ${s.admin.email} `, avatar: null });
+    expect(s.fetcher).not.toHaveBeenCalled();
+    expect(await s.cache.mirrors.toArray()).toEqual(mirrors);
+    expect(await s.cache.contexts.get('active')).toEqual(context);
+    expect(await s.cache.pending.count()).toBe(0);
+
+    const saved = await s.repository.saveTask(id, revision, { ...task, name: '新任务名称' });
+    expect(saved.tasks[0]?.name).toBe('新任务名称');
+    expect(saved.project.revision).toBe(revision + 1);
+    expect(s.fetcher.mock.calls.filter(([url, init]) => new URL(url).pathname === `/projects/${id}` && init.method === 'PATCH')).toHaveLength(1);
+    await vi.waitFor(() => expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/health'))).toHaveLength(1));
+  });
+
+  it('头像变化时仍发送个人资料更新', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    s.fetcher.mockClear();
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ user: { ...s.admin, avatar: testAvatar } })));
+    await s.client.saveProfile({ displayName: s.admin.displayName, email: s.admin.email, avatar: testAvatar });
+    expect(s.fetcher).toHaveBeenCalledTimes(1);
+    expect(s.fetcher).toHaveBeenCalledWith('http://test-device/auth/profile', expect.objectContaining({ method: 'PUT' }));
+    expect(s.client.state.user?.avatar).toBe(testAvatar);
+  });
+
   it('登录后读取负责人目录并保留账号头像字段', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
@@ -626,6 +682,14 @@ describe('共享副本与离线草稿', () => {
     let graph = await s.repository.get(shared.project.id);
     const pending = createNode(graph, { version: 'V2', description: '保留我的说明' });
     graph = await s.repository.addNode(graph.project.id, graph.project.revision, pending, [parent.id], null);
+    const mirrors = await s.cache.mirrors.toArray();
+    const drafts = await s.cache.drafts.toArray();
+    s.fetcher.mockClear();
+    await s.client.editDraft(graph.project.id, graph.project.revision, pending.id,
+      { version: ' V2 ', description: ' 保留我的说明 ', taskId: null }, [parent.id]);
+    expect(s.fetcher).not.toHaveBeenCalled();
+    expect(await s.cache.mirrors.toArray()).toEqual(mirrors);
+    expect(await s.cache.drafts.toArray()).toEqual(drafts);
     const changed = s.graph();
     changed.nodes = [createNode(changed, { version: 'V2', description: '另一成员新增' })];
     changed.project.revision++; s.setGraph(changed); s.network(true);
