@@ -173,6 +173,45 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('成员重置归一化账号且不静默忽略空密码，删除使用同一成员地址', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const member = { ...s.admin, id: 'member-id', role: 'member', username: 'member1', disabled: false, mustChangePassword: true };
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ user: member })));
+    await expect(s.client.manageUser(' MEMBER1 ', false, 'reset6')).resolves.toMatchObject({ disabled: false });
+    const reset = s.fetcher.mock.calls.at(-1)!;
+    expect(new URL(reset[0]).pathname).toBe('/users/member1');
+    expect(reset[1].method).toBe('PATCH');
+    expect(JSON.parse(String(reset[1].body))).toEqual({ disabled: false, newPassword: 'reset6' });
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'PASSWORD', message: '密码无效' } }), { status: 400 }));
+    await expect(s.client.manageUser('member1', false, '')).rejects.toMatchObject({ code: 'PASSWORD' });
+    expect(JSON.parse(String(s.fetcher.mock.calls.at(-1)![1].body)).newPassword).toBe('');
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ deleted: true })));
+    await s.client.deleteUser(' MEMBER1 ');
+    expect(new URL(s.fetcher.mock.calls.at(-1)![0]).pathname).toBe('/users/member1');
+    expect(s.fetcher.mock.calls.at(-1)![1].method).toBe('DELETE');
+  });
+
+  it('相同新旧密码不发请求，当前密码错误保留会话并允许纠正后改密', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const count = s.fetcher.mock.calls.length;
+    await expect(s.client.changePassword('simple', 'simple')).rejects.toMatchObject({ code: 'PASSWORD_REUSE' });
+    expect(s.fetcher).toHaveBeenCalledTimes(count);
+    expect(s.client.state.authenticated).toBe(true);
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { code: 'CURRENT_PASSWORD', message: '当前密码错误。' },
+    }), { status: 403 }));
+    await expect(s.client.changePassword('wrong6', 'change')).rejects.toMatchObject({ code: 'CURRENT_PASSWORD' });
+    expect(s.client.state.authenticated).toBe(true);
+    expect(s.client.state.connected).toBe(true);
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ changed: true, loginRequired: true })));
+    await s.client.changePassword('simple', 'change');
+    expect(s.client.state.authenticated).toBe(false);
+    expect(s.client.state.user).toBeNull();
+    expect((await s.cache.contexts.get('active'))?.token).toBe('');
+  });
+
   it.each(['network', 'json'])('旧请求的迟到 %s 失败不会断开已重新验证的新连接', async kind => {
     const s = setup();
     await s.client.login('admin', 'test', true);

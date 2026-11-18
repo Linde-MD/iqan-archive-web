@@ -38,6 +38,9 @@ const memberEmail = ref('');
 const memberPassword = ref('');
 const resetUsername = ref('');
 const resetPassword = ref('');
+const deletingMember = ref<CollaborationUser | null>(null);
+const deleteHeading = ref<HTMLElement>();
+const passwordReuse = computed(() => currentPassword.value.length > 0 && currentPassword.value === newPassword.value);
 const preview = shallowRef<{ graph: ProjectGraph; nodes: ProjectGraph['nodes'] } | null>(null);
 const drafts = shallowRef<Awaited<ReturnType<CollaborationRepository['draftDetails']>>>();
 const editingDraftId = ref('');
@@ -172,8 +175,46 @@ async function logout() {
 }
 async function changePassword() {
   await run(async () => {
+    const name = state.user?.username ?? '';
     await props.client.changePassword(currentPassword.value, newPassword.value);
+    username.value = name;
     currentPassword.value = ''; newPassword.value = ''; message.value = state.message;
+  });
+}
+async function loadMembers() {
+  await run(async () => { members.value = await props.client.listUsers(); });
+}
+watch([accountSection, isAdmin], async ([section, admin]) => {
+  deletingMember.value = null;
+  if (section === 'members' && admin) await loadMembers();
+}, { immediate: true });
+
+async function resetMember() {
+  await run(async () => {
+    const updated = await props.client.manageUser(resetUsername.value, false, resetPassword.value);
+    resetUsername.value = updated.username;
+    resetPassword.value = '';
+    members.value = members.value.map(member => member.id === updated.id ? updated : member);
+    message.value = '已重置并启用此成员，旧会话失效，首次登录须改密。';
+  });
+}
+async function confirmMemberDeletion(member: CollaborationUser) {
+  deletingMember.value = member;
+  await nextTick();
+  deleteHeading.value?.focus();
+}
+async function deleteMember() {
+  const member = deletingMember.value;
+  if (!member) return;
+  await run(async () => {
+    await props.client.deleteUser(member.username);
+    members.value = members.value.filter(item => item.id !== member.id);
+    deletingMember.value = null;
+    if (resetUsername.value.trim().toLowerCase() === member.username) {
+      resetUsername.value = ''; resetPassword.value = '';
+    }
+    message.value = `成员 ${member.username} 已删除，旧会话已撤销；项目、任务和本机草稿未删除。`;
+    await nextTick(); heading.value?.focus();
   });
 }
 async function selectAvatar(event: Event) {
@@ -363,7 +404,9 @@ async function saveDraft() {
         <label for="collab-current-password">当前密码</label>
         <input id="collab-current-password" v-model="currentPassword" type="password" autocomplete="current-password" required :disabled="busy">
         <label for="collab-new-password">新密码（6–128 个字符，无需复杂组合）</label>
-        <input id="collab-new-password" v-model="newPassword" type="password" autocomplete="new-password" minlength="6" maxlength="128" required :disabled="busy">
+        <input id="collab-new-password" v-model="newPassword" type="password" autocomplete="new-password" minlength="6" maxlength="128" required :disabled="busy"
+          :aria-invalid="passwordReuse || undefined" aria-describedby="collab-password-help">
+        <p id="collab-password-help" :class="passwordReuse ? 'account-field-error' : 'form-help'" :role="passwordReuse ? 'alert' : undefined">{{ passwordReuse ? '新密码必须与当前密码不同；尚未修改密码。' : '新密码不得与当前密码相同；修改成功后须重新登录。' }}</p>
         <button type="submit" :disabled="busy">修改密码并退出</button>
       </form>
       <form v-if="state.authenticated && !state.user.mustChangePassword && accountSection === 'profile'" @submit.prevent="run(async () => { await client.saveProfile({ displayName, email, avatar }); message = '资料已保存。'; })">
@@ -385,16 +428,26 @@ async function saveDraft() {
         <label for="member-name">显示名称</label><input id="member-name" v-model="memberName" required maxlength="80" :disabled="busy">
         <label for="member-email">邮箱</label><input id="member-email" v-model="memberEmail" type="email" required :disabled="busy">
         <label for="member-password">初始密码（6–128 个字符，无需复杂组合）</label><input id="member-password" v-model="memberPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy">
-        <div class="actions"><button type="submit" :disabled="busy">创建成员</button><button type="button" class="secondary" :disabled="busy" @click="run(async () => { members = await client.listUsers(); })">刷新成员</button></div>
+        <div class="actions"><button type="submit" :disabled="busy">创建成员</button><button type="button" class="secondary" :disabled="busy" @click="loadMembers">刷新成员</button></div>
       </form>
       <ul class="collaboration-members"><li v-for="member in members" :key="member.id">
         <span>{{ member.username }} · {{ member.displayName }} · {{ member.disabled ? '已停用' : '启用' }}</span>
-        <button type="button" class="secondary" :disabled="busy || member.username === 'admin'" @click="run(async () => { await client.manageUser(member.username, !member.disabled); members = await client.listUsers(); })">{{ member.disabled ? '启用' : '停用' }}</button>
+        <div class="actions">
+          <button type="button" class="secondary" :disabled="busy || member.role === 'admin'" @click="run(async () => { const updated = await client.manageUser(member.username, !member.disabled); members = members.map(item => item.id === updated.id ? updated : item); message = `成员 ${updated.username} 已${updated.disabled ? '停用' : '启用'}。`; })">{{ member.disabled ? '启用' : '停用' }}</button>
+          <button v-if="member.role === 'member'" type="button" class="danger" :disabled="busy" :aria-label="`删除成员 ${member.username}`" @click="confirmMemberDeletion(member)">删除账号</button>
+        </div>
       </li></ul>
-      <form @submit.prevent="run(async () => { await client.manageUser(resetUsername, false, resetPassword); resetPassword = ''; message = '已重置并启用此成员，旧会话失效，首次登录须改密。'; })">
-        <label for="reset-username">重置成员账号</label><input id="reset-username" v-model="resetUsername" autocomplete="off" required :disabled="busy">
+      <section v-if="deletingMember" class="account-delete-confirmation" aria-labelledby="delete-member-title">
+        <h3 id="delete-member-title" ref="deleteHeading" tabindex="-1">确认删除成员 {{ deletingMember.username }}？</h3>
+        <p>该账号将无法登录，所有旧会话会撤销。项目、任务和评论不会删除，既有负责人引用保留为账号信息不可用。</p>
+        <p>该账号的本机未同步草稿将无法再由它同步；重建同名账号也不会继承旧账号身份。此操作不可撤销。</p>
+        <div class="actions"><button type="button" class="secondary" :disabled="busy" @click="deletingMember = null; heading?.focus()">取消删除</button><button type="button" class="danger" :disabled="busy" @click="deleteMember">确认删除此成员</button></div>
+      </section>
+      <form @submit.prevent="resetMember">
+        <label for="reset-username">重置成员账号</label><input id="reset-username" v-model="resetUsername" list="reset-member-options" autocomplete="off" required :disabled="busy">
+        <datalist id="reset-member-options"><option v-for="member in members.filter(item => item.role === 'member')" :key="member.id" :value="member.username">{{ member.displayName }}</option></datalist>
         <label for="reset-password">新的初始密码（6–128 个字符，无需复杂组合）</label><input id="reset-password" v-model="resetPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy">
-        <button type="submit" class="secondary" :disabled="busy || resetUsername === 'admin'">重置并启用成员</button>
+        <button type="submit" class="secondary" :disabled="busy || resetUsername.trim().toLowerCase() === 'admin'">重置并启用成员</button>
       </form>
     </section>
     <section v-if="accountSection === 'sync'" aria-labelledby="collab-sync-title">
@@ -429,6 +482,9 @@ async function saveDraft() {
 </template>
 
 <style scoped>
+.account-field-error { color: var(--danger); font-size: 13px; }
+.account-delete-confirmation { margin: 16px 0; padding: 16px; border: 1px solid var(--danger); border-radius: 8px; background: var(--surface-soft); }
+.account-delete-confirmation p { overflow-wrap: anywhere; }
 .account-avatar-trigger {
   min-width: 44px; min-height: 48px; display: flex; align-items: center; gap: 10px;
   padding: 3px 10px 3px 4px; border: 1px solid #35445c; border-radius: 9px;

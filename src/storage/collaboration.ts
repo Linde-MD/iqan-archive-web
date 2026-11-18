@@ -72,6 +72,12 @@ function user(value: unknown): CollaborationUser {
   };
 }
 
+function memberPath(username: string): string {
+  const name = username.trim().toLowerCase();
+  requireCondition(/^[a-z][a-z0-9._-]{2,31}$/.test(name), 'USERNAME', '请选择或填写有效成员账号。');
+  return `/users/${encodeURIComponent(name)}`;
+}
+
 function taskAssignee(value: unknown): TaskAssignee {
   const row = object(value);
   requireCondition(typeof row.id === 'string' && row.id.length > 0
@@ -184,7 +190,7 @@ export class CollaborationRepository implements RepositorySync {
     }
     if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
+      if (response.status === 401) {
         this.state.connected = true; this.state.authenticated = false;
       }
       if (response.status >= 500) { this.state.connected = false; this.state.authenticated = false; }
@@ -258,6 +264,7 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   async changePassword(currentPassword: string, newPassword: string) {
+    requireCondition(currentPassword !== newPassword, 'PASSWORD_REUSE', '新密码必须与当前密码不同。');
     await this.request('/auth/password', 'POST', { currentPassword, newPassword });
     await this.cache.contexts.put({ id: 'active', source: this.state.source, actorId: null, user: null, token: '', expiresAt: 0 });
     this.token = ''; this.state.user = null; this.state.authenticated = false;
@@ -309,8 +316,14 @@ export class CollaborationRepository implements RepositorySync {
 
   async manageUser(username: string, disabled: boolean, newPassword?: string) {
     this.assertOnline(true);
-    return user(object(await this.request(`/users/${encodeURIComponent(username)}`, 'PATCH',
-      newPassword ? { disabled, newPassword } : { disabled })).user);
+    return user(object(await this.request(memberPath(username), 'PATCH',
+      newPassword === undefined ? { disabled } : { disabled, newPassword })).user);
+  }
+
+  async deleteUser(username: string) {
+    this.assertOnline(true);
+    const result = object(await this.request(memberPath(username), 'DELETE'));
+    requireCondition(result.deleted === true, 'RESPONSE', '账号删除结果未确认，请刷新成员列表核对后再操作。');
   }
 
   async saveProfile(input: { displayName: string; email: string; avatar: string | null }) {
