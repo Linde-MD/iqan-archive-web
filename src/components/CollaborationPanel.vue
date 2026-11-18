@@ -57,7 +57,7 @@ const draftParentOptions = computed(() => {
   return recommendedParentNodes({ ...graph, edges: validEdges }, draftVersion.value, editingDraftId.value)
     .filter(node => !draftParents.value.includes(node.id));
 });
-const isAdmin = computed(() => state.authenticated && state.user?.role === 'admin' && !state.user.mustChangePassword);
+const isAdmin = computed(() => !state.restoring && state.authenticated && state.user?.role === 'admin' && !state.user.mustChangePassword);
 const accountSection = computed(() => route.path.match(/^\/account\/(login|profile|security|members|sync)$/)?.[1] ?? '');
 const accountPage = computed(() => accountSection.value !== '');
 const avatarInitials = computed(() => accountInitials(state.user?.displayName, state.user?.username));
@@ -286,7 +286,7 @@ async function saveDraft() {
       </span>
       <span class="account-trigger-label">
         <strong>{{ state.user?.displayName || state.user?.username || '登录协作' }}</strong>
-        <small>{{ state.authenticated ? (state.connected ? (state.pending ? '已连接 · 提交待确认' : '共享协作已连接') : '缓存账号 · 未连接') : '需要登录或重新验证' }}</small>
+        <small>{{ state.restoring ? '正在恢复连接…' : state.authenticated ? (state.connected ? (state.pending ? '已连接 · 提交待确认' : '共享协作已连接') : '缓存账号 · 未连接') : '需要登录或重新验证' }}</small>
       </span>
       <AppIcon name="chevron-right" />
     </button>
@@ -333,7 +333,7 @@ async function saveDraft() {
         <div><p class="eyebrow">ACCOUNT CONTROL</p><h1 id="collaboration-title">个人账户</h1></div>
         <span class="account-session-chip" :class="{ 'is-connected': state.authenticated && state.connected }">
           <span class="account-session-dot" aria-hidden="true"></span>
-          {{ state.authenticated ? (state.connected ? '共享服务在线' : '离线缓存模式') : '未登录' }}
+          {{ state.restoring ? '正在恢复连接…' : state.authenticated ? (state.connected ? '共享服务在线' : '离线缓存模式') : state.connected ? '后端可达 · 需登录' : '未登录' }}
         </span>
       </div>
       <section class="account-profile-banner" aria-label="账户摘要">
@@ -367,8 +367,10 @@ async function saveDraft() {
         </header>
     <p class="form-help">Access 是共享权威数据；本机 IndexedDB 保留副本和离线草稿。仅可信小团队使用，不是公司级权限隔离。</p>
     <div v-if="error" role="alert" class="collaboration-error"><h3 ref="errorHeading" tabindex="-1">操作未完成</h3><p>{{ error }}</p></div>
+    <p v-if="state.restoring" role="status">正在检测后端并恢复登录…</p>
+    <template v-else>
     <p v-if="message" role="status">{{ message }}</p>
-    <p v-else-if="state.message && accountSection === 'sync'" role="status">{{ state.message }}</p>
+    <p v-else-if="state.message && (accountSection === 'sync' || !state.authenticated)" role="status">{{ state.message }}</p>
     <form v-if="accountSection === 'login' && !state.authenticated" @submit.prevent="login">
       <label for="collab-username">账号</label>
       <input id="collab-username" v-model="username" autocomplete="username" required :disabled="busy">
@@ -450,7 +452,8 @@ async function saveDraft() {
         <button type="submit" class="secondary" :disabled="busy || resetUsername.trim().toLowerCase() === 'admin'">重置并启用成员</button>
       </form>
     </section>
-    <section v-if="accountSection === 'sync'" aria-labelledby="collab-sync-title">
+    </template>
+    <section v-if="accountSection === 'sync' && !state.restoring" aria-labelledby="collab-sync-title">
       <h3 id="collab-sync-title">待同步版本：{{ state.draftCount }}</h3>
       <p class="form-help">仅当前选择项目的草稿作为一次原子提交。先刷新和预览，不自动上传；父版本或任务失效时保留草稿，请先修正。</p>
       <button type="button" class="secondary" :disabled="busy || !projectId || !state.draftCount" @click="loadDrafts">检查 / 修复当前项目草稿</button>

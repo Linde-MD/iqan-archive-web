@@ -173,6 +173,62 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('刷新后即使未记住登录也重新选中唯一主机，不自动登录或开放写入', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', false);
+    s.db.backendConnection.reset();
+    s.fetcher.mockClear();
+    const reopened = new CollaborationRepository(s.local, s.cache);
+    await reopened.initialize();
+    expect(s.db.backendConnection.state.host).toBe('test-device');
+    expect(reopened.state).toMatchObject({ restoring: false, connected: true, authenticated: false, source: s.source });
+    expect(reopened.state.message).toContain('请登录协作账号');
+    expect(reopened.permissions.sharedWritable).toBe(false);
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual(['/health']);
+    expect(new Headers(s.fetcher.mock.calls[0]?.[1].headers).has('Authorization')).toBe(false);
+  });
+
+  it('刷新时等唯一主机与记住的会话验证完才开放共享写入', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    s.db.backendConnection.reset();
+    const original = s.fetcher.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    s.fetcher.mockClear();
+    s.fetcher.mockImplementation(async (url, init) => {
+      if (new URL(url).pathname === '/projects') await gate;
+      return original(url, init);
+    });
+    const reopened = new CollaborationRepository(s.local, s.cache);
+    const restoring = reopened.initialize();
+    try {
+      await vi.waitFor(() => expect(s.fetcher.mock.calls.some(([url]) => new URL(url).pathname === '/projects')).toBe(true));
+      expect(reopened.state.restoring).toBe(true);
+      expect(reopened.permissions.sharedWritable).toBe(false);
+      expect(reopened.permissions.sharedWriteBlockedReason).toContain('正在检测后端');
+    } finally { release(); await restoring; }
+    expect(reopened.state).toMatchObject({ restoring: false, connected: true, authenticated: true });
+    expect(reopened.permissions.sharedWritable).toBe(true);
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).not.toContain('/auth/login');
+  });
+
+  it('刷新发现多个主机时保留副本且不向任何主机发送会话令牌', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    s.db.backendConnection.reset();
+    vi.mocked(s.local.getBackendHosts).mockResolvedValue(['test-device', 'other-device']);
+    s.fetcher.mockClear();
+    const reopened = new CollaborationRepository(s.local, s.cache);
+    await reopened.initialize();
+    expect(s.db.backendConnection.state.host).toBe('');
+    expect(reopened.state).toMatchObject({ restoring: false, connected: false, authenticated: false });
+    expect(reopened.state.message).toContain('多个设备可连接');
+    expect(await reopened.get(s.graph().project.id)).toBeDefined();
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual(['/health', '/health']);
+    expect(s.fetcher.mock.calls.every(([, options]) => !new Headers(options.headers).has('Authorization'))).toBe(true);
+  });
+
   it('只在写入前且超过一分钟启动后台检测，检测不阻塞写入且并发触发会合并', async () => {
     let clock = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => clock);

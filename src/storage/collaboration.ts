@@ -107,7 +107,7 @@ export function collaborationSnapshot(graph: ProjectGraph): ProjectSnapshot {
 export class CollaborationRepository implements RepositorySync {
   readonly state = reactive({
     source: '', user: null as CollaborationUser | null, connected: false, authenticated: false,
-    busy: false, message: '', draftCount: 0, pending: false, updatedAt: 0,
+    busy: false, restoring: false, message: '', draftCount: 0, pending: false, updatedAt: 0,
     draftNodeIds: {} as Record<string, string[]>,
     draftProjectIds: [] as string[],
     deletedProjectIds: [] as string[], conflictMessage: '',
@@ -172,9 +172,10 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   get permissions() {
-    const available = Boolean(this.state.source && this.state.user && !this.state.user.mustChangePassword && !this.state.pending);
+    const available = Boolean(!this.state.restoring && this.state.source && this.state.user && !this.state.user.mustChangePassword && !this.state.pending);
     let sharedWriteBlockedReason = '';
-    if (!this.state.source) sharedWriteBlockedReason = '历史单人数据目前只读，请登录后由管理员通过 JSON 恢复迁入共享库。';
+    if (this.state.restoring) sharedWriteBlockedReason = '正在检测后端并恢复登录，暂不可修改共享数据。';
+    else if (!this.state.source) sharedWriteBlockedReason = '历史单人数据目前只读，请登录后由管理员通过 JSON 恢复迁入共享库。';
     else if (!this.state.user) sharedWriteBlockedReason = '请先登录共享账号；未登录时本机副本只读。';
     else if (this.state.user.mustChangePassword) sharedWriteBlockedReason = '首次登录请先修改初始密码，再进行共享修改。';
     else if (this.state.pending) sharedWriteBlockedReason = '存在结果未确认的提交，新的共享修改已暂停。请打开账号菜单的“协作与同步”，确认连接和登录后点击“重试未确认提交”；不要重复创建或恢复。';
@@ -269,21 +270,35 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   async initialize() {
-    const context = await this.context();
-    if (!context) return;
-    this.state.source = context.source;
-    if (context.token && context.expiresAt > Date.now()) {
-      this.token = context.token; this.expiresAt = context.expiresAt; this.remember = true;
-      this.state.user = context.user ? user(context.user) : null;
-      try { await this.reconnect(); }
-      catch (cause) { this.state.message = cause instanceof Error ? cause.message : '连接失败，本机副本仍可浏览。'; }
+    this.state.restoring = true;
+    try {
+      const context = await this.context();
+      this.state.source = context?.source ?? '';
+      if (context?.token && context.expiresAt > Date.now()) {
+        this.token = context.token; this.expiresAt = context.expiresAt; this.remember = true;
+        this.state.user = context.user ? user(context.user) : null;
+      }
+      try {
+        const backend = await this.local.testBackendHosts(new AbortController().signal);
+        this.state.connected = true;
+        if (this.token) await this.verifySession();
+        else this.state.message = context?.token
+          ? '后端可连接，但记住的登录已过期，请重新登录。'
+          : `后端 ${backend.host} 可连接，请登录协作账号。`;
+      } catch (cause) {
+        this.state.authenticated = false;
+        this.state.message = cause instanceof Error ? cause.message : '连接失败，本机副本仍可浏览。';
+      }
+      await this.updateCounts();
+    } finally {
+      this.state.restoring = false;
     }
-    await this.updateCounts();
   }
 
   disconnect() {
     this.state.connected = false; this.state.authenticated = false;
-    this.state.message = '连接设置已改变，请重新连接或登录。当前仅可读副本及编辑本机新增版本。';
+    if (!this.state.restoring)
+      this.state.message = '连接设置已改变，请重新连接或登录。当前仅可读副本及编辑本机新增版本。';
   }
 
   async login(username: string, password: string, remember: boolean) {
