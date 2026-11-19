@@ -95,6 +95,7 @@
 | REQ-057 | 每个任务负责人只能新分配给已启用的非 admin 共享账号；旧项目负责人选项与所有旧分配清空。 | 核心协作/任务能力 | 已确认 | 用户要求负责人使用已有账号并确认排除 admin、停用账号不可新分配、历史分配全部清空 | [SPEC-07](./SPEC-07-task-board.md)、[SPEC-08](./SPEC-08-local-collaboration.md) |
 | REQ-058 | 当前项目任务管理可切换“全部任务 / 我负责的任务”，看板和列表共用范围，并可叠加搜索。 | 任务浏览 | 已确认 | 用户提供 Worktile 示例并确认仅查看当前项目 | [SPEC-07 §3](./SPEC-07-task-board.md) |
 | REQ-059 | 编辑后持久化内容无实质变化时，不向后端提交。 | 协作写入 | 已确认 | 用户要求无变化不发送后端请求 | [SPEC-08 §25](./SPEC-08-local-collaboration.md) |
+| REQ-060 | 前台每 15 秒检查当前共享项目修订号，切回页面立即检查，仅在项目变化时同步。 | 协作读取 | 已确认 | 用户确认修订号轮询，间隔 15 秒 | [SPEC-08 §26](./SPEC-08-local-collaboration.md) |
 | REQ-034 | 网页无法读取 Windows 绝对路径；启动 URI 传入 `<项目名>_iqan_project_files` 及扫描相对文件路径，Launcher 用独立配置的归档根目录解析。两边必须指向同一磁盘目录。 | 可选本机能力 | 已实现并有测试；完整站点/文件布局验收待补 | 用户确认以“归档根目录 + 项目工程子目录名”定位文件 | [SPEC-04 第 5 节](./SPEC-04-iqandesign-integration.md)、[SPEC-05 第 2–4 节](./SPEC-05-windows-launcher.md)、[Launcher LSP-01/02](../../iqan-archive-launcher/specs/README.md) |
 
 ## 决策与假设

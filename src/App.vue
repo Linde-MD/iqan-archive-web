@@ -14,6 +14,7 @@ import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import BackendSettings from './components/BackendSettings.vue';
 import CollaborationPanel from './components/CollaborationPanel.vue';
 import { CollaborationRepository } from './storage/collaboration';
+import { startProjectPolling } from './storage/project-polling';
 import { projectWriteBlockedReason } from './storage/repository-sync';
 import AppIcon from './components/AppIcon.vue';
 import AppBrandMark from './components/AppBrandMark.vue';
@@ -61,6 +62,8 @@ const archiveRootRevision = ref(0);
 const filesBusy = computed(() => filesPanelBusy.value || documentsBusy.value);
 const graphBusy = ref(false);
 const taskBoardBusy = ref(false);
+const graphRefreshBlocked = ref(false);
+const taskRefreshBlocked = ref(false);
 const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
 const taskBoardTargetId = ref('');
 const taskBoardDetailId = ref('');
@@ -90,10 +93,31 @@ const backupRoot = shallowRef<DirectoryHandle>();
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const workspaceBusy = computed(() => filesBusy.value || graphBusy.value || taskBoardBusy.value);
+const pollProjectId = computed(() => !isAccountRoute.value && canWrite.value && !saving.value && !workspaceBusy.value
+  && !editingProject.value && !deletion.value && !importPreview.value
+  && !(view.value === 'graph' && graphRefreshBlocked.value)
+  && !(view.value === 'tasks' && (taskRefreshBlocked.value || taskBoardOptionsOpen.value))
+  ? activeProjectId.value : '');
+const pollError = shallowRef<{ id: string; message: string }>();
 const errorHeading = ref<HTMLElement | null>(null);
 let subscription: { unsubscribe(): void } | undefined;
 let collaborationSubscription: { unsubscribe(): void } | undefined;
 let loadAttempt = 0;
+let stopProjectPolling: (() => void) | undefined;
+
+watch([activeProjectId, () => collaboration.state.authenticated], () => { pollError.value = undefined; });
+
+async function checkActiveProject(signal: AbortSignal) {
+  const id = pollProjectId.value;
+  if (!id) return;
+  const stillActive = () => !signal.aborted && pollProjectId.value === id;
+  try {
+    await collaboration.pollProject(id, stillActive, signal);
+    if (stillActive()) pollError.value = undefined;
+  } catch (cause) {
+    if (stillActive()) pollError.value = { id, message: cause instanceof Error ? cause.message : '无法检查项目更新。' };
+  }
+}
 
 function showError(cause: unknown) {
   error.value = cause instanceof Error ? cause.message : '本地存储操作失败，请重试。';
@@ -597,12 +621,14 @@ async function cancelImport() {
 }
 
 onMounted(() => {
+  stopProjectPolling = startProjectPolling(document, checkActiveProject);
   window.addEventListener('pointerdown', onBackupMenuOutsidePointerDown, true);
   void watchProjects();
   void collaboration.initialize().catch(showError);
   collaborationSubscription = liveQuery(() => collaboration.updateCounts()).subscribe({ error: showError });
 });
 onUnmounted(() => {
+  stopProjectPolling?.();
   window.removeEventListener('pointerdown', onBackupMenuOutsidePointerDown, true);
   ++loadAttempt;
   subscription?.unsubscribe();
@@ -640,7 +666,8 @@ onUnmounted(() => {
       <div>
         <h2>{{ collaboration.state.restoring ? '正在检测后端并恢复登录…' : collaboration.state.connected ? (collaboration.state.authenticated ? (collaboration.state.pending ? '共享协作已连接 · 提交待确认' : '共享协作已连接') : '后端可达 · 需要登录或重新验证') : collaboration.state.source ? '本机缓存视图 · 未连接后端' : '历史单人数据 · 只读' }}</h2>
         <p v-if="!collaboration.state.restoring">{{ collaboration.state.message || '请点击顶栏右上角账户头像登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
-        <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。其他成员的更新需在账号入口刷新。{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
+        <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。{{ activeProjectId && canWrite ? '当前项目在前台每 15 秒检查更新，编辑或拖拽时暂停。' : '可在账号入口手动刷新共享数据。' }}{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
+        <p v-if="pollError && pollError.id === activeProjectId" role="status">自动刷新未完成，仍显示本机副本：{{ pollError.message }}</p>
         <p v-if="collaboration.state.conflictMessage" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaboration.state.conflictMessage }}</p>
         <p v-if="sharedWriteBlockedReason" role="status">{{ sharedWriteBlockedReason }}</p>
         <button v-if="collaboration.state.pending" type="button" class="secondary" :disabled="saving || workspaceBusy" @click="router.push({ path: '/account/sync', query: { from: route.fullPath } })">前往处理未确认提交</button>
@@ -819,9 +846,9 @@ onUnmounted(() => {
     </div>
 
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
+    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @refresh-blocked="graphRefreshBlocked = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
     <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
-    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" @busy="taskBoardBusy = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
+    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" @busy="taskBoardBusy = $event" @refresh-blocked="taskRefreshBlocked = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">

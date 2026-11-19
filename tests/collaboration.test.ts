@@ -10,6 +10,7 @@ import { assertOfflineChanges } from '../src/domain/collaboration';
 import { createProjectDelta, type EntityChanges, type ProjectChanges } from '../src/domain/project-changes';
 import { orderedBranches } from '../src/domain/model';
 import { projectWriteBlockedReason } from '../src/storage/repository-sync';
+import { startProjectPolling } from '../src/storage/project-polling';
 
 const databases: (ArchiveDatabase | CollaborationDatabase)[] = [];
 const testAvatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
@@ -173,6 +174,105 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('前台 15 秒检查一次，隐藏暂停并取消在途检查，切回立即检查', async () => {
+    vi.useFakeTimers();
+    const page = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
+    const check = vi.fn((_signal: AbortSignal) => Promise.resolve());
+    const stop = startProjectPolling(page, check);
+    try {
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(check).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(check).toHaveBeenCalledTimes(1);
+      check.mockImplementationOnce(() => new Promise(() => {}));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(check).toHaveBeenCalledTimes(2);
+      page.visibilityState = 'hidden';
+      page.dispatchEvent(new Event('visibilitychange'));
+      expect(check.mock.calls[1]?.[0].aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(check).toHaveBeenCalledTimes(2);
+      page.visibilityState = 'visible';
+      page.dispatchEvent(new Event('visibilitychange'));
+      expect(check).toHaveBeenCalledTimes(3);
+      stop();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(check).toHaveBeenCalledTimes(3);
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it('自动检查只读取当前项目元数据，修订增加后才更新本机副本', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const remote = s.graph();
+    const id = remote.project.id;
+    const before = await s.repository.get(id);
+    const poll = () => s.client.pollProject(id, () => true, new AbortController().signal);
+    const paths = () => s.fetcher.mock.calls.map(([url, init]) => [new URL(url).pathname, init.method]);
+    s.fetcher.mockClear();
+    await poll();
+    expect(paths()).toEqual([[`/projects/${id}`, 'GET']]);
+    expect(await s.repository.get(id)).toEqual(before);
+    remote.project.revision++;
+    remote.project.partNumber = '456';
+    s.setGraph(remote);
+    s.fetcher.mockClear();
+    await poll();
+    expect(paths()).toEqual([[`/projects/${id}`, 'GET'], ['/instance', 'GET'], [`/projects/${id}/graph`, 'GET']]);
+    expect((await s.repository.get(id)).project).toMatchObject({ partNumber: '456', revision: before.project.revision + 1 });
+    expect(await s.cache.pending.count()).toBe(0);
+  });
+
+  it.each(['editing', 'newer-mirror'] as const)('在途自动刷新不覆盖 %s', async mode => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const remote = s.graph();
+    const id = remote.project.id;
+    const before = await s.repository.get(id);
+    remote.project.revision++;
+    remote.project.partNumber = '456';
+    s.setGraph(remote);
+    let active = true;
+    let release!: () => void;
+    const getGraph = new Promise<Response>(resolve => {
+      release = () => resolve(new Response(JSON.stringify(collaborationSnapshot(remote))));
+    });
+    const fetch = s.fetcher.getMockImplementation()!;
+    s.fetcher.mockImplementation((url, init) => url.endsWith('/graph') ? getGraph : fetch(url, init));
+    const poll = s.client.pollProject(id, () => active, new AbortController().signal);
+    await vi.waitFor(() => expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/graph'))).toHaveLength(2));
+    if (mode === 'editing') active = false;
+    else {
+      const key = `${s.source}:${id}`;
+      const latest = (await s.cache.mirrors.get(key))!;
+      latest.graph.project.revision = remote.project.revision + 1;
+      latest.graph.project.partNumber = '789';
+      latest.version++;
+      await s.cache.mirrors.put(latest);
+    }
+    release();
+    await poll;
+    expect((await s.repository.get(id)).project.partNumber).toBe(mode === 'editing' ? before.project.partNumber : '789');
+  });
+
+  it('自动检查网络失败时保留副本和登录状态，后续检查可继续更新', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const remote = s.graph();
+    const id = remote.project.id;
+    const before = await s.repository.get(id);
+    const poll = () => s.client.pollProject(id, () => true, new AbortController().signal);
+    s.network(false);
+    await expect(poll()).rejects.toThrow('无法读取后端');
+    expect(await s.repository.get(id)).toEqual(before);
+    expect(s.client.state.authenticated).toBe(true);
+    s.network(true);
+    remote.project.revision++;
+    remote.project.partNumber = '456';
+    s.setGraph(remote);
+    await poll();
+    expect((await s.repository.get(id)).project.partNumber).toBe('456');
+  });
   it('刷新后即使未记住登录也重新选中唯一主机，不自动登录或开放写入', async () => {
     const s = setup();
     await s.client.login('admin', 'test', false);

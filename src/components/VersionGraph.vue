@@ -30,6 +30,7 @@ const selectedWritable = computed(() => sharedWritable.value || (newVersionWrita
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const emit = defineEmits<{
   busy: [value: boolean];
+  refreshBlocked: [value: boolean];
   documents: [];
   taskBoard: [taskId: string];
   navigatePanel: [panel: string[], action?: 'push' | 'replace' | 'back'];
@@ -448,6 +449,8 @@ const branchMoveDialog = ref<HTMLDialogElement>();
 const draggedBranch = ref<{ branchId: string; headId: string; revision: number } | null>(null);
 const dropTargetId = ref<string | null>(null);
 const pendingBranchMove = ref<{ branchId: string; headId: string; revision: number; targetId: string; name: string } | null>(null);
+watch(() => saving.value || editorOpen.value || !!draggedBranch.value || !!pendingBranchMove.value,
+  value => emit('refreshBlocked', value), { flush: 'sync', immediate: true });
 const branchHeadOptions = computed(() => [...(graph.value?.nodes ?? [])]
   .sort((a, b) => compareVersions(a.version, b.version)));
 const orderedBranchList = computed(() => orderedBranches(graph.value?.branches ?? []));
@@ -933,7 +936,7 @@ const subscription = liveQuery(() => props.repository.get(props.projectId)).subs
       && !saving.value && (undoHistory.value.length || redoHistory.value.length)
       && value.project.revision !== (undoHistory.value.at(-1) ?? redoHistory.value.at(-1))?.afterRevision) {
       clearHistory();
-      status.value = '版本图已在其他标签页更新，撤销和重做记录已清除。';
+      status.value = '版本图已在其他页面或由其他成员更新，撤销和重做记录已清除。';
     }
     graph.value = value;
   },
@@ -944,6 +947,7 @@ watch([() => props.projectId, () => graph.value?.project.revision], ([, revision
 });
 onUnmounted(() => {
   subscription.unsubscribe();
+  emit('refreshBlocked', false);
   engineeringScanController?.abort();
 });
 

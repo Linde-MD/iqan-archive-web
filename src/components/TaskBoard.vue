@@ -33,6 +33,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
+  refreshBlocked: [value: boolean];
   graph: [nodeId: string];
   navigateChild: [child: string[], action?: 'push' | 'replace' | 'back'];
 }>();
@@ -717,7 +718,7 @@ watch([graph, () => props.detailTaskId], async ([current, detailId], [, previous
     const task = current.tasks.find(candidate => candidate.id === detailId);
     if (!task) {
       if (taskDraft.value?.id === detailId) {
-        error.value = '任务已在其他标签页删除，当前草稿仍保留，请复制所需内容后关闭。';
+        error.value = '任务已在其他页面或由其他成员删除，当前草稿仍保留，请复制所需内容后关闭。';
         return;
       }
       emit('navigateChild', [], 'replace');
@@ -731,6 +732,11 @@ watch([graph, () => props.detailTaskId], async ([current, detailId], [, previous
         return;
       }
       setTaskDraft(task);
+    } else if (taskDraft.value && !saving.value && !hasUnsavedTaskChanges.value && !commentEditorOpen.value
+      && taskDraftRevision.value !== current.project.revision) {
+      Object.assign(taskDraft.value, structuredClone(task));
+      taskDraftRevision.value = current.project.revision;
+      taskDraftBaseline.value = JSON.stringify(task);
     }
     return;
   }
@@ -868,6 +874,9 @@ watch([() => props.focusTaskId, () => graph.value?.tasks.some(task => task.id ==
   void focusRequestedTask();
 }, { flush: 'post' });
 watch([saving, quickTask], ([isSaving, draft]) => emit('busy', isSaving || !!draft), { immediate: true });
+watch(() => saving.value || !!quickTask.value || !!dragState.value || commentEditorOpen.value
+  || hasUnsavedTaskChanges.value || (!!taskDraft.value && !taskDraft.value.id),
+  value => emit('refreshBlocked', value), { flush: 'sync', immediate: true });
 watch(() => props.assigneeRefreshKey, () => { void loadAssignees(); });
 watch(() => taskDraft.value?.id, taskId => {
   if (taskId) void loadAssignees();
@@ -903,6 +912,7 @@ onUnmounted(() => {
   subscription?.unsubscribe();
   removeQuickRouteGuard?.();
   emit('busy', false);
+  emit('refreshBlocked', false);
 });
 </script>
 
@@ -1004,7 +1014,7 @@ onUnmounted(() => {
         </header>
         <section ref="taskDetailView" class="task-detail-view" :class="{ 'is-stale': taskDraftStale }" aria-labelledby="task-detail-page-title">
           <div ref="taskDetailMainScroll" class="task-detail-main-scroll">
-            <p v-if="taskDraftStale && !saving" class="task-board-message is-error" role="alert">任务已在其他标签页更新，请取消后重新打开。</p>
+            <p v-if="taskDraftStale && !saving" class="task-board-message is-error" role="alert">项目已在其他页面或由其他成员更新，请保留当前输入并重新打开任务。</p>
             <p v-if="taskIdOverflow && !taskDraft.id" id="task-id-overflow" class="task-board-message" role="status">已有 Task ID 达到 16 位上限，无法自动编号，请手工填写未使用的编号。</p>
             <p v-if="taskIdError" id="task-id-error" class="task-board-message is-error" role="alert">{{ taskIdError }}</p>
             <p v-if="error" class="task-board-message is-error" role="alert">{{ error }}</p>
