@@ -10,4 +10,8 @@ export function mergeSavedTaskDraft(draft: Task, submitted: Task, saved: Task): 
   }
   draft.sortOrder = saved.sortOrder;
   draft.comments = structuredClone(saved.comments);
+  for (const field of ['createdBy', 'descriptionEditedBy'] as const) {
+    if (saved[field]) draft[field] = { ...saved[field] };
+    else delete draft[field];
+  }
 }

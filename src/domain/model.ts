@@ -146,6 +146,12 @@ export function orderedBranches(branches: readonly Branch[]): Branch[] {
     .map(({ branch }) => branch);
 }
 
+export interface TaskAttribution {
+  name: string;
+  at: string;
+  accountId?: string;
+}
+
 export interface Task {
   id: string;
   projectId: string;
@@ -161,6 +167,8 @@ export interface Task {
   dueDate: string | null;
   sortOrder: number;
   comments: TaskComment[];
+  createdBy?: TaskAttribution;
+  descriptionEditedBy?: TaskAttribution;
 }
 
 export interface ProjectGraph {

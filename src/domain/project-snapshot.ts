@@ -1,17 +1,17 @@
 import { validateGraph } from './graph';
-import { createDefaultTaskTypeOptions, DomainError, migratePriorityOptions, normalizeExternalTaskId, orderPriorityOptions, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskComment, type TaskOption } from './model';
+import { createDefaultTaskTypeOptions, DomainError, migratePriorityOptions, normalizeExternalTaskId, orderPriorityOptions, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAttribution, type TaskComment, type TaskOption } from './model';
 
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_SNAPSHOT_ENTITIES = 100_000;
 
 type JsonRecord = Record<string, unknown>;
 
-function record(value: unknown, label: string, fields: readonly string[]): JsonRecord {
+function record(value: unknown, label: string, fields: readonly string[], optional: readonly string[] = []): JsonRecord {
   requireCondition(value !== null && typeof value === 'object' && !Array.isArray(value), 'SNAPSHOT_SHAPE', `${label}必须为对象。`);
   const result = value as JsonRecord;
   const keys = Object.keys(result);
   requireCondition(
-    keys.length === fields.length && keys.every(key => fields.includes(key)),
+    fields.every(key => Object.hasOwn(result, key)) && keys.every(key => fields.includes(key) || optional.includes(key)),
     'SNAPSHOT_FIELDS',
     `${label}字段不符合快照 schema。`,
   );
@@ -38,9 +38,24 @@ function parseItems<T>(
   label: string,
   fields: readonly string[],
   parse: (item: JsonRecord, index: number) => T,
+  optional?: readonly string[],
 ): T[] {
   requireCondition(Array.isArray(value), 'SNAPSHOT_TYPE', `${label}必须为数组。`);
-  return value.map((item, index) => parse(record(item, `${label}[${index}]`, fields), index));
+  return value.map((item, index) => parse(record(item, `${label}[${index}]`, fields, optional), index));
+}
+
+function taskAttribution(value: unknown, label: string): TaskAttribution {
+  const item = record(value, label, ['name', 'at'], ['accountId']);
+  const name = text(item.name, `${label}.name`);
+  const at = text(item.at, `${label}.at`);
+  const date = new Date(at);
+  requireCondition(!!name.trim() && name.length <= 160 && Number.isFinite(date.getTime()) && date.toISOString() === at,
+    'SNAPSHOT_TYPE', `${label}的名称或时间无效。`);
+  if (!Object.hasOwn(item, 'accountId')) return { name, at };
+  const accountId = text(item.accountId, `${label}.accountId`);
+  requireCondition(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId),
+    'SNAPSHOT_TYPE', `${label}的账号 ID 无效。`);
+  return { name, at, accountId };
 }
 
 export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
@@ -258,7 +273,9 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
         createdAt: text(comment.createdAt, 'comment.createdAt'),
         updatedAt: text(comment.updatedAt, 'comment.updatedAt'),
       } satisfies TaskComment)),
-    })),
+      ...(Object.hasOwn(item, 'createdBy') ? { createdBy: taskAttribution(item.createdBy, 'task.createdBy') } : {}),
+      ...(Object.hasOwn(item, 'descriptionEditedBy') ? { descriptionEditedBy: taskAttribution(item.descriptionEditedBy, 'task.descriptionEditedBy') } : {}),
+    }), ['createdBy', 'descriptionEditedBy']),
   };
   const taskIds = new Set<string>();
   for (const task of graph.tasks) {

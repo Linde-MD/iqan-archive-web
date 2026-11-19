@@ -19,6 +19,7 @@ const props = withDefaults(defineProps<{
   rows?: number;
   disabled?: boolean;
   readonly?: boolean;
+  compactToolbar?: boolean;
 }>(), { rows: 8 });
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 const activeText = ref(props.modelValue);
@@ -62,7 +63,9 @@ const activeMark = (mark: typeof strong, state: EditorState) => state.selection.
 const inside = (name: string, state: EditorState) => !!selectionAncestor(state, name);
 const toggleBlock = (name: string, apply: Command, remove: Command): Command =>
   (state, dispatch, editor) => (inside(name, state) ? remove : apply)(state, dispatch, editor);
-const tools: { label: string; icon: string; command: Command; active: (state: EditorState) => boolean }[][] = [
+type FormatTool = { label: string; icon: string; command: Command; active?: (state: EditorState) => boolean }
+  | { label: string; icon: string; command?: never; active?: never };
+const tools: FormatTool[][] = [
   [
     { label: '粗体', icon: 'M6 4h7a4 4 0 0 1 0 8H6z M6 12h8a4 4 0 0 1 0 8H6z', command: toggleMark(strong), active: state => activeMark(strong, state) },
     { label: '斜体', icon: 'M11 4h8 M5 20h8 M15 4 9 20', command: toggleMark(em), active: state => activeMark(em, state) },
@@ -82,7 +85,40 @@ const tools: { label: string; icon: string; command: Command; active: (state: Ed
       active: state => { const depth = selectionAncestor(state, 'list_item'); return !!depth && state.selection.$from.node(depth).attrs.checked !== null; } },
     { label: '引用', icon: 'M10 6a6 6 0 0 0-5 6v5h5v-5H5 M21 6a6 6 0 0 0-5 6v5h5v-5h-5', command: toggleBlock('blockquote', wrapIn(blockquote), lift), active: state => inside('blockquote', state) },
   ],
+  [
+    { label: '插入表格', icon: 'M3 4h18v16H3z M3 9h18 M3 14h18 M12 4v16', command: insertMarkdownTable },
+    { label: '插入或编辑链接', icon: 'M10 14l4-4 M8 16l-1 1a3 3 0 0 1-4-4l4-4a3 3 0 0 1 4 0 M16 8l1-1a3 3 0 0 1 4 4l-4 4a3 3 0 0 1-4 0' },
+  ],
 ];
+const compactTools = [...tools[0]!, tools[4]![1]!, ...tools[2]!, ...tools[3]!, ...tools[1]!, tools[4]![0]!];
+const toolbar = ref<HTMLElement>();
+const blockSelect = ref<HTMLSelectElement>();
+const moreFormats = ref<HTMLElement>();
+const availableToolWidth = ref(0);
+const compactToolSize = 44;
+const visibleToolCount = computed(() => {
+  const slots = Math.floor(availableToolWidth.value / compactToolSize);
+  return slots >= compactTools.length ? compactTools.length : Math.max(0, slots - 1);
+});
+const toolbarGroups = computed(() => props.compactToolbar ? [compactTools.slice(0, visibleToolCount.value)] : tools);
+const overflowTools = computed(() => props.compactToolbar ? compactTools.slice(visibleToolCount.value) : []);
+const overflowId = computed(() => `${props.textareaId}-more-formats`);
+
+watch(toolbar, (element, _old, onCleanup) => {
+  const select = blockSelect.value;
+  if (!props.compactToolbar || !element || !select) return;
+  const measure = () => {
+    const style = getComputedStyle(element);
+    availableToolWidth.value = element.getBoundingClientRect().width - select.getBoundingClientRect().width
+      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  };
+  const observer = new ResizeObserver(measure);
+  observer.observe(element);
+  observer.observe(select);
+  measure();
+  onCleanup(() => observer.disconnect());
+}, { flush: 'post' });
+
 const inTable = computed(() => !!editorState.value && inside('table', editorState.value));
 const canLink = computed(() => {
   const selection = editorState.value?.selection;
@@ -104,6 +140,25 @@ function run(command: Command) {
   if (!view || !editable.value) return;
   command(view.state, view.dispatch, view);
   view.focus();
+}
+
+function canUse(tool: FormatTool) {
+  const state = editorState.value;
+  return editable.value && !!state && (tool.command ? tool.command(state) : canLink.value);
+}
+
+function dismissMoreFormats(event: KeyboardEvent) {
+  if (!moreFormats.value?.matches(':popover-open')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  moreFormats.value.hidePopover();
+  toolbar.value?.querySelector<HTMLButtonElement>('.markdown-more-trigger')?.focus();
+}
+
+function useTool(tool: FormatTool) {
+  moreFormats.value?.hidePopover();
+  if (tool.command) run(tool.command);
+  else openLink();
 }
 
 function openLink() {
@@ -299,7 +354,10 @@ watch(() => props.modelValue, value => {
   if (view) mountEditor();
 });
 watch([editable, () => props.disabled], () => {
-  if (!editable.value) closeLink(false);
+  if (!editable.value) {
+    closeLink(false);
+    moreFormats.value?.hidePopover();
+  }
   view?.updateState(view.state);
   view?.dom.querySelectorAll<HTMLInputElement>('.markdown-task-check').forEach(input => { input.disabled = !editable.value; });
 });
@@ -323,33 +381,43 @@ onBeforeUnmount(destroyEditor);
       </div>
     </div>
     <div class="markdown-editor-surface">
-      <div v-if="mode === 'rich' && !readonly" class="markdown-editor-toolbar" role="group" aria-label="文本格式">
-        <select class="markdown-editor-select markdown-block-select" aria-label="段落样式" :value="blockLevel"
+      <div v-if="mode === 'rich' && !readonly" ref="toolbar" class="markdown-editor-toolbar"
+        :class="{ 'is-compact': compactToolbar }" :style="compactToolbar ? { '--compact-tool-size': `${compactToolSize}px` } : undefined"
+        role="group" aria-label="文本格式" @keydown.esc="dismissMoreFormats">
+        <select ref="blockSelect" class="markdown-editor-select markdown-block-select" aria-label="段落样式" :value="blockLevel"
           :disabled="!editable || !editorState" @change="changeBlock">
           <option :value="0">正文</option>
           <option v-for="level in 6" :key="level" :value="level">标题 {{ level }}</option>
         </select>
-        <div v-for="group in tools" :key="group[0]?.label" class="markdown-format-group">
+        <div v-for="group in toolbarGroups" :key="group[0]?.label" class="markdown-format-group">
           <button v-for="tool in group" :key="tool.label" type="button" class="markdown-editor-icon"
-            :aria-label="tool.label" :title="tool.label" :aria-pressed="editorState ? tool.active(editorState) : false"
-            :disabled="!editable || !editorState || !tool.command(editorState)"
-            @mousedown.prevent @click="run(tool.command)">
+            :aria-label="tool.label" :title="tool.label" :aria-pressed="editorState ? tool.active?.(editorState) : undefined"
+            :aria-expanded="tool.command ? undefined : !!linkPanel"
+            :aria-controls="!tool.command && linkPanel ? `${textareaId}-link-panel` : undefined"
+            :disabled="!canUse(tool)" @mousedown.prevent @click="useTool(tool)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path :d="tool.icon" />
             </svg>
           </button>
         </div>
-        <div class="markdown-format-group">
-          <button type="button" class="markdown-editor-icon" title="插入表格" aria-label="插入表格"
-            :disabled="!editable || !editorState || !insertMarkdownTable(editorState)" @mousedown.prevent @click="run(insertMarkdownTable)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 4h18v16H3z M3 9h18 M3 14h18 M12 4v16" /></svg>
+        <template v-if="overflowTools.length">
+          <button type="button" class="markdown-editor-icon markdown-more-trigger" title="更多格式" aria-label="更多格式"
+            :popovertarget="overflowId" :disabled="!editable" @mousedown.prevent>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
+            </svg>
           </button>
-          <button type="button" class="markdown-editor-icon" title="插入或编辑链接" aria-label="插入或编辑链接"
-            :aria-expanded="!!linkPanel" :aria-controls="linkPanel ? `${textareaId}-link-panel` : undefined"
-            :disabled="!editable || !canLink" @mousedown.prevent @click="openLink">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M10 14l4-4 M8 16l-1 1a3 3 0 0 1-4-4l4-4a3 3 0 0 1 4 0 M16 8l1-1a3 3 0 0 1 4 4l-4 4a3 3 0 0 1-4 0" /></svg>
-          </button>
-        </div>
+          <div :id="overflowId" ref="moreFormats" class="markdown-more-formats" popover="auto" role="group" aria-label="更多格式">
+            <button v-for="tool in overflowTools" :key="tool.label" type="button" class="markdown-more-option"
+              :aria-pressed="editorState ? tool.active?.(editorState) : undefined" :disabled="!canUse(tool)"
+              @mousedown.prevent @click="useTool(tool)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path :d="tool.icon" />
+              </svg>
+              {{ tool.label }}
+            </button>
+          </div>
+        </template>
       </div>
       <div v-if="linkPanel" :id="`${textareaId}-link-panel`" class="markdown-link-panel" role="group" aria-label="编辑链接"
         @keydown.esc.stop.prevent="closeLink()">

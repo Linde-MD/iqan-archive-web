@@ -49,7 +49,7 @@
 - Dexie.js 已在 SPEC-00 安装；当前主库 v15 保存全局 `archiveRoots` 根目录句柄及项目任务看板字段。v12→v13 新增空 `backendSettings` 表；v13→v14 清除旧项目负责人选项及引用，并递增受影响项目 revision；v14→v15 仅清除旧端口并初始化默认设备名列表（SPEC-08 第 21 节），已有 v15 自定义/空列表保留，不修改项目、授权或协作副本。协作缓存独立使用 Dexie v2，迁移规则见 SPEC-08。保留旧 `directoryBindings` 表但当前授权流程不再读取/写入。v1 版本规范化冲突检测、`externalTaskId` 规则不变；旧 JSON schema 按显式迁移兼容。
 - 数据 schema 迁移必须显式版本化，并保留恢复/备份策略。
 - 当前独立表：projects、nodes、edges、branches、tasks、旧 `directoryBindings`（兼容）、`archiveRoots`（全局根句柄）；数据库 v7 不持久化扫描关联。图数据按稳定 project ID 隔离；根目录是本机全局设置，不属于图或 JSON 配置。
-- 当前 JSON schemaVersion 8 包含项目元数据、版本节点/说明、父边、分支、任务看板选项/字段/评论、账号负责人 ID、任务父子关系、放行状态及测试时间；不包含账号凭据/会话、统一根目录句柄、项目子目录路径、文档匹配结果或扫描缓存。schemaVersion 3–7 显式迁移至 v8，旧负责人选项和任务分配清空；schemaVersion 1/2 拒绝。旧应用不保证能读取新版快照。恢复后沿用本机根目录（如已授权），按项目名重新扫描子目录；未授权则重新选择根目录。布局偏好不加入 JSON。
+- 当前 JSON schemaVersion 8 包含项目元数据、版本节点/说明、父边、分支、任务看板选项/字段/评论、账号负责人 ID、任务父子关系、放行状态及测试时间；任务创建和说明编辑署名为可选的显示名与时间，可附账号 ID，不含头像图片和账号凭据/会话。快照也不包含统一根目录句柄、项目子目录路径、文档匹配结果或扫描缓存。schemaVersion 3–7 显式迁移至 v8，旧负责人选项和任务分配清空；schemaVersion 1/2 拒绝。旧应用不保证能读取新版快照。恢复后沿用本机根目录（如已授权），按项目名重新扫描子目录；未授权则重新选择根目录。布局偏好不加入 JSON。
 - 任务按 [SPEC-00](./SPEC-00-foundation.md) 保存可空字符串 `externalTaskId`，纳入 Dexie.js 与项目 JSON；不保存外部系统链接、账号、令牌或同步状态。外部 Task ID 是系统无关的用户编号，不是内部主键，也不证明远端记录存在。
 - 同项目非空外部 Task ID 唯一性由事务与 `[projectId+externalTaskId]` 索引保证；跨项目同编号及多个 null 合法。编号仅允许 1–16 位 ASCII 数字，trim 后保留为字符串（含前导零），不把外部 ID 当内部主键；完整导入还需同样校验。
 - 当前任务外部编号字段为 `externalTaskId`，唯一索引为 `[projectId+externalTaskId]`；任务保存可空 Status/Type/priority 选项 ID、共享账号 `assigneeId`、开始/截止日期及评论。`Project.assigneeOptions` 仅为空兼容字段。schemaVersion 6 另保存可空 `parentTaskId`；导入重映射任务 ID 时同步重映射父引用。

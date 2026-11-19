@@ -4,6 +4,7 @@ import { AutoScroller, defaultPreset } from '@dnd-kit/dom';
 import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { accountAvatarTheme, accountInitials } from '../domain/account';
 import { filterProjectTasks, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskComment, type TaskOption } from '../domain/model';
@@ -30,6 +31,7 @@ const props = defineProps<{
   optionsOpen: boolean;
   assigneeRefreshKey: number;
   currentAccountId: string | null;
+  currentAccountAvatar?: string | null;
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
@@ -126,6 +128,21 @@ const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ??
 const legacyTypeNames = computed(() => legacyTaskTypeNames(graph.value?.project.typeOptions ?? []));
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeById = computed(() => new Map(assignees.value.map(assignee => [assignee.id, assignee])));
+const descriptionAttribution = computed(() => {
+  const task = taskDraft.value;
+  if (!task?.id) return [];
+  return [
+    { key: 'created', label: '创建于', missing: '创建信息未记录', author: task.createdBy },
+    { key: 'updated', label: '更新于', missing: '编辑信息未记录', author: task.descriptionEditedBy },
+  ].map(entry => {
+    const author = entry.author;
+    const id = author?.accountId;
+    const showAvatar = !!author && (entry.key === 'created' || !id || id !== task.createdBy?.accountId);
+    const avatar = id ? (id === props.currentAccountId ? props.currentAccountAvatar : assigneeById.value.get(id)?.avatar) : null;
+    const theme = accountAvatarTheme(id ?? author?.name);
+    return { ...entry, showAvatar, avatar, initials: accountInitials(author?.name), theme };
+  });
+});
 const activeAssignees = computed(() => assignees.value.filter(assignee => !assignee.disabled));
 const selectedStatusName = computed(() => {
   const statusId = taskDraft.value?.statusOptionId;
@@ -847,6 +864,10 @@ function formatTime(value: string): string {
   }).format(date);
 }
 
+function showAttributionInitials(event: Event) {
+  if (event.currentTarget instanceof HTMLImageElement) event.currentTarget.hidden = true;
+}
+
 async function loadAssignees() {
   if (assigneesLoading.value) {
     assigneesReloadQueued = true;
@@ -1087,6 +1108,19 @@ onUnmounted(() => {
                     <button type="button" :disabled="saving || taskDraftStale || !sharedWritable" @click="saveDescription">保存</button>
                   </template>
                 </MarkdownEditor>
+                <ul v-if="descriptionAttribution.length" class="task-description-attribution" role="list" aria-label="任务说明署名">
+                  <li v-for="entry in descriptionAttribution" :key="entry.key">
+                    <template v-if="entry.author">
+                      <span v-if="entry.showAvatar" class="task-attribution-avatar" aria-hidden="true"
+                        :style="{ backgroundColor: entry.theme.background, color: entry.theme.foreground }">
+                        {{ entry.initials }}
+                        <img v-if="entry.avatar" :key="entry.avatar" :src="entry.avatar" alt="" @error="showAttributionInitials">
+                      </span>
+                      <span>{{ entry.author.name }} {{ entry.label }} <time :datetime="entry.author.at">{{ formatTime(entry.author.at) }}</time></span>
+                    </template>
+                    <span v-else>{{ entry.missing }}</span>
+                  </li>
+                </ul>
               </div>
               </div>
               <div v-show="detailSection === 'children'" class="task-child-list">
@@ -1132,7 +1166,7 @@ onUnmounted(() => {
             <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
               <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
               <MarkdownEditor :key="editingCommentId ?? 'new'" v-model="commentText" textarea-id="task-comment-markdown"
-                label="评论内容" :rows="5" :disabled="saving" :readonly="!sharedWritable || taskDraftStale" />
+                label="评论内容" :rows="5" compact-toolbar :disabled="saving" :readonly="!sharedWritable || taskDraftStale" />
               <div class="task-comment-editor-actions">
                 <button type="submit" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
                 <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
@@ -1183,6 +1217,21 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.task-description-field > .markdown-editor { margin-bottom: 0; }
+.task-description-attribution {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 14px;
+  margin: 10px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.task-description-attribution li { display: flex; align-items: center; min-width: 0; min-height: 22px; gap: 7px; overflow-wrap: anywhere; }
+.task-description-attribution li + li::before {
+  content: ''; flex: 0 0 1px; height: 14px; margin-right: 7px; background: var(--border-strong);
+}
+.task-attribution-avatar {
+  position: relative; display: inline-grid; flex: 0 0 22px; place-items: center;
+  width: 22px; height: 22px; overflow: hidden; border-radius: 50%; font-size: 10px; font-weight: 700;
+}
+.task-attribution-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.task-description-attribution time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .task-board { min-width: 0; border-top: 2px solid #3b82f6; padding: 18px; }
 .task-board-header, .task-board-header-actions, .task-board-toolbar, .task-options-heading, .task-options-footer { display: flex; align-items: center; gap: 10px; }
 .task-board-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
