@@ -59,6 +59,12 @@ const expandedTaskIds = ref(new Set<string>());
 const collapsedSearchTaskIds = ref(new Set<string>());
 const selectedTaskId = ref('');
 const taskDraft = ref<Task | null>(null);
+const descriptionEdit = ref<string | null>(null);
+const descriptionDraft = computed({
+  get: () => descriptionEdit.value ?? taskDraft.value?.description ?? '',
+  set: (value: string) => { descriptionEdit.value = value === taskDraft.value?.description ? null : value; },
+});
+const descriptionDirty = computed(() => !!taskDraft.value && descriptionEdit.value !== null);
 const taskDraftRevision = ref(-1);
 const taskDraftBaseline = ref('');
 const taskIdError = ref('');
@@ -95,12 +101,11 @@ const dragPlugins = [...defaultPreset.plugins.filter(plugin => plugin !== AutoSc
   AutoScroller.configure({ threshold: { x: 0.2, y: 0 } })];
 let dragPosition = { x: 0, y: 0 };
 let stopDragScroll: (() => void) | undefined;
-let descriptionSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let autoSaveQueued = false;
 
 const taskDraftDirty = computed(() => !!taskDraft.value && JSON.stringify(taskDraft.value) !== taskDraftBaseline.value);
 const commentDraftDirty = computed(() => commentEditorOpen.value && commentText.value !== commentTextBaseline.value);
-const hasUnsavedTaskChanges = computed(() => taskDraftDirty.value || commentDraftDirty.value);
+const hasUnsavedTaskChanges = computed(() => taskDraftDirty.value || commentDraftDirty.value || descriptionDirty.value);
 const taskDraftStale = computed(() => !graph.value || taskDraftRevision.value !== graph.value.project.revision);
 const taskFieldsDisabled = computed(() => !sharedWritable.value || (taskDraftStale.value && !saving.value) || (saving.value && !taskDraft.value?.id));
 const optionDraftStale = computed(() => !graph.value || optionDraftRevision.value !== graph.value.project.revision);
@@ -217,7 +222,7 @@ function toggleListTask(id: string) {
 }
 
 function setTaskDraft(task: Task) {
-  clearTimeout(descriptionSaveTimer);
+  descriptionEdit.value = null;
   autoSaveQueued = false;
   taskDraft.value = structuredClone(task);
   taskIdError.value = '';
@@ -250,7 +255,7 @@ function createTask(statusOptionId?: string | null, updateRoute = true) {
   if (hasUnsavedTaskChanges.value && !window.confirm('当前任务修改尚未保存。放弃修改并新建任务吗？')) return;
   const current = graph.value;
   if (!current) return;
-  clearTimeout(descriptionSaveTimer);
+  descriptionEdit.value = null;
   autoSaveQueued = false;
   const defaultStatus = current.project.statusOptions[0]?.id ?? null;
   const targetStatus = statusOptionId === undefined ? defaultStatus : statusOptionId;
@@ -354,7 +359,7 @@ function reportError(cause: unknown) {
   statusMessage.value = '';
 }
 
-async function saveTask(candidate: Task, successMessage: string) {
+async function saveTask(candidate: Task, successMessage: string, commitDescription = false) {
   if (saving.value) return false;
   const current = graph.value;
   if (!current || taskDraftRevision.value !== current.project.revision) {
@@ -393,6 +398,10 @@ async function saveTask(candidate: Task, successMessage: string) {
       setTaskDraft(saved);
     } else if (taskDraft.value?.id === taskId) {
       mergeSavedTaskDraft(taskDraft.value, submitted, saved);
+      if (commitDescription) {
+        taskDraft.value.description = saved.description;
+        descriptionEdit.value = null;
+      }
       taskDraftRevision.value = persisted.project.revision;
       taskDraftBaseline.value = JSON.stringify(saved);
     }
@@ -430,9 +439,15 @@ async function clearAssignee() {
   await requestAutoSave();
 }
 
-function scheduleDescriptionSave() {
-  clearTimeout(descriptionSaveTimer);
-  descriptionSaveTimer = setTimeout(() => { void requestAutoSave(); }, 800);
+function cancelDescription() {
+  descriptionEdit.value = null;
+}
+
+async function saveDescription() {
+  const task = taskDraft.value;
+  const value = descriptionEdit.value;
+  if (!task?.id || value === null || saving.value || taskDraftStale.value || !sharedWritable.value) return;
+  await saveTask({ ...toRaw(task), description: value }, '任务说明已保存。', true);
 }
 
 async function submitTask() {
@@ -442,7 +457,8 @@ async function submitTask() {
     return;
   }
   const isNew = !taskDraft.value.id;
-  if (await saveTask(taskDraft.value, '任务已保存。') && isNew && taskDraft.value?.id) {
+  const candidate = isNew ? { ...toRaw(taskDraft.value), description: descriptionDraft.value } : taskDraft.value;
+  if (await saveTask(candidate, '任务已保存。') && isNew && taskDraft.value?.id) {
     emit('navigateChild', ['detail', taskDraft.value.id], 'replace');
     await nextTick();
     taskDetailMainScroll.value?.scrollTo({ top: 0 });
@@ -673,7 +689,7 @@ function beginNewComment() {
 function closeTaskDetails() {
   if (saving.value) return;
   if (hasUnsavedTaskChanges.value && !window.confirm('放弃未保存的任务修改吗？')) return;
-  clearTimeout(descriptionSaveTimer);
+  descriptionEdit.value = null;
   autoSaveQueued = false;
   const taskId = selectedTaskId.value;
   taskDraft.value = null;
@@ -908,7 +924,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopDragScroll?.();
-  clearTimeout(descriptionSaveTimer);
   subscription?.unsubscribe();
   removeQuickRouteGuard?.();
   emit('busy', false);
@@ -1007,7 +1022,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="task-header-actions">
-            <span v-if="saving || taskDraftDirty || statusMessage" class="task-save-status" role="status">{{ saving ? '保存中…' : taskDraftDirty ? '未保存' : statusMessage }}</span>
+            <span v-if="saving || hasUnsavedTaskChanges || statusMessage" class="task-save-status" role="status">{{ saving ? '保存中…' : hasUnsavedTaskChanges ? '未保存' : statusMessage }}</span>
             <button v-if="taskDraft.id" type="button" class="secondary icon-button" aria-label="删除任务" title="删除任务" :disabled="!sharedWritable || saving || taskDraftStale" @click="deleteCurrentTask"><AppIcon name="trash" /></button>
             <button type="button" class="secondary icon-button" aria-label="关闭任务详情" title="关闭任务详情" :disabled="saving" @click="closeTaskDetails"><AppIcon name="clear" /></button>
           </div>
@@ -1064,8 +1079,14 @@ onUnmounted(() => {
                   <option v-for="option in graph.project.typeOptions" :key="option.id" :value="option.id">{{ option.name }}</option>
                 </select><p v-if="legacyTypeNames.length" class="task-legacy-type-notice" role="status">仍有旧类型名称：{{ legacyTypeNames.join('、') }}。请在“管理选项”中检查并修改。</p></div>
               </div>
-              <div class="task-description-field"><label for="task-board-description">说明</label>
-                <textarea id="task-board-description" v-model="taskDraft.description" rows="6" placeholder="添加任务说明…" :disabled="saving && !taskDraft.id" :readonly="!sharedWritable || (taskDraftStale && !saving)" @input="scheduleDescriptionSave"></textarea>
+              <div class="task-description-field">
+                <MarkdownEditor :key="taskDraft.id" v-model="descriptionDraft" textarea-id="task-board-description"
+                  label="任务说明" :rows="6" :disabled="saving" :readonly="!sharedWritable || (taskDraftStale && !saving)">
+                  <template v-if="taskDraft.id && descriptionDirty" #actions>
+                    <button type="button" class="secondary" :disabled="saving" @click="cancelDescription">取消</button>
+                    <button type="button" :disabled="saving || taskDraftStale || !sharedWritable" @click="saveDescription">保存</button>
+                  </template>
+                </MarkdownEditor>
               </div>
               </div>
               <div v-show="detailSection === 'children'" class="task-child-list">
@@ -1074,7 +1095,7 @@ onUnmounted(() => {
                 </li></ul>
                 <p v-else class="task-child-empty">{{ taskDraft.id ? '暂无子任务' : '创建任务后可关联子任务' }}</p>
               </div>
-              <div v-if="!taskDraft.id || (error && !taskDraftStale)" class="task-detail-actions">
+              <div v-if="!taskDraft.id || (error && taskDraftDirty && !taskDraftStale)" class="task-detail-actions">
                 <button type="submit" :disabled="!sharedWritable || saving || taskDraftStale || commentDraftDirty || !taskDraft.name.trim()"><AppIcon name="check" />{{ taskDraft.id ? '重试保存' : '创建任务' }}</button>
               </div>
             </form>
@@ -1110,7 +1131,8 @@ onUnmounted(() => {
             <p v-else class="task-comments-empty">暂无评论</p>
             <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
               <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
-              <MarkdownEditor v-model="commentText" textarea-id="task-comment-markdown" :disabled="saving" :readonly="!sharedWritable || taskDraftStale" />
+              <MarkdownEditor :key="editingCommentId ?? 'new'" v-model="commentText" textarea-id="task-comment-markdown"
+                label="评论内容" :rows="5" :disabled="saving" :readonly="!sharedWritable || taskDraftStale" />
               <div class="task-comment-editor-actions">
                 <button type="submit" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
                 <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
@@ -1317,9 +1339,7 @@ onUnmounted(() => {
 .task-comment-actions button { min-height: 44px; padding: 5px 8px; font-size: 11px; }
 .task-comment-editor { flex: 0 0 auto; margin: 10px 12px 12px; padding: 10px; border: 1px solid #35445c; border-radius: 6px; background: #0c1523; }
 .task-comment-editor h5 { margin: 0 0 8px; font-size: 12px; }
-.task-comment-editor :deep(.markdown-editor-toolbar) { gap: 5px; }
-.task-comment-editor :deep(.markdown-editor-toolbar button) { min-width: 0; min-height: 44px; padding: 6px 10px; }
-.task-comment-editor :deep(.markdown-editor textarea) { min-height: 120px; margin: 0; }
+.task-comment-editor :deep(.markdown-editor) { margin-bottom: 0; }
 .task-comment-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .task-comment-editor-actions button { width: auto; min-height: 44px; }
 .task-options-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(760px, calc(100dvh - 24px)); overflow: auto; padding: 18px; border: 1px solid #52647e; border-radius: 8px; background: #121c2d; color: #eef4ff; }

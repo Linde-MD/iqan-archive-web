@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { CollaborationRepository, CollaborationUser } from '../storage/collaboration';
 import type { ProjectGraph } from '../domain/model';
@@ -10,6 +10,7 @@ import ParentVersionPicker from './ParentVersionPicker.vue';
 import TaskPicker from './TaskPicker.vue';
 import { recommendedParentNodes } from '../domain/git-graph';
 
+const MarkdownEditor = defineAsyncComponent(() => import('./MarkdownEditor.vue'));
 const props = defineProps<{ client: CollaborationRepository; projectId: string; disabled: boolean }>();
 const state = props.client.state;
 const dialog = ref<HTMLDialogElement>();
@@ -463,7 +464,7 @@ async function saveDraft() {
         <ul><li v-for="node in drafts.nodes" :key="node.id"><code>{{ node.version }}</code> · 待同步 <button type="button" class="secondary" :disabled="busy || !draftEditable || drafts.deleted" @click="editDraft(node.id)">修正此版本</button></li></ul>
         <form v-if="editingDraftId" @submit.prevent="saveDraft">
           <label for="draft-version">草稿版本号</label><input id="draft-version" v-model="draftVersion" required :disabled="busy || !draftEditable">
-          <label for="draft-description">改动说明</label><textarea id="draft-description" v-model="draftDescription" rows="4" :disabled="busy || !draftEditable"></textarea>
+          <MarkdownEditor v-model="draftDescription" textarea-id="draft-description" label="改动说明" :rows="4" :disabled="busy || !draftEditable" />
           <TaskPicker v-model="draftTaskId" :tasks="drafts.graph.tasks" :disabled="busy || !draftEditable" />
           <ParentVersionPicker :options="draftParentOptions" :disabled="busy || !draftEditable" @add="draftParents.push($event)" />
           <ul><li v-for="id in draftParents" :key="id">{{ drafts.graph.nodes.find(node => node.id === id)?.version ?? `失效父版本 ${id}` }} <button type="button" class="secondary" :disabled="busy || !draftEditable" @click="draftParents = draftParents.filter(parent => parent !== id)">移除父引用</button></li></ul>

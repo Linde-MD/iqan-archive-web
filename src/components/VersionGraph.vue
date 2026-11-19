@@ -3260,8 +3260,7 @@ function onIqanDialogClosed() {
         <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
         <p v-if="sharedWriteBlockedReason" class="form-help">{{ sharedWriteBlockedReason }}</p>
         <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' ? !selectedWritable || !!selectedNode?.releasedAt : !newVersionWritable)" placeholder="例如：1479-1 20260115" />
-        <label for="git-description">改动说明</label>
-        <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" :disabled="saving" />
+        <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" label="改动说明" :disabled="saving" />
         <TaskPicker v-model="nodeTaskId" :tasks="graph.tasks" :disabled="saving" />
         <p class="form-help">每个版本可不关联任务，或关联一个任务；任务在项目任务看板中维护。</p>
         <template v-if="panel !== 'node-edit'">

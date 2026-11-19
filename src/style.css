@@ -331,12 +331,84 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-sidebar .graph-form label, .graph-sidebar .deletion-rewires label { display: flex; flex-wrap: wrap; }
 .graph-sidebar .graph-form input, .graph-sidebar .graph-form select, .graph-sidebar .graph-form textarea { min-width: 0; max-width: 100%; }
 .markdown-editor { min-width: 0; margin-bottom: 14px; }
-.markdown-editor-toolbar { display: flex; gap: 8px; margin: 0 0 8px; }
-.markdown-editor-toolbar button { min-width: 72px; min-height: 44px; }
-.markdown-editor-toolbar button[aria-pressed="true"] { border-color: var(--accent); background: #203652; color: #fff; }
-.graph-sidebar .graph-form .markdown-editor textarea { width: 100%; min-height: 176px; margin: 0; resize: vertical; font-size: 14px; line-height: 1.6; }
-.markdown-editor-preview { min-height: 176px; }
-.markdown-editor-help { margin: 8px 0 0; }
+.markdown-editor-header,
+.markdown-editor-actions { display: flex; align-items: center; gap: 4px; }
+.markdown-editor-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 4px; }
+.markdown-editor .markdown-editor-label { margin: 0; color: #d7e3f3; font-size: 13px; font-weight: 600; }
+.markdown-editor-surface { min-width: 0; border: 1px solid #52647e; border-radius: 7px; background: #0d1728; }
+.markdown-editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; padding: 0 4px; border-bottom: 1px solid #35445c; border-radius: 6px 6px 0 0; background: #162235; }
+.markdown-format-group { display: flex; align-items: center; position: relative; }
+.markdown-format-group::before { content: ''; width: 1px; height: 18px; margin: 0 3px; background: #52647e; }
+.markdown-editor .markdown-editor-select,
+.markdown-editor .markdown-editor-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: auto; min-width: 44px; min-height: 44px; margin: 0;
+  border: 1px solid transparent; border-radius: 5px;
+  background-color: transparent; color: #c3d1e4; box-shadow: none; font-size: 13px;
+}
+.markdown-editor .markdown-editor-select { display: inline-block; padding: 0 4px; }
+.markdown-editor .markdown-editor-select option { background: #162235; color: #eef4ff; }
+.markdown-editor .markdown-editor-icon { width: 44px; padding: 0; }
+.markdown-editor-icon svg { width: 16px; height: 16px; }
+.markdown-editor .markdown-editor-icon:hover:enabled,
+.markdown-editor .markdown-editor-select:hover:enabled { background-color: #20324b; color: #fff; }
+.markdown-editor .markdown-editor-icon[aria-pressed="true"] { border-color: #7dd3fc; background: #203652; color: #fff; }
+.markdown-editor select:focus-visible,
+.markdown-editor button:focus-visible { outline: 2px solid #7dd3fc; outline-offset: -3px; }
+.markdown-editor-body { --markdown-height: clamp(7rem, calc(var(--markdown-rows) * 1.45rem + 2rem), 15rem); min-width: 0; }
+.markdown-editor.is-expanded .markdown-editor-body { --markdown-height: clamp(17rem, 55dvh, 32rem); }
+.markdown-editor .markdown-rich-input,
+.markdown-editor .markdown-editor-preview,
+.markdown-editor .markdown-editor-body textarea {
+  box-sizing: border-box; display: block; width: 100%; height: var(--markdown-height); min-height: 0; overflow: auto;
+  margin: 0; padding: 14px clamp(12px, 3vw, 26px); border: 0; border-radius: 6px;
+  background: transparent; color: #eef4ff; line-height: 1.65; transition: none;
+}
+.markdown-editor .markdown-editor-body textarea { resize: none; font-family: ui-monospace, Consolas, monospace; }
+.markdown-editor .markdown-rich-input:focus-visible,
+.markdown-editor .markdown-editor-body textarea:focus-visible { outline: 2px solid #7dd3fc; outline-offset: -2px; }
+.markdown-rich-input[data-empty="true"][contenteditable="true"]::before {
+  content: attr(data-placeholder); position: absolute; color: #afbdd2; pointer-events: none;
+}
+.markdown-editor .markdown-editor-icon:disabled,
+.markdown-editor .markdown-editor-select:disabled { color: #8190a6; }
+.markdown-editor .markdown-editor-help { margin: 8px 0 0; }
+.markdown-inline-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 8px; }
+.markdown-editor .markdown-inline-actions > button {
+  flex: 0 0 auto; justify-content: center; width: auto; min-width: 64px; min-height: 44px;
+  margin: 0; padding: 0 12px; border-radius: 6px; box-shadow: none; font-size: 13px;
+  background: #24508a; border-color: #4879b4; color: var(--ink);
+}
+.markdown-editor .markdown-inline-actions > button:hover:enabled { background: #2b629f; border-color: #6899d2; }
+.markdown-editor .markdown-inline-actions > button.secondary { background: transparent; border-color: transparent; color: #c3d1e4; }
+.markdown-editor .markdown-inline-actions > button.secondary:hover:enabled { background: #20324b; color: var(--ink); }
+.markdown-editor .markdown-inline-actions > button:disabled { background: #263248; border-color: var(--border); color: var(--muted); }
+.markdown-editor .markdown-inline-actions > button.secondary:disabled { background: transparent; border-color: transparent; }
+.markdown-table-actions { justify-content: flex-start; padding: 3px 8px; border-top: 1px solid #35445c; background: #121e30; }
+.markdown-save-actions { margin-top: 2px; }
+.markdown-editor .markdown-save-actions > button {
+  position: relative; isolation: isolate; min-width: 70px; border: 0; background: transparent;
+}
+.markdown-editor .markdown-save-actions > button.secondary { min-width: 52px; font-weight: 400; }
+.markdown-editor .markdown-save-actions > button::before {
+  content: ''; position: absolute; z-index: -1; inset: 7px 0; border-radius: 4px; background: #2857a1;
+}
+.markdown-editor .markdown-save-actions > button:hover:enabled,
+.markdown-editor .markdown-save-actions > button.secondary:hover:enabled,
+.markdown-editor .markdown-save-actions > button:disabled { background: transparent; }
+.markdown-editor .markdown-save-actions > button:hover:enabled::before { background: #3269ba; }
+.markdown-editor .markdown-save-actions > button:disabled::before { background: #263248; }
+.markdown-editor .markdown-save-actions > button.secondary::before { background: transparent; }
+.markdown-editor .markdown-save-actions > button.secondary:hover:enabled::before { background: #20324b; }
+.markdown-editor .markdown-save-actions > button:focus-visible { outline: none; }
+.markdown-editor .markdown-save-actions > button:focus-visible::before { outline: 2px solid var(--focus); outline-offset: 2px; }
+.markdown-link-panel {
+  display: grid; gap: 8px; width: min(100%, 360px); margin-left: auto;
+  padding: 10px; border: 1px solid #52647e; border-radius: 6px; background: #162235;
+}
+.markdown-editor .markdown-link-panel label { display: grid; grid-template-columns: 2.5rem minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; }
+.markdown-editor .markdown-link-panel input { min-width: 0; width: 100%; min-height: 44px; margin: 0; }
+.markdown-link-error { margin: 0; color: #ffb4b4; font-size: 13px; }
 .markdown-empty { margin: 0; color: #c0cde0; }
 .markdown-content { min-width: 0; color: #eaf1fc; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
@@ -350,6 +422,11 @@ tbody tr.row-selected { background: #1a3557; }
 .markdown-content pre, .markdown-table-scroll, .markdown-content hr { margin: .7em 0; }
 .markdown-content ul, .markdown-content ol { padding-left: 1.5em; }
 .markdown-content li + li { margin-top: .25em; }
+.markdown-content .markdown-task-item { list-style: none; position: relative; }
+.markdown-content .markdown-task-check { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0 6px 0 0; accent-color: #7dd3fc; vertical-align: middle; }
+.markdown-rich-input .markdown-task-item > .markdown-task-check { position: absolute; inset: .35em auto auto -1.35em; }
+.markdown-rich-input .markdown-task-check:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 3px; }
+.markdown-content ins { text-underline-offset: .17em; }
 .markdown-content a { color: #9acbff; text-decoration: underline; text-underline-offset: 2px; }
 .markdown-content code { padding: .08em .35em; border: 1px solid #35445c; border-radius: 4px; background: #0b1321; color: #d7e8ff; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .92em; }
 .markdown-content pre { max-width: 100%; overflow: auto; padding: 10px 12px; border: 1px solid #35445c; border-radius: 6px; background: #0b1321; }

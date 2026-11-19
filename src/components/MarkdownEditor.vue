@@ -1,37 +1,389 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { renderMarkdown } from '../utils/markdown';
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { baseKeymap, chainCommands, lift, setBlockType, toggleMark, wrapIn } from 'prosemirror-commands';
+import { history, redo, undo } from 'prosemirror-history';
+import { keymap } from 'prosemirror-keymap';
+import { liftListItem, splitListItem, wrapInList } from 'prosemirror-schema-list';
+import { EditorState, type Command } from 'prosemirror-state';
+import { EditorView } from 'prosemirror-view';
+import { normalizeEditorLink, renderMarkdown } from '../utils/markdown';
+import { addMarkdownTableColumn, addMarkdownTableRow, insertMarkdownTable, moveMarkdownCell, removeMarkdownTable, selectionAncestor, toggleChecklist } from '../utils/markdown-editor-commands';
+import AppIcon from './AppIcon.vue';
+import { readRichMarkdown, richMarkdownSchema as schema, richMarkdownSerializer } from '../utils/rich-markdown';
+import 'prosemirror-view/style/prosemirror.css';
 
-defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: string;
   textareaId: string;
+  label: string;
+  rows?: number;
   disabled?: boolean;
   readonly?: boolean;
-}>();
+}>(), { rows: 8 });
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
-const mode = ref<'edit' | 'preview'>('edit');
+const activeText = ref(props.modelValue);
+const source = computed({
+  get: () => activeText.value,
+  set: (value: string) => {
+    activeText.value = value;
+    emit('update:modelValue', value);
+  },
+});
+const mode = ref<'rich' | 'source' | 'preview'>(readRichMarkdown(props.modelValue) ? 'rich' : 'source');
+const unsupported = ref(mode.value === 'source');
+const expanded = ref(false);
+const richHost = ref<HTMLElement>();
+const editorState = shallowRef<EditorState>();
+const editable = computed(() => !props.disabled && !props.readonly);
+const helpId = computed(() => `${props.textareaId}-help`);
+const linkPanel = ref<{ from: number; to: number; text: string; url: string; existing: boolean }>();
+const linkTextInput = ref<HTMLInputElement>();
+const linkUrlInput = ref<HTMLInputElement>();
+const linkError = ref('');
+let view: EditorView | undefined;
+
+const paragraph = schema.nodes.paragraph!;
+const heading = schema.nodes.heading!;
+const blockquote = schema.nodes.blockquote!;
+const bullet_list = schema.nodes.bullet_list!;
+const ordered_list = schema.nodes.ordered_list!;
+const list_item = schema.nodes.list_item!;
+const code_block = schema.nodes.code_block!;
+const hard_break = schema.nodes.hard_break!;
+const strong = schema.marks.strong!;
+const em = schema.marks.em!;
+const code = schema.marks.code!;
+const underline = schema.marks.underline!;
+const strike = schema.marks.strike!;
+const link = schema.marks.link!;
+const activeMark = (mark: typeof strong, state: EditorState) => state.selection.empty
+  ? !!mark.isInSet(state.storedMarks ?? state.selection.$from.marks())
+  : state.doc.rangeHasMark(state.selection.from, state.selection.to, mark);
+const inside = (name: string, state: EditorState) => !!selectionAncestor(state, name);
+const toggleBlock = (name: string, apply: Command, remove: Command): Command =>
+  (state, dispatch, editor) => (inside(name, state) ? remove : apply)(state, dispatch, editor);
+const tools: { label: string; icon: string; command: Command; active: (state: EditorState) => boolean }[][] = [
+  [
+    { label: '粗体', icon: 'M6 4h7a4 4 0 0 1 0 8H6z M6 12h8a4 4 0 0 1 0 8H6z', command: toggleMark(strong), active: state => activeMark(strong, state) },
+    { label: '斜体', icon: 'M11 4h8 M5 20h8 M15 4 9 20', command: toggleMark(em), active: state => activeMark(em, state) },
+    { label: '下划线', icon: 'M6 4v7a6 6 0 0 0 12 0V4 M4 21h16', command: toggleMark(underline), active: state => activeMark(underline, state) },
+    { label: '删除线', icon: 'M17 7c-1-2-3-3-5-3-3 0-5 1-5 4 0 1 1 3 4 4 M17 14c1 1 1 2 1 3 0 2-2 3-5 3-3 0-5-1-6-3 M3 12h18', command: toggleMark(strike), active: state => activeMark(strike, state) },
+  ],
+  [
+    { label: '行内代码', icon: 'm8 6-6 6 6 6 M16 6l6 6-6 6 M14 4l-4 16', command: toggleMark(code), active: state => activeMark(code, state) },
+    { label: '代码块', icon: 'M4 4h16v16H4z M9 9l-3 3 3 3 M15 9l3 3-3 3', command: toggleBlock('code_block', setBlockType(code_block), setBlockType(paragraph)), active: state => inside('code_block', state) },
+  ],
+  [
+    { label: '无序列表', icon: 'M9 5h12 M9 12h12 M9 19h12 M3 5h1 M3 12h1 M3 19h1', command: toggleBlock('bullet_list', wrapInList(bullet_list), liftListItem(list_item)), active: state => inside('bullet_list', state) },
+    { label: '编号列表', icon: 'M9 5h12 M9 12h12 M9 19h12 M2 4l2-1v5 M2 8h4 M2 14a2 2 0 1 1 3 2l-3 3h4', command: toggleBlock('ordered_list', wrapInList(ordered_list), liftListItem(list_item)), active: state => inside('ordered_list', state) },
+  ],
+  [
+    { label: '复选清单', icon: 'M3 5h7v7H3z M5 8l2 2 4-5 M14 8h7 M3 16h7v5H3z M14 18h7', command: toggleChecklist,
+      active: state => { const depth = selectionAncestor(state, 'list_item'); return !!depth && state.selection.$from.node(depth).attrs.checked !== null; } },
+    { label: '引用', icon: 'M10 6a6 6 0 0 0-5 6v5h5v-5H5 M21 6a6 6 0 0 0-5 6v5h5v-5h-5', command: toggleBlock('blockquote', wrapIn(blockquote), lift), active: state => inside('blockquote', state) },
+  ],
+];
+const inTable = computed(() => !!editorState.value && inside('table', editorState.value));
+const canLink = computed(() => {
+  const selection = editorState.value?.selection;
+  return !!selection && selection.$from.sameParent(selection.$to) && selection.$from.parent.type.allowsMarkType(link);
+});
+const blockLevel = computed(() => {
+  const selection = editorState.value?.selection;
+  return selection?.$from.parent.type === heading ? Number(selection.$from.parent.attrs.level) : 0;
+});
+
+function changeBlock(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const level = Number(select.value);
+  run(level ? setBlockType(heading, { level }) : setBlockType(paragraph));
+  select.value = String(blockLevel.value);
+}
+
+function run(command: Command) {
+  if (!view || !editable.value) return;
+  command(view.state, view.dispatch, view);
+  view.focus();
+}
+
+function openLink() {
+  if (!view || !editable.value || !canLink.value) return;
+  if (linkPanel.value) { closeLink(); return; }
+  const { state } = view;
+  const { $from, $to } = state.selection;
+  let { from, to } = state.selection;
+  const mark = link.isInSet($from.marks()) ?? link.isInSet($from.nodeAfter?.marks ?? []);
+  let existing = false;
+  if (mark) {
+    let start = -1;
+    $from.parent.forEach((node, offset) => {
+      const pos = $from.start() + offset;
+      if (!mark.isInSet(node.marks)) { start = -1; return; }
+      if (start === -1) start = pos;
+      if (start <= from && to <= pos + node.nodeSize) {
+        from = start;
+        to = pos + node.nodeSize;
+        existing = true;
+      }
+    });
+  }
+  linkPanel.value = { from, to, text: state.doc.textBetween(from, to, ' '), url: existing ? mark?.attrs.href : '', existing };
+  linkError.value = '';
+  void nextTick(() => (linkPanel.value?.text ? linkUrlInput.value : linkTextInput.value)?.focus());
+}
+
+function closeLink(focus = true) {
+  linkPanel.value = undefined;
+  linkError.value = '';
+  if (focus) view?.focus();
+}
+
+function applyLink(remove = false) {
+  const panel = linkPanel.value;
+  if (!view || !panel || !editable.value) return;
+  const url = remove ? null : normalizeEditorLink(panel.url);
+  const text = panel.text.trim() ? panel.text : panel.url.trim();
+  if (!remove && (!url || !text)) {
+    linkError.value = '请输入有效的链接地址。';
+    linkUrlInput.value?.focus();
+    return;
+  }
+  const { from, to } = panel;
+  const { state } = view;
+  const tr = state.tr.removeMark(from, to, link);
+  if (url) {
+    const mark = link.create({ href: url, title: panel.existing ? link.isInSet(state.doc.resolve(from).nodeAfter?.marks ?? [])?.attrs.title : null });
+    if (from !== to && text === state.doc.textBetween(from, to)) tr.addMark(from, to, mark);
+    else tr.replaceWith(from, to, schema.text(text, [mark]));
+  }
+  view.dispatch(tr.scrollIntoView());
+  closeLink();
+}
+
+function destroyEditor() {
+  closeLink(false);
+  view?.destroy();
+  view = undefined;
+  editorState.value = undefined;
+}
+
+function mountEditor() {
+  destroyEditor();
+  if (!richHost.value) return;
+  const original = activeText.value;
+  const baseline = readRichMarkdown(original);
+  if (!baseline) {
+    unsupported.value = true;
+    mode.value = 'source';
+    return;
+  }
+  const state = EditorState.create({
+    doc: baseline,
+    plugins: [
+      history(),
+      keymap({
+        'Mod-b': toggleMark(strong), 'Mod-i': toggleMark(em), 'Mod-u': toggleMark(underline),
+        'Mod-z': undo, 'Mod-Shift-z': redo, 'Mod-y': redo,
+        Tab: moveMarkdownCell(1), 'Shift-Tab': moveMarkdownCell(-1),
+        Enter: chainCommands(moveMarkdownCell(1), (state, dispatch) => {
+          const depth = selectionAncestor(state, 'list_item');
+          const checked = depth ? state.selection.$from.node(depth).attrs.checked : null;
+          return splitListItem(list_item, { checked: checked === null ? null : false })(state, dispatch);
+        }, baseKeymap.Enter!),
+        'Shift-Enter': (state, dispatch) => {
+          if (inside('table', state)) return moveMarkdownCell(1)(state, dispatch);
+          if (!state.selection.$from.parent.type.contentMatch.matchType(hard_break)) return false;
+          if (dispatch) dispatch(state.tr.replaceSelectionWith(hard_break.create()).scrollIntoView());
+          return true;
+        },
+      }),
+      keymap(baseKeymap),
+    ],
+  });
+  const editor = new EditorView(richHost.value, {
+    state,
+    editable: () => editable.value,
+    attributes: state => ({
+      id: `${props.textareaId}-rich`,
+      class: 'markdown-content markdown-rich-input',
+      role: 'textbox',
+      'aria-multiline': 'true',
+      'aria-label': props.label,
+      'aria-readonly': String(!editable.value),
+      tabindex: props.disabled ? '-1' : '0',
+      'data-empty': String(state.doc.childCount === 1 && state.doc.firstChild?.type === paragraph && !state.doc.firstChild.content.size),
+      'data-placeholder': `填写${props.label}…`,
+    }),
+    // Keep clipboard data as text and do not let an external drop insert HTML or images.
+    nodeViews: {
+      list_item(node, editor, getPos) {
+        const dom = document.createElement('li');
+        const contentDOM = document.createElement('div');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'markdown-task-check';
+        input.contentEditable = 'false';
+        input.setAttribute('aria-label', '完成此清单项');
+        const update = (item: typeof node) => {
+          dom.classList.toggle('markdown-task-item', item.attrs.checked !== null);
+          input.hidden = item.attrs.checked === null;
+          input.disabled = !editable.value;
+          input.checked = !!item.attrs.checked;
+        };
+        dom.append(input, contentDOM);
+        update(node);
+        input.addEventListener('change', () => {
+          const pos = getPos();
+          const item = typeof pos === 'number' ? editor.state.doc.nodeAt(pos) : null;
+          if (!editable.value || !item || typeof pos !== 'number') return;
+          editor.dispatch(editor.state.tr.setNodeMarkup(pos, undefined, { ...item.attrs, checked: input.checked }));
+        });
+        return {
+          dom, contentDOM,
+          update(item) { if (item.type !== list_item) return false; update(item); return true; },
+          stopEvent: event => event.target === input,
+          ignoreMutation: mutation => mutation.target === input || mutation.target === dom,
+        };
+      },
+    },
+    handleDOMEvents: {
+      click(_editor, event) {
+        if (!(event.target instanceof Element) || !event.target.closest('a')) return false;
+        event.preventDefault();
+        return true;
+      },
+      paste(editor, event) {
+        event.preventDefault();
+        const text = event.clipboardData?.getData('text/plain');
+        if (editable.value && text) {
+          if (inside('table', editor.state)) editor.dispatch(editor.state.tr.insertText(text.replace(/[\r\n]+/g, ' ')));
+          else editor.pasteText(text);
+        }
+        return true;
+      },
+    },
+    handleDrop: () => true,
+    dispatchTransaction(transaction) {
+      const next = editor.state.apply(transaction);
+      editor.updateState(next);
+      editorState.value = next;
+      if (transaction.docChanged) {
+        if (linkPanel.value) closeLink(false);
+        source.value = next.doc.eq(baseline) ? original : richMarkdownSerializer.serialize(next.doc);
+      }
+    },
+  });
+  view = editor;
+  editorState.value = state;
+}
+
+function switchMode(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const next = select.value;
+  if (next !== 'rich' && next !== 'source' && next !== 'preview') return;
+  if (next === 'rich' && !readRichMarkdown(activeText.value)) {
+    unsupported.value = true;
+    mode.value = 'source';
+    select.value = 'source';
+    return;
+  }
+  unsupported.value = false;
+  mode.value = next;
+}
+
+watch(richHost, mountEditor, { flush: 'post' });
+watch(() => props.modelValue, value => {
+  if (value === activeText.value) return;
+  activeText.value = value;
+  unsupported.value = false;
+  if (view) mountEditor();
+});
+watch([editable, () => props.disabled], () => {
+  if (!editable.value) closeLink(false);
+  view?.updateState(view.state);
+  view?.dom.querySelectorAll<HTMLInputElement>('.markdown-task-check').forEach(input => { input.disabled = !editable.value; });
+});
+onBeforeUnmount(destroyEditor);
 </script>
 
 <template>
-  <div class="markdown-editor">
-    <div class="markdown-editor-toolbar" role="group" aria-label="改动说明编辑方式">
-      <button type="button" class="secondary" :aria-pressed="mode === 'edit'" :disabled="disabled" @click="mode = 'edit'">编辑</button>
-      <button type="button" class="secondary" :aria-pressed="mode === 'preview'" :disabled="disabled" @click="mode = 'preview'">预览</button>
+  <div class="markdown-editor" :class="{ 'is-expanded': expanded }" @change.stop>
+    <div class="markdown-editor-header">
+      <label v-if="mode === 'source'" class="markdown-editor-label" :for="textareaId">{{ label }}</label>
+      <span v-else class="markdown-editor-label">{{ label }}</span>
+      <div class="markdown-editor-actions">
+        <select class="markdown-editor-select" :aria-label="`${label}编辑方式`" :value="mode" :disabled="disabled" @change="switchMode">
+          <option value="rich">富文本模式</option>
+          <option value="source">Markdown 源码</option>
+          <option value="preview">预览</option>
+        </select>
+        <button type="button" class="markdown-editor-icon" :aria-label="expanded ? '收起编辑区' : '扩大编辑区'"
+          :title="expanded ? '收起编辑区' : '扩大编辑区'" :aria-expanded="expanded" :aria-controls="`${textareaId}-body`"
+          @click="expanded = !expanded"><AppIcon :name="expanded ? 'collapse' : 'fit'" /></button>
+      </div>
     </div>
-    <textarea
-      v-if="mode === 'edit'"
-      :id="textareaId"
-      :value="modelValue"
-      :disabled="disabled"
-      :readonly="readonly"
-      rows="8"
-      placeholder="支持换行与 Markdown 格式"
-      @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
-    ></textarea>
-    <div v-else class="markdown-content markdown-editor-preview" role="region" aria-label="改动说明预览">
-      <div v-if="modelValue.trim()" v-html="renderMarkdown(modelValue)"></div>
-      <p v-else class="markdown-empty">填写改动说明后可预览。</p>
+    <div class="markdown-editor-surface">
+      <div v-if="mode === 'rich' && !readonly" class="markdown-editor-toolbar" role="group" aria-label="文本格式">
+        <select class="markdown-editor-select markdown-block-select" aria-label="段落样式" :value="blockLevel"
+          :disabled="!editable || !editorState" @change="changeBlock">
+          <option :value="0">正文</option>
+          <option v-for="level in 6" :key="level" :value="level">标题 {{ level }}</option>
+        </select>
+        <div v-for="group in tools" :key="group[0]?.label" class="markdown-format-group">
+          <button v-for="tool in group" :key="tool.label" type="button" class="markdown-editor-icon"
+            :aria-label="tool.label" :title="tool.label" :aria-pressed="editorState ? tool.active(editorState) : false"
+            :disabled="!editable || !editorState || !tool.command(editorState)"
+            @mousedown.prevent @click="run(tool.command)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path :d="tool.icon" />
+            </svg>
+          </button>
+        </div>
+        <div class="markdown-format-group">
+          <button type="button" class="markdown-editor-icon" title="插入表格" aria-label="插入表格"
+            :disabled="!editable || !editorState || !insertMarkdownTable(editorState)" @mousedown.prevent @click="run(insertMarkdownTable)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 4h18v16H3z M3 9h18 M3 14h18 M12 4v16" /></svg>
+          </button>
+          <button type="button" class="markdown-editor-icon" title="插入或编辑链接" aria-label="插入或编辑链接"
+            :aria-expanded="!!linkPanel" :aria-controls="linkPanel ? `${textareaId}-link-panel` : undefined"
+            :disabled="!editable || !canLink" @mousedown.prevent @click="openLink">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M10 14l4-4 M8 16l-1 1a3 3 0 0 1-4-4l4-4a3 3 0 0 1 4 0 M16 8l1-1a3 3 0 0 1 4 4l-4 4a3 3 0 0 1-4 0" /></svg>
+          </button>
+        </div>
+      </div>
+      <div v-if="linkPanel" :id="`${textareaId}-link-panel`" class="markdown-link-panel" role="group" aria-label="编辑链接"
+        @keydown.esc.stop.prevent="closeLink()">
+        <label>文本<input ref="linkTextInput" v-model="linkPanel.text" placeholder="显示文本" @keydown.enter.stop.prevent="applyLink()" /></label>
+        <label>链接<input ref="linkUrlInput" v-model="linkPanel.url" placeholder="https://…" inputmode="url"
+          :aria-invalid="!!linkError" :aria-describedby="linkError ? `${textareaId}-link-error` : undefined"
+          @input="linkError = ''" @keydown.enter.stop.prevent="applyLink()" /></label>
+        <p v-if="linkError" :id="`${textareaId}-link-error`" class="markdown-link-error" role="alert">{{ linkError }}</p>
+        <div class="markdown-inline-actions">
+          <button v-if="linkPanel.existing" type="button" class="secondary" @click="applyLink(true)">移除链接</button>
+          <button type="button" class="secondary" @click="closeLink()">取消</button>
+          <button type="button" @click="applyLink()">应用</button>
+        </div>
+      </div>
+      <div :id="`${textareaId}-body`" class="markdown-editor-body" :style="{ '--markdown-rows': rows }">
+        <div v-if="mode === 'rich'" ref="richHost"></div>
+        <textarea v-else-if="mode === 'source'" :id="textareaId" v-model="source"
+          :aria-describedby="helpId" :disabled="disabled" :readonly="readonly"
+          :rows="rows" placeholder="输入 Markdown 源码"></textarea>
+        <div v-else class="markdown-content markdown-editor-preview" role="region" :aria-label="`${label}预览`">
+          <div v-if="source.trim()" v-html="renderMarkdown(source)"></div>
+          <p v-else class="markdown-empty">暂无内容。</p>
+        </div>
+        <div v-if="inTable && editable && !linkPanel" class="markdown-inline-actions markdown-table-actions" aria-label="表格操作" role="group">
+          <button type="button" class="secondary" @mousedown.prevent @click="run(addMarkdownTableRow)">添加行</button>
+          <button type="button" class="secondary" @mousedown.prevent @click="run(addMarkdownTableColumn)">添加列</button>
+          <button type="button" class="secondary" @mousedown.prevent @click="run(removeMarkdownTable)">删除表格</button>
+        </div>
+      </div>
     </div>
-    <p class="form-help markdown-editor-help">支持标题、粗体、列表、引用、代码、表格和换行；原始 HTML 与图片不会执行或加载。</p>
+    <div v-if="$slots.actions" class="markdown-inline-actions markdown-save-actions">
+      <slot name="actions" />
+    </div>
+    <p v-if="unsupported" class="form-help markdown-editor-help" role="status">此内容包含富文本模式不能无损编辑的格式，请使用 Markdown 源码编辑。原文已保留。</p>
+    <p :id="helpId" class="form-help markdown-editor-help" :hidden="mode !== 'source'">原始 HTML 不执行，图片不加载。</p>
   </div>
 </template>
