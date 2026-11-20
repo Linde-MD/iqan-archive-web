@@ -330,6 +330,26 @@ describe('Dexie 原子持久化', () => {
     expect((await repo.get(graph.project.id)).branches.map(branch => branch.id)).toEqual(['branch-feature', 'branch-main']);
   });
 
+  it('分支置顶、置底可作为独立命令撤销，且不改变版本关系与分支头', async () => {
+    const repo = repository();
+    let graph = await seed(repo);
+    for (const [id, headId] of [['one', 'A'], ['two', 'B'], ['three', 'M']] as const) {
+      graph = await repo.addBranch(graph.project.id, graph.project.revision, {
+        id, projectId: graph.project.id, name: id, description: '', color: '#2563eb', headId,
+      });
+    }
+    const top = await repo.saveBranchOrder(graph.project.id, graph.project.revision, ['three', 'one', 'two']);
+    const bottom = await repo.saveBranchOrder(graph.project.id, top.project.revision, ['one', 'two', 'three']);
+    expect(bottom.nodes).toEqual(graph.nodes);
+    expect(bottom.edges).toEqual(graph.edges);
+    expect(bottom.branches.map(({ id, headId }) => [id, headId])).toEqual([['one', 'A'], ['two', 'B'], ['three', 'M']]);
+    const undo = await repo.restoreUndo(graph.project.id, bottom.project.revision, top);
+    expect(undo.branches.map(branch => branch.id)).toEqual(['three', 'one', 'two']);
+    await expect(repo.saveBranchOrder(graph.project.id, top.project.revision, ['one', 'two', 'three']))
+      .rejects.toThrow('其他标签页已更新项目');
+    expect((await repo.get(graph.project.id)).branches).toEqual(undo.branches);
+  });
+
   it('删除项目需名称确认和最新修订，原子删除所有所属数据及绑定，不影响其他项目', async () => {
     const repo = repository();
     let graph = await seed(repo);

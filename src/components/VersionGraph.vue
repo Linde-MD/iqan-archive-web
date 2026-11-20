@@ -297,7 +297,7 @@ function closeBranchFilter(event: Event) {
   }
 }
 const activeBranchId = ref<string | null>(null);
-const menu = ref<{ kind: 'node' | 'branch' | 'task' | 'engineering-file'; id: string; x: number; y: number; anchorX: number; anchorY: number } | null>(null);
+const menu = ref<{ kind: 'node' | 'branch' | 'branch-order' | 'task' | 'engineering-file'; id: string; x: number; y: number; anchorX: number; anchorY: number } | null>(null);
 const menuOpenLocation = ref<ArchiveLocation>('local');
 const menuOpenLocations = shallowRef<{ nodeId: string; locations: ArchiveLocation[] } | null>(null);
 const menuOpenLocationBusy = ref(false);
@@ -383,21 +383,142 @@ function openBranchManager() {
 
 async function moveBranchOrder(branchId: string, offset: -1 | 1) {
   const current = graph.value;
-  if (!current || saving.value) return;
+  if (!current || saving.value || !sharedWritable.value) return;
   const branches = orderedBranches(current.branches);
   const index = branches.findIndex(branch => branch.id === branchId);
   const targetIndex = index + offset;
   if (index < 0 || targetIndex < 0 || targetIndex >= branches.length) return;
+  await moveBranchToIndex(branchId, targetIndex, current.project.revision);
+}
+
+async function moveBranchToIndex(branchId: string, targetIndex: number, revision: number) {
+  const current = graph.value;
+  if (!current || saving.value || !sharedWritable.value) return false;
+  if (current.project.revision !== revision) {
+    showError(new Error('拖动期间版本图已更新，请重新调整分支顺序。'));
+    return false;
+  }
+  const branches = orderedBranches(current.branches);
+  const index = branches.findIndex(branch => branch.id === branchId);
+  if (index < 0 || targetIndex < 0 || targetIndex >= branches.length || index === targetIndex) return false;
   const next = [...branches];
-  [next[index], next[targetIndex]] = [next[targetIndex]!, next[index]!];
-  await operation(`调整分支顺序：${branches[index]!.name}`, async () => {
+  const [moved] = next.splice(index, 1);
+  next.splice(targetIndex, 0, moved!);
+  return operation(`调整分支顺序：${branches[index]!.name}`, async () => {
     graph.value = await props.repository.saveBranchOrder(
       props.projectId,
-      current.project.revision,
+      revision,
       next.map(branch => branch.id),
     );
-    status.value = `分支“${branches[index]!.name}”已${offset < 0 ? '上移' : '下移'}。`;
+    status.value = `分支“${branches[index]!.name}”已移动至第 ${targetIndex + 1} 位。`;
   });
+}
+
+const branchOrderDrag = ref<{ branchId: string; revision: number; projectId: string } | null>(null);
+const branchOrderDrop = ref<{ branchId: string; after: boolean } | null>(null);
+let branchOrderScrollFrame = 0;
+let branchOrderPointerY = 0;
+
+function stopBranchOrderScroll() {
+  cancelAnimationFrame(branchOrderScrollFrame);
+  branchOrderScrollFrame = 0;
+}
+
+function scrollBranchOrder() {
+  const sidebar = editorSidebar.value;
+  if (!sidebar || !branchOrderDrag.value) { stopBranchOrderScroll(); return; }
+  const bounds = sidebar.getBoundingClientRect();
+  const edge = 48;
+  const speed = branchOrderPointerY < bounds.top + edge
+    ? -Math.ceil(Math.min(edge, bounds.top + edge - branchOrderPointerY) / 4)
+    : branchOrderPointerY > bounds.bottom - edge
+      ? Math.ceil(Math.min(edge, branchOrderPointerY - (bounds.bottom - edge)) / 4) : 0;
+  if (!speed) { stopBranchOrderScroll(); return; }
+  const previous = sidebar.scrollTop;
+  sidebar.scrollTop += speed;
+  if (sidebar.scrollTop === previous) { stopBranchOrderScroll(); return; }
+  branchOrderScrollFrame = requestAnimationFrame(scrollBranchOrder);
+}
+
+function startBranchOrderDrag(event: DragEvent, branch: Branch) {
+  if (!graph.value || saving.value || !sharedWritable.value || !event.dataTransfer) {
+    event.preventDefault();
+    return;
+  }
+  branchOrderDrag.value = { branchId: branch.id, revision: graph.value.project.revision, projectId: props.projectId };
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', branch.name);
+  closeMenu(false);
+}
+
+function endBranchOrderDrag() {
+  stopBranchOrderScroll();
+  branchOrderDrag.value = null;
+  branchOrderDrop.value = null;
+}
+
+function overBranchOrder(event: DragEvent, branchId: string) {
+  if (!branchOrderDrag.value || saving.value || !sharedWritable.value) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  const row = event.currentTarget as HTMLElement;
+  const bounds = row.getBoundingClientRect();
+  branchOrderDrop.value = { branchId, after: event.clientY >= bounds.top + bounds.height / 2 };
+  branchOrderPointerY = event.clientY;
+  if (!branchOrderScrollFrame) branchOrderScrollFrame = requestAnimationFrame(scrollBranchOrder);
+}
+
+function leaveBranchOrder(event: DragEvent) {
+  const list = event.currentTarget as HTMLElement;
+  if (!(event.relatedTarget instanceof Node) || !list.contains(event.relatedTarget)) {
+    branchOrderDrop.value = null;
+    stopBranchOrderScroll();
+  }
+}
+
+function dropBranchOrder(event: DragEvent, branchId: string) {
+  const drag = branchOrderDrag.value;
+  if (!drag || saving.value || !sharedWritable.value) return;
+  event.preventDefault();
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const branches = orderedBranches(graph.value?.branches ?? []);
+  const source = branches.findIndex(branch => branch.id === drag.branchId);
+  const target = branches.findIndex(branch => branch.id === branchId);
+  const insertion = target + (event.clientY >= bounds.top + bounds.height / 2 ? 1 : 0);
+  endBranchOrderDrag();
+  if (drag.projectId !== props.projectId || source < 0 || target < 0) {
+    showError(new Error('项目或分支已发生变化，请重新调整分支顺序。'));
+    return;
+  }
+  void moveBranchToIndex(drag.branchId, insertion - (source < insertion ? 1 : 0), drag.revision);
+}
+
+function openBranchOrderMenu(event: MouseEvent, branchId: string, fromButton = false) {
+  event.preventDefault();
+  event.stopPropagation();
+  const target = event.currentTarget as HTMLElement;
+  const button = fromButton ? target : target.querySelector<HTMLButtonElement>('[data-branch-order-menu]');
+  const bounds = button?.getBoundingClientRect();
+  menuReturnFocus.value = button ?? target;
+  const x = fromButton && bounds ? bounds.right : event.clientX;
+  const y = fromButton && bounds ? bounds.bottom : event.clientY;
+  menu.value = { kind: 'branch-order', id: branchId, x, y, anchorX: x, anchorY: y };
+}
+
+async function moveBranchFromMenu(branchId: string, direction: 'top' | 'bottom' | 'up' | 'down') {
+  const current = graph.value;
+  const focusTarget = menuReturnFocus.value;
+  closeMenu(false);
+  if (!current) return;
+  const branches = orderedBranches(current.branches);
+  const index = branches.findIndex(branch => branch.id === branchId);
+  if (index < 0) return;
+  const target = direction === 'top' ? 0 : direction === 'bottom' ? branches.length - 1 : index + (direction === 'up' ? -1 : 1);
+  const saved = await moveBranchToIndex(branchId, target, current.project.revision);
+  if (saved && focusTarget?.isConnected) {
+    await nextTick();
+    focusTarget.focus();
+  }
 }
 
 const relationPreview = shallowRef<{
@@ -451,7 +572,7 @@ const branchMoveDialog = ref<HTMLDialogElement>();
 const draggedBranch = ref<{ branchId: string; headId: string; revision: number } | null>(null);
 const dropTargetId = ref<string | null>(null);
 const pendingBranchMove = ref<{ branchId: string; headId: string; revision: number; targetId: string; name: string } | null>(null);
-watch(() => saving.value || editorOpen.value || !!draggedBranch.value || !!pendingBranchMove.value,
+watch(() => saving.value || editorOpen.value || !!draggedBranch.value || !!branchOrderDrag.value || !!pendingBranchMove.value,
   value => emit('refreshBlocked', value), { flush: 'sync', immediate: true });
 const branchHeadOptions = computed(() => [...(graph.value?.nodes ?? [])]
   .sort((a, b) => compareVersions(a.version, b.version)));
@@ -889,6 +1010,7 @@ function closeEditor() {
 function onSidebarFocusOut(event: FocusEvent) {
   if (event.relatedTarget === fullscreenButton.value
     || (event.relatedTarget instanceof Node && nodeSwitchDialog.value?.contains(event.relatedTarget))
+    || (event.relatedTarget instanceof Node && menuElement.value?.contains(event.relatedTarget))
     || (event.relatedTarget instanceof HTMLElement && event.relatedTarget.matches('.git-row-commit'))) return;
   if (!isFullscreen.value && editorOpen.value && window.matchMedia('(max-width: 1100px)').matches
     && event.relatedTarget instanceof Node && !editorSidebar.value?.contains(event.relatedTarget)) closeEditor();
@@ -1139,7 +1261,7 @@ watch(menu, value => {
     return;
   }
   void nextTick(constrainMenuToViewport);
-}, { flush: 'sync' });
+}, { flush: 'post' });
 watch([panel, branchDeleteTarget, deletionPlan, nodeForm, branchForm], async ([nextPanel, nextBranchDelete, nextDeletion], [previousPanel, previousBranchDelete, previousDeletion]) => {
   if (nextPanel || nextBranchDelete || nextDeletion) fullscreenSidebarVisible.value = true;
   await nextTick();
@@ -1387,7 +1509,7 @@ function constrainMenuToViewport() {
   const current = menu.value;
   const element = menuElement.value;
   if (!current || !element) return;
-  const graphBounds = graphScroller.value?.getBoundingClientRect();
+  const graphBounds = current.kind === 'branch-order' ? undefined : graphScroller.value?.getBoundingClientRect();
   const visualViewport = window.visualViewport;
   const viewportLeft = visualViewport?.offsetLeft ?? 0;
   const viewportTop = visualViewport?.offsetTop ?? 0;
@@ -1456,6 +1578,7 @@ onMounted(() => {
   void refreshComparisonDocuments();
 });
 onUnmounted(() => {
+  endBranchOrderDrag();
   graphScrollerResizeObserver?.disconnect();
   clearTimeout(navigationHighlightTimer);
   documentScanController?.abort();
@@ -2981,7 +3104,7 @@ function onIqanDialogClosed() {
       </div>
 
       <Teleport :to="isFullscreen ? graphWorkspace : 'body'">
-      <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : menu.kind === 'task' ? '任务操作' : '工程文件操作'" @keydown="onMenuKeyDown">
+      <div v-if="menu" ref="menuElement" class="graph-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" tabindex="-1" :aria-label="menu.kind === 'node' ? '版本操作' : menu.kind === 'branch' ? '分支操作' : menu.kind === 'branch-order' ? '分支顺序操作' : menu.kind === 'task' ? '任务操作' : '工程文件操作'" @keydown="onMenuKeyDown">
         <template v-if="menu.kind === 'node' && selectedNodeIds.length > 1">
           <button role="menuitem" :disabled="saving || editorOpen || selectedNodeIds.length !== 2" @click="startIqanAction('compare', selectedNodeIds)"><AppIcon name="compare" />对比所选版本（已选 {{ selectedNodeIds.length }} 个）</button>
           <button role="menuitem" :disabled="saving || !sharedWritable" @click="startNodeAction('merge'); closeMenu(false)"><AppIcon name="merge" />合并所选版本</button>
@@ -3054,6 +3177,13 @@ function onIqanDialogClosed() {
           <button role="menuitem" :disabled="saving || !sharedWritable" @click="openBranchEdit(); closeMenu(false)"><AppIcon name="edit" />编辑分支</button>
           <button role="menuitem" :disabled="saving" @click="releaseBranch(); closeMenu(false)"><AppIcon name="release" />放行分支</button>
           <button role="menuitem" :disabled="saving || !sharedWritable" @click="openBranchDelete"><AppIcon name="trash" />删除分支</button>
+        </template>
+        <template v-else-if="menu.kind === 'branch-order'">
+          <button role="menuitem" class="branch-order-menu-item" :disabled="saving || !sharedWritable" @click="openBranchEdit(menu.id); closeMenu(false)"><AppIcon name="edit" />编辑分支</button>
+          <button role="menuitem" class="branch-order-menu-item" :disabled="saving || !sharedWritable || orderedBranchList[0]?.id === menu.id" @click="moveBranchFromMenu(menu.id, 'up')"><span aria-hidden="true">↑</span>上移</button>
+          <button role="menuitem" class="branch-order-menu-item" :disabled="saving || !sharedWritable || orderedBranchList.at(-1)?.id === menu.id" @click="moveBranchFromMenu(menu.id, 'down')"><span aria-hidden="true">↓</span>下移</button>
+          <button role="menuitem" class="branch-order-menu-item" :disabled="saving || !sharedWritable || orderedBranchList[0]?.id === menu.id" @click="moveBranchFromMenu(menu.id, 'top')"><span aria-hidden="true">↑</span>置顶</button>
+          <button role="menuitem" class="branch-order-menu-item" :disabled="saving || !sharedWritable || orderedBranchList.at(-1)?.id === menu.id" @click="moveBranchFromMenu(menu.id, 'bottom')"><span aria-hidden="true">↓</span>置底</button>
         </template>
       </div>
       </Teleport>
@@ -3214,19 +3344,25 @@ function onIqanDialogClosed() {
 
     <div v-if="panel === 'branch-manager'" class="graph-form" role="dialog" aria-modal="false" aria-label="分支管理">
       <h3 tabindex="-1">分支管理与顺序</h3>
-      <p class="form-help">顺序靠前的分支优先占用直线轨道，并决定共享版本节点及共同父边的显示颜色。调整仅改变显示优先级，不修改版本关系或分支头。</p>
-      <ol class="branch-order-list" aria-label="全部分支，按优先级排序">
-        <li v-for="(branch, index) in orderedBranchList" :key="branch.id">
-          <span class="branch-order-index" aria-label="顺序">{{ index + 1 }}</span>
+      <p class="form-help">顺序决定共享轨道及颜色优先级，不改变版本关系或分支头。拖动手柄排序，或使用上下移及更多操作。</p>
+      <p v-if="sharedWriteBlockedReason" class="form-help">{{ sharedWriteBlockedReason }}</p>
+      <ol class="branch-order-list" aria-label="全部分支，按优先级排序" @dragleave="leaveBranchOrder">
+        <li v-for="(branch, index) in orderedBranchList" :key="branch.id"
+          :class="{ 'is-dragging': branchOrderDrag?.branchId === branch.id, 'drop-before': branchOrderDrop?.branchId === branch.id && !branchOrderDrop.after, 'drop-after': branchOrderDrop?.branchId === branch.id && branchOrderDrop.after }"
+          @contextmenu="openBranchOrderMenu($event, branch.id)" @dragover="overBranchOrder($event, branch.id)" @drop="dropBranchOrder($event, branch.id)">
+          <button type="button" class="branch-order-grip" :draggable="!saving && sharedWritable" :disabled="saving || !sharedWritable" :aria-label="`分支 ${branch.name}，第 ${index + 1} 位；拖动排序，或使用上下移按钮`" title="拖动调整顺序" @dragstart="startBranchOrderDrag($event, branch)" @dragend="endBranchOrderDrag">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="5" cy="4" r="1.2"/><circle cx="11" cy="4" r="1.2"/><circle cx="5" cy="8" r="1.2"/><circle cx="11" cy="8" r="1.2"/><circle cx="5" cy="12" r="1.2"/><circle cx="11" cy="12" r="1.2"/></svg>
+            <span class="branch-order-index" aria-hidden="true">{{ index + 1 }}</span>
+          </button>
           <span class="graph-branch-swatch" :style="{ background: branch.color }" aria-hidden="true"></span>
           <span class="branch-order-info">
-            <strong>{{ branch.name }}</strong>
-            <small>头：{{ nodeById.get(branch.headId)?.version ?? '未知' }}</small>
+            <strong :title="branch.name">{{ branch.name }}</strong>
+            <small :title="nodeById.get(branch.headId)?.version ?? '未知'">头：{{ nodeById.get(branch.headId)?.version ?? '未知' }}</small>
           </span>
           <div class="branch-order-actions">
-            <button type="button" class="secondary icon-button" :disabled="saving || !sharedWritable || index === 0" :aria-label="`上移分支 ${branch.name}`" :title="`上移 ${branch.name}`" @click="moveBranchOrder(branch.id, -1)">↑</button>
-            <button type="button" class="secondary icon-button" :disabled="saving || !sharedWritable || index === orderedBranchList.length - 1" :aria-label="`下移分支 ${branch.name}`" :title="`下移 ${branch.name}`" @click="moveBranchOrder(branch.id, 1)">↓</button>
-            <button type="button" class="secondary" :disabled="saving || !sharedWritable" :aria-label="`编辑分支 ${branch.name}`" @click="openBranchEdit(branch.id)">编辑</button>
+            <button type="button" class="branch-order-move" :disabled="saving || !sharedWritable || index === 0" :aria-label="`上移分支 ${branch.name}`" :title="`上移 ${branch.name}`" @click="moveBranchOrder(branch.id, -1)">↑</button>
+            <button type="button" class="branch-order-move" :disabled="saving || !sharedWritable || index === orderedBranchList.length - 1" :aria-label="`下移分支 ${branch.name}`" :title="`下移 ${branch.name}`" @click="moveBranchOrder(branch.id, 1)">↓</button>
+            <button type="button" class="branch-order-more" data-branch-order-menu :aria-label="`分支 ${branch.name} 的更多操作`" aria-haspopup="menu" :aria-expanded="menu?.kind === 'branch-order' && menu.id === branch.id" :disabled="saving" @click="openBranchOrderMenu($event, branch.id, true)"><span aria-hidden="true">···</span></button>
           </div>
         </li>
       </ol>

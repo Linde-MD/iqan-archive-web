@@ -703,15 +703,32 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-branch-name { flex: 1; justify-content: space-between; min-width: 0; overflow-wrap: anywhere; }
 .graph-branch-name small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .graph-branch-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; border: 1px solid #ffffff80; }
-.branch-order-list { display: grid; gap: 6px; padding: 0; margin: 12px 0; list-style: none; }
-.branch-order-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: #101a2a; }
-.branch-order-index { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; border: 1px solid #52647e; border-radius: 6px; color: #d8e6fa; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 700; }
+.branch-order-list { display: grid; gap: 6px; padding: 0; margin: 12px 0; list-style: none; container-type: inline-size; }
+.branch-order-list li { position: relative; display: flex; align-items: center; min-width: 0; gap: 4px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 8px; background: #101a2a; }
+.branch-order-list li.is-dragging { opacity: .6; }
+.branch-order-list li.drop-before::before, .branch-order-list li.drop-after::after { content: ""; position: absolute; z-index: 1; left: 8px; right: 8px; height: 3px; border-radius: 2px; background: #7dd3fc; box-shadow: 0 0 0 1px #11243a; pointer-events: none; }
+.branch-order-list li.drop-before::before { top: -5px; }
+.branch-order-list li.drop-after::after { bottom: -5px; }
+.branch-order-grip, .branch-order-move, .branch-order-more { flex: 0 0 44px; width: 44px; min-width: 44px; height: 44px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #b7c8df; }
+.branch-order-grip { gap: 2px; cursor: grab; }
+.branch-order-grip:active { cursor: grabbing; }
+.branch-order-grip svg { width: 10px; height: 14px; fill: currentColor; }
+.branch-order-move { font-size: 17px; }
+.branch-order-more { font-size: 20px; letter-spacing: 1px; }
+.branch-order-grip:disabled, .branch-order-move:disabled, .branch-order-more:disabled { background: transparent; border-color: transparent; color: #8290a6; }
+.branch-order-grip:hover:not(:disabled), .branch-order-move:hover:not(:disabled), .branch-order-more:hover:not(:disabled) { background: #253650; color: #eef4ff; }
+.branch-order-index { display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 2px; border: 1px solid #52647e; border-radius: 6px; color: #d8e6fa; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 700; font-size: 12px; }
 .branch-order-info { display: grid; flex: 1; min-width: 0; gap: 3px; }
 .branch-order-info strong, .branch-order-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-order-info strong { color: #eaf1fc; font-size: 12px; }
 .branch-order-info small { color: var(--muted); font-size: 10px; }
-.branch-order-actions { display: flex; align-items: center; gap: 2px; }
-.branch-order-actions .icon-button { font-size: 18px; font-weight: 700; }
+.branch-order-actions { display: flex; align-items: center; flex-shrink: 0; }
+.branch-order-menu-item { min-height: 44px !important; gap: 10px; }
+.branch-order-menu-item span { width: 20px; text-align: center; font-size: 18px; color: #b8d7f6; }
+.branch-order-menu-item .app-icon { width: 20px; height: 20px; color: #b8d7f6; }
+@container (max-width: 260px) {
+  .branch-order-move { display: none; }
+}
 .graph-detail-actions { position: relative; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .graph-form { margin-top: 16px; border: 1px solid #3c4e69; border-radius: 10px; padding: 16px; background: #152136; box-shadow: 0 12px 32px #02061735; }
 .graph-form form { max-width: 720px; }
