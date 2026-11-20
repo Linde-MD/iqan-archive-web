@@ -58,6 +58,15 @@ function taskAttribution(value: unknown, label: string): TaskAttribution {
   return { name, at, accountId };
 }
 
+function commentMentions(value: unknown): string[] {
+  requireCondition(Array.isArray(value) && value.length <= 100, 'SNAPSHOT_TYPE', '评论提及名单无效。');
+  const ids = value.map(id => text(id, 'comment.mentionIds'));
+  requireCondition(new Set(ids).size === ids.length
+    && ids.every(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)),
+  'SNAPSHOT_TYPE', '评论提及账号无效。');
+  return ids;
+}
+
 export function serializeProjectSnapshot(snapshot: ProjectSnapshot): string {
   const { nodes, edges, branches, tasks } = snapshot.graph;
   const project = snapshot.graph.project;
@@ -272,7 +281,10 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
         text: text(comment.text, 'comment.text'),
         createdAt: text(comment.createdAt, 'comment.createdAt'),
         updatedAt: text(comment.updatedAt, 'comment.updatedAt'),
-      } satisfies TaskComment)),
+        ...(Object.hasOwn(comment, 'author') ? { author: taskAttribution(comment.author, 'comment.author') } : {}),
+        ...(Object.hasOwn(comment, 'replyToId') ? { replyToId: text(comment.replyToId, 'comment.replyToId') } : {}),
+        ...(Object.hasOwn(comment, 'mentionIds') ? { mentionIds: commentMentions(comment.mentionIds) } : {}),
+      } satisfies TaskComment), ['author', 'replyToId', 'mentionIds']),
       ...(Object.hasOwn(item, 'createdBy') ? { createdBy: taskAttribution(item.createdBy, 'task.createdBy') } : {}),
       ...(Object.hasOwn(item, 'descriptionEditedBy') ? { descriptionEditedBy: taskAttribution(item.descriptionEditedBy, 'task.descriptionEditedBy') } : {}),
     }), ['createdBy', 'descriptionEditedBy']),

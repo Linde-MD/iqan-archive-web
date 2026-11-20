@@ -228,7 +228,8 @@ export class CollaborationRepository implements RepositorySync {
     if (token) headers.Authorization = `Bearer ${token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (requestId) headers['Idempotency-Key'] = requestId;
-    if (this.state.source && requestId) headers['X-Archive-Database'] = this.state.source;
+    if (this.state.source && (requestId || path.startsWith('/inbox/') || path === '/comment-directory'))
+      headers['X-Archive-Database'] = this.state.source;
     let response: Response;
     try {
       response = await fetch(`${backendAddress(host)}${path}`, backendRequestOptions({
@@ -237,7 +238,7 @@ export class CollaborationRepository implements RepositorySync {
       }));
     } catch {
       if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
-      if (pollSignal) throw new CollaborationError('无法读取后端的最新项目数据。');
+      if (pollSignal) throw new CollaborationError('无法读取后端的最新共享数据。');
       this.state.connected = false;
       this.state.authenticated = false;
       throw new CollaborationError('无法访问后端，已保留本机副本与草稿。请检查所选设备的 80 端口、网页来源授权及共享目录；不会自动重发本次请求。');
@@ -247,7 +248,7 @@ export class CollaborationRepository implements RepositorySync {
     try { value = await response.json(); }
     catch {
       if (generation !== connection.generation) throw new CollaborationError('后端选择已变化，旧请求结果未确认；请保留原请求并重新连接后核对。', 0, 'CONNECTION_CHANGED');
-      if (pollSignal) throw new CollaborationError('后端返回的项目响应不完整。');
+      if (pollSignal) throw new CollaborationError('后端返回的共享数据响应不完整。');
       this.state.connected = false;
       throw new CollaborationError('后端响应不完整，操作结果未确认；请使用“重试未确认提交”，不要重复创建。');
     }
@@ -545,7 +546,7 @@ export class CollaborationRepository implements RepositorySync {
     this.state.pending = this.state.user ? Boolean(await this.cache.pending.get(this.actorKey())) : false;
   }
 
-  async pollProject(id: string, canApply: () => boolean, signal: AbortSignal) {
+  async pollProject(id: string, canApply: () => boolean, signal: AbortSignal, mayReplace = () => true) {
     const connection = this.local.db.backendConnection.state;
     const { generation } = connection;
     const { source, user } = this.state;
@@ -554,33 +555,48 @@ export class CollaborationRepository implements RepositorySync {
       && !this.state.busy && !this.writing && !this.mutations && this.token === token
       && this.state.source === source && this.state.user?.id === user?.id
       && !!connection.host && !connection.testing && connection.generation === generation;
-    if (!user || !current()) return;
+    if (!user || !current()) return false;
     await this.context();
-    if (!current()) return;
+    if (!current()) return false;
     const key = this.key(id);
     const previous = await this.cache.mirrors.get(key);
-    if (!previous || previous.deleted || !current()) return;
+    if (!previous || previous.deleted || !current()) return false;
 
     const path = `/projects/${encodeURIComponent(id)}`;
     const read = (suffix: string) => this.request(suffix, 'GET', undefined, undefined, signal);
+    const readRevision = async () => {
+      try {
+        return object(await read(`${path}/revision`)).revision;
+      } catch (cause) {
+        if (!(cause instanceof CollaborationError) || cause.status !== 404 || cause.code !== 'NOT_FOUND' || !current()) throw cause;
+        const meta = object(await read(path));
+        requireCondition(meta.id === id, 'RESPONSE', '项目摘要身份不一致。');
+        return meta.revision;
+      }
+    };
     let revision: number | null;
     try {
-      const meta = object(await read(path));
-      requireCondition(meta.id === id && typeof meta.revision === 'number' && Number.isSafeInteger(meta.revision)
-        && meta.revision >= 0, 'RESPONSE', '项目修订号响应无效。');
-      revision = meta.revision;
+      const value = await readRevision();
+      requireCondition(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
+        'RESPONSE', '项目修订号响应无效。');
+      revision = value;
     } catch (cause) {
       if (!(cause instanceof CollaborationError) || cause.status !== 404 || cause.code !== 'PROJECT_NOT_FOUND') throw cause;
       revision = null;
     }
-    if (!current() || revision === previous.graph.project.revision) return;
+    if (!current()) return false;
+    if (revision === previous.graph.project.revision) return true;
+    if (!mayReplace()) {
+      this.state.message = '共享项目已有变化，请先保存或取消当前编辑，再同步最新数据。';
+      return true;
+    }
     const instance = object(await read('/instance'));
-    if (!current()) return;
+    if (!current() || !mayReplace()) return true;
     requireCondition(instance.databaseId === source && (revision === null || revision > previous.graph.project.revision),
       'DATABASE_SOURCE', '后端数据库或修订基线已变化，请重新连接后核对。');
 
     const graph = revision === null ? null : parseProjectSnapshot(await read(`${path}/graph`));
-    if (!current()) return;
+    if (!current() || !mayReplace()) return true;
     if (graph) requireCondition(graph.project.id === id && revision !== null && graph.project.revision >= revision,
       'RESPONSE', '项目图与检查到的修订不一致。');
     await this.context();
@@ -589,7 +605,7 @@ export class CollaborationRepository implements RepositorySync {
       const draft = graph ? undefined : await this.cache.drafts.get(key);
       if (await this.cache.pending.get(`${source}:${user.id}`)) return false;
       // Another tab or a write receipt may have updated the mirror while the request was in flight.
-      if (!current() || !latest || latest.deleted || latest.version !== previous.version) return false;
+      if (!current() || !mayReplace() || !latest || latest.deleted || latest.version !== previous.version) return false;
       if (graph) {
         await this.cache.mirrors.put({ ...latest, graph, version: latest.version + 1, updatedAt: Date.now() });
       } else if (draft) {
@@ -603,6 +619,7 @@ export class CollaborationRepository implements RepositorySync {
       this.state.updatedAt = Date.now();
       this.state.message = graph ? '当前项目已同步最新共享数据。' : '当前项目已从共享库删除；如有本机待同步草稿，将继续保留。';
     }
+    return true;
   }
 
   async refresh() {
@@ -619,6 +636,7 @@ export class CollaborationRepository implements RepositorySync {
       requireCondition(typeof project.id === 'string', 'RESPONSE', '项目身份无效。');
       graphs.push(parseProjectSnapshot(await this.request(`/projects/${project.id}/graph`)));
     }
+
     requireCondition(this.state.source === source, 'SOURCE', '数据源已切换，请重新刷新。');
     await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts], async () => {
       const seen = new Set(graphs.map(graph => this.key(graph.project.id)));
@@ -632,6 +650,35 @@ export class CollaborationRepository implements RepositorySync {
     this.state.updatedAt = Date.now();
     this.state.message = '共享数据已更新到本机副本。';
     await this.updateCounts();
+  }
+
+  async syncCommentTarget(projectId: string, taskId: string, commentId: string, canApply: () => boolean) {
+      this.assertOnline();
+      const { source, user } = this.state;
+      const token = this.token;
+      const current = () => this.state.authenticated && this.state.source === source && this.state.user?.id === user?.id
+        && this.token === token && !this.writing && !this.mutations && canApply();
+      const signal = new AbortController().signal;
+      const read = (path: string) => this.request(path, 'GET', undefined, undefined, signal);
+      const instance = object(await read('/instance'));
+      requireCondition(current() && instance.databaseId === source, 'DATABASE_SOURCE', '数据源或当前工作区已变化，请重试。');
+      let graph: ProjectGraph;
+      try { graph = parseProjectSnapshot(await read(`/projects/${encodeURIComponent(projectId)}/graph`)); }
+      catch (cause) {
+        if (cause instanceof CollaborationError && cause.code === 'PROJECT_NOT_FOUND')
+          throw new Error('原项目已删除，无法打开评论。');
+        throw cause;
+      }
+      requireCondition(graph.project.id === projectId, 'RESPONSE', '消息所属项目与返回项目不一致。');
+      await this.cache.transaction('rw', [this.cache.mirrors, this.cache.pending], async () => {
+        const previous = await this.cache.mirrors.get(this.key(projectId));
+        const pending = await this.cache.pending.get(this.actorKey());
+        requireCondition(current() && !pending && !previous?.deleted, 'BUSY', '当前工作区已变化，请关闭编辑或处理未确认提交后重试。');
+        const newest = previous && previous.graph.project.revision > graph.project.revision ? previous.graph : graph;
+        requireCondition(newest.tasks.some(task => task.id === taskId && task.comments.some(comment => comment.id === commentId)),
+          'COMMENT_NOT_FOUND', '原任务或评论已删除。');
+        if (newest === graph && previous?.graph.project.revision !== graph.project.revision) await this.putMirror(graph);
+      });
   }
 
   private async putMirror(graph: ProjectGraph) {

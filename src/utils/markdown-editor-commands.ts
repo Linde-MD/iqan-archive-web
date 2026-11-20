@@ -1,4 +1,5 @@
 import { Fragment } from 'prosemirror-model';
+import { setBlockType } from 'prosemirror-commands';
 import { wrapInList } from 'prosemirror-schema-list';
 import { Selection, TextSelection, type Command, type EditorState } from 'prosemirror-state';
 import { richMarkdownSchema as schema } from './rich-markdown';
@@ -12,6 +13,27 @@ export function selectionAncestor(state: EditorState, name: string) {
   }
   return 0;
 }
+
+export const setMarkdownCodeBlock: Command = (state, dispatch) => {
+  const codeBlock = schema.nodes.code_block!;
+  if (!setBlockType(codeBlock)(state)) return false;
+  if (dispatch) {
+    const tr = state.tr;
+    state.doc.nodesBetween(state.selection.from, state.selection.to, (node, pos, parent, index) => {
+      if (!node.isTextblock) return;
+      if (node.type !== codeBlock && parent?.canReplaceWith(index, index + 1, codeBlock)) {
+        node.forEach((child, offset) => {
+          if (child.type !== schema.nodes.mention) return;
+          const from = tr.mapping.map(pos + 1 + offset);
+          tr.replaceWith(from, from + child.nodeSize, schema.text(`@${child.attrs.name}`));
+        });
+      }
+      return false;
+    });
+    dispatch(tr.setBlockType(tr.selection.from, tr.selection.to, codeBlock).scrollIntoView());
+  }
+  return true;
+};
 
 export const toggleChecklist: Command = (state, dispatch) => {
   const { $from } = state.selection;

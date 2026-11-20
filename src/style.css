@@ -339,7 +339,7 @@ tbody tr.row-selected { background: #1a3557; }
 .markdown-editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; padding: 0 4px; border-bottom: 1px solid #35445c; border-radius: 6px 6px 0 0; background: #162235; }
 .markdown-format-group { display: flex; align-items: center; position: relative; }
 .markdown-format-group::before { content: ''; width: 1px; height: 18px; margin: 0 3px; background: #52647e; }
-.markdown-editor-toolbar.is-compact { flex-wrap: nowrap; }
+.markdown-editor-toolbar.is-compact { --compact-tool-size: 44px; flex-wrap: nowrap; }
 .is-compact .markdown-block-select, .is-compact .markdown-format-group { flex: 0 0 auto; }
 .is-compact .markdown-format-group::before { content: none; }
 .markdown-editor .markdown-editor-select,
@@ -391,6 +391,7 @@ tbody tr.row-selected { background: #1a3557; }
 .markdown-rich-input[data-empty="true"][contenteditable="true"]::before {
   content: attr(data-placeholder); position: absolute; color: #afbdd2; pointer-events: none;
 }
+.markdown-mention { padding: 0 3px; border-radius: 3px; background: #1b324d; color: #a9ccff; overflow-wrap: anywhere; }
 .markdown-editor .markdown-editor-icon:disabled,
 .markdown-editor .markdown-editor-select:disabled { color: #8190a6; }
 .markdown-editor .markdown-editor-help { margin: 8px 0 0; }

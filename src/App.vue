@@ -3,7 +3,8 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useRoute, useRouter } from 'vue-router';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository, type SnapshotImportPlan } from './storage/database';
-import type { Project, ProjectGraph } from './domain/model';
+import type { Project, ProjectGraph, TaskAssignee } from './domain/model';
+import type { CommentNotification } from './domain/comment-inbox';
 import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/project-snapshot';
 import type { VersionOrder } from './domain/version-order';
 import ProjectFiles from './components/ProjectFiles.vue';
@@ -13,6 +14,7 @@ const TaskBoard = defineAsyncComponent(() => import('./components/TaskBoard.vue'
 import ArchiveRootPanel from './components/ArchiveRootPanel.vue';
 import BackendSettings from './components/BackendSettings.vue';
 import CollaborationPanel from './components/CollaborationPanel.vue';
+import CommentInbox from './components/CommentInbox.vue';
 import { CollaborationRepository } from './storage/collaboration';
 import { startProjectPolling } from './storage/project-polling';
 import { projectWriteBlockedReason } from './storage/repository-sync';
@@ -35,6 +37,16 @@ const route = useRoute();
 const router = useRouter();
 const isAccountRoute = computed(() => /^\/account\/(login|profile|security|members|sync)$/.test(route.path));
 const assigneeRefreshKey = ref(0);
+const commentsEnabled = ref(false);
+const commentsStatus = ref('');
+const commentInbox = ref<InstanceType<typeof CommentInbox>>();
+const commentDirectory = shallowRef<TaskAssignee[]>([]);
+const focusCommentId = computed(() => typeof route.query.comment === 'string' ? route.query.comment : '');
+const inboxScope = computed(() => {
+  const connection = db.backendConnection.state;
+  return taskAccountId.value && collaboration.state.connected && !connection.testing && connection.host
+    ? `${collaboration.state.source}:${taskAccountId.value}:${connection.generation}` : '';
+});
 let lastRouteFullPath = route.fullPath;
 const projects = ref<Project[]>([]);
 const name = ref('');
@@ -93,6 +105,19 @@ const backupRoot = shallowRef<DirectoryHandle>();
 const nameError = computed(() => submitted.value && !name.value.trim());
 const partError = computed(() => submitted.value && !partNumber.value.trim());
 const workspaceBusy = computed(() => filesBusy.value || graphBusy.value || taskBoardBusy.value);
+async function openCommentNotification(item: CommentNotification) {
+  const path = route.fullPath;
+  const scope = inboxScope.value;
+  const allowed = () => !!scope && scope === inboxScope.value && route.fullPath === path
+    && !saving.value && !workspaceBusy.value && !taskRefreshBlocked.value && !graphRefreshBlocked.value
+    && !editingProject.value && !deletion.value && !importPreview.value;
+  if (!allowed()) throw new Error('请先保存或关闭当前编辑，再打开消息。');
+  await collaboration.syncCommentTarget(item.projectId, item.taskId, item.commentId, allowed);
+  if (!allowed()) throw new Error('当前工作区已变化，请重新打开消息。');
+  projects.value = await repository.listProjects();
+  if (!allowed()) throw new Error('当前工作区已变化，请重新打开消息。');
+  await router.push({ path: projectPath(item.projectId, 'tasks', 'detail', item.taskId), query: { comment: item.commentId } });
+}
 const pollProjectId = computed(() => !isAccountRoute.value && canWrite.value && !saving.value && !workspaceBusy.value
   && !editingProject.value && !deletion.value && !importPreview.value
   && !(view.value === 'graph' && graphRefreshBlocked.value)
@@ -103,19 +128,37 @@ const errorHeading = ref<HTMLElement | null>(null);
 let subscription: { unsubscribe(): void } | undefined;
 let collaborationSubscription: { unsubscribe(): void } | undefined;
 let loadAttempt = 0;
-let stopProjectPolling: (() => void) | undefined;
+let stopProjectPolling: ReturnType<typeof startProjectPolling> | undefined;
 
-watch([activeProjectId, () => collaboration.state.authenticated], () => { pollError.value = undefined; });
+watch([activeProjectId, inboxScope], () => {
+  pollError.value = undefined;
+  stopProjectPolling?.reset();
+});
+watch(pollProjectId, id => { if (id) stopProjectPolling?.edited(); });
 
-async function checkActiveProject(signal: AbortSignal) {
-  const id = pollProjectId.value;
-  if (!id) return;
-  const stillActive = () => !signal.aborted && pollProjectId.value === id;
+async function checkActiveProject(signal: AbortSignal, reason: 'poll' | 'edit') {
+  const id = !isAccountRoute.value && canWrite.value ? activeProjectId.value : '';
+  const scope = inboxScope.value;
+  if (!id) return false;
+  const stillActive = () => !signal.aborted && activeProjectId.value === id && inboxScope.value === scope
+    && !isAccountRoute.value && canWrite.value;
   try {
-    await collaboration.pollProject(id, stillActive, signal);
+    const checked = await collaboration.pollProject(id, stillActive, signal,
+      () => reason !== 'edit' && pollProjectId.value === id);
     if (stillActive()) pollError.value = undefined;
+    return checked;
   } catch (cause) {
     if (stillActive()) pollError.value = { id, message: cause instanceof Error ? cause.message : '无法检查项目更新。' };
+    return false;
+  }
+}
+
+function checkRevisionOnEdit(event: Event) {
+  const target = event.target;
+  const selector = event.type === 'click' ? '.markdown-editor-toolbar button'
+    : 'input, textarea, select, [contenteditable="true"], form';
+  if (target instanceof Element && target.closest(selector)) {
+    stopProjectPolling?.edited();
   }
 }
 
@@ -657,16 +700,20 @@ onUnmounted(() => {
       <input id="manual-import-file" name="manualImportFile" ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
       <BackendSettings :repository="repository" :disabled="saving || workspaceBusy || collaboration.state.busy || collaboration.state.restoring" @saved="collaboration.disconnect()" />
+      <CommentInbox ref="commentInbox" :client="collaboration" :scope="inboxScope" :directory-key="assigneeRefreshKey" :open-target="openCommentNotification"
+        @capability="commentsEnabled = $event" @directory="commentDirectory = $event" @status="commentsStatus = $event" />
       <CollaborationPanel :client="collaboration" :project-id="activeProjectId" :disabled="saving || workspaceBusy" />
     </div>
   </header>
 
-  <main id="workspace" v-show="!isAccountRoute" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }">
+  <main id="workspace" v-show="!isAccountRoute" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }"
+    @input.capture="checkRevisionOnEdit" @change.capture="checkRevisionOnEdit"
+    @click.capture="checkRevisionOnEdit" @submit.capture="checkRevisionOnEdit">
     <section class="notice" aria-label="共享连接与副本状态">
       <div>
         <h2>{{ collaboration.state.restoring ? '正在检测后端并恢复登录…' : collaboration.state.connected ? (collaboration.state.authenticated ? (collaboration.state.pending ? '共享协作已连接 · 提交待确认' : '共享协作已连接') : '后端可达 · 需要登录或重新验证') : collaboration.state.source ? '本机缓存视图 · 未连接后端' : '历史单人数据 · 只读' }}</h2>
         <p v-if="!collaboration.state.restoring">{{ collaboration.state.message || '请点击顶栏右上角账户头像登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
-        <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。{{ activeProjectId && canWrite ? '当前项目在前台每 15 秒检查更新，编辑或拖拽时暂停。' : '可在账号入口手动刷新共享数据。' }}{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
+        <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。{{ activeProjectId && canWrite ? '前台每 2 分钟检查更新；编辑时距上次检查满 20 秒即检查，草稿不会被覆盖。' : '可在账号入口手动刷新共享数据。' }}{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
         <p v-if="pollError && pollError.id === activeProjectId" role="status">自动刷新未完成，仍显示本机副本：{{ pollError.message }}</p>
         <p v-if="collaboration.state.conflictMessage" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaboration.state.conflictMessage }}</p>
         <p v-if="sharedWriteBlockedReason" role="status">{{ sharedWriteBlockedReason }}</p>
@@ -848,7 +895,9 @@ onUnmounted(() => {
     <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
     <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @refresh-blocked="graphRefreshBlocked = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
     <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
-    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" :current-account-avatar="taskAccountId ? (collaboration.state.user?.avatar ?? null) : null" @busy="taskBoardBusy = $event" @refresh-blocked="taskRefreshBlocked = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
+    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" :current-account-avatar="taskAccountId ? (collaboration.state.user?.avatar ?? null) : null"
+      :current-account-admin="canImport" :comments-enabled="commentsEnabled" :comments-status="commentsStatus" :comment-directory="commentDirectory" :focus-comment-id="focusCommentId" @retry-comments="commentInbox?.retry()"
+      @busy="taskBoardBusy = $event" @refresh-blocked="taskRefreshBlocked = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 
     <section class="notice" aria-labelledby="storage-title">

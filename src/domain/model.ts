@@ -85,6 +85,9 @@ export function migratePriorityOptions(options: readonly TaskOption[]): TaskOpti
 }
 
 export interface TaskComment {
+  author?: TaskAttribution;
+  replyToId?: string;
+  mentionIds?: string[];
   id: string;
   text: string;
   createdAt: string;

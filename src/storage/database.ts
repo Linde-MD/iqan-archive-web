@@ -617,7 +617,9 @@ export class ArchiveRepository {
       branches: graph.branches.map((item, index) => ({
         ...item, id: branchIds[index]!, projectId, headId: nodeIdMap.get(item.headId)!,
       })),
-      tasks: graph.tasks.map((item, index) => ({
+      tasks: graph.tasks.map((item, index) => {
+        const commentIds = new Map(item.comments.map(comment => [comment.id, crypto.randomUUID()]));
+        return {
         ...item,
         id: taskIds[index]!,
         projectId,
@@ -626,8 +628,12 @@ export class ArchiveRepository {
         typeOptionId: item.typeOptionId === null ? null : typeIdMap.get(item.typeOptionId)!,
         priorityOptionId: item.priorityOptionId === null ? null : priorityIdMap.get(item.priorityOptionId)!,
         assigneeId: item.assigneeId,
-        comments: item.comments.map(comment => ({ ...comment, id: crypto.randomUUID() })),
-      })),
+        comments: item.comments.map(({ replyToId, ...comment }) => ({
+          ...comment, id: commentIds.get(comment.id)!,
+          ...(replyToId ? { replyToId: commentIds.get(replyToId) ?? crypto.randomUUID() } : {}),
+        })),
+        };
+      }),
     };
   }
 }

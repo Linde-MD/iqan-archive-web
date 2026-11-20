@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import ins from 'markdown-it-ins';
+import { findMentionQuery, mentionIdFromHref } from './markdown-mentions';
 
 export function createMarkdownTokenizer(html = false) {
   const tokenizer = new MarkdownIt({ breaks: true, html, linkify: false, typographer: false }).use(ins);
@@ -16,6 +17,25 @@ export function createMarkdownTokenizer(html = false) {
       md.inline.parse(inline.content, md, env, inline.children);
     });
   });
+  tokenizer.core.ruler.after('text_join', 'archive_mentions', ({ tokens }) => {
+    for (const token of tokens) {
+      const children = token.children;
+      if (!children) continue;
+      for (let index = 0; index < children.length - 2; index++) {
+        const open = children[index]!;
+        const text = children[index + 1]!;
+        const close = children[index + 2]!;
+        const id = open.type === 'link_open' ? mentionIdFromHref(open.attrGet('href')) : undefined;
+        if (!id || text.type !== 'text' || !text.content.startsWith('@') || text.content.length < 2
+          || close.type !== 'link_close' || open.attrGet('title')) continue;
+        open.type = 'archive_mention';
+        open.nesting = 0;
+        open.content = text.content.slice(1);
+        open.meta = { id, name: open.content };
+        children.splice(index + 1, 2);
+      }
+    }
+  });
   return tokenizer;
 }
 
@@ -29,6 +49,8 @@ export function normalizeEditorLink(input: string): string | null {
 }
 
 markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index]!.content);
+markdown.renderer.rules.archive_mention = (tokens, index) =>
+  `<span class="markdown-mention">@${markdown.utils.escapeHtml(tokens[index]!.content)}</span>`;
 markdown.renderer.rules.list_item_open = (tokens, index, options, _env, renderer) => {
   const token = tokens[index]!;
   if (typeof token.meta?.checked !== 'boolean') return renderer.renderToken(tokens, index, options);
@@ -41,4 +63,25 @@ markdown.renderer.rules.table_close = (tokens, index, options, _env, renderer) =
 
 export function renderMarkdown(source: string): string {
   return markdown.render(source);
+}
+
+export function markdownMentionIds(source: string): string[] {
+  return [...new Set(markdown.parse(source, {}).flatMap(token => (token.children ?? [])
+    .flatMap(child => child.type === 'archive_mention' && typeof child.meta?.id === 'string' ? [child.meta.id] : [])))];
+}
+
+export function sourceMentionQuery(source: string, caret: number) {
+  const query = findMentionQuery(source, caret);
+  if (!query) return;
+  let marker = '\uE000archive-mention-caret\uE001';
+  while (source.includes(marker)) marker += '_';
+  const marked = source.slice(0, query.from) + marker + source.slice(query.from);
+  for (const token of markdown.parse(marked, {})) {
+    let linkDepth = 0;
+    for (const child of token.children ?? []) {
+      if (child.type === 'link_open') linkDepth++;
+      if (child.type === 'link_close') linkDepth--;
+      if (child.type === 'text' && !linkDepth && child.content.includes(marker)) return query;
+    }
+  }
 }

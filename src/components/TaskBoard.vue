@@ -7,10 +7,11 @@ import { useRouter } from 'vue-router';
 import { accountAvatarTheme, accountInitials } from '../domain/account';
 import { filterProjectTasks, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
-import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskComment, type TaskOption } from '../domain/model';
+import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskAttribution, type TaskComment, type TaskOption } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { projectWriteBlockedReason } from '../storage/repository-sync';
-import { renderMarkdown } from '../utils/markdown';
+import { markdownMentionIds, renderMarkdown } from '../utils/markdown';
+import { mentionMarkdown } from '../utils/markdown-mentions';
 import { startTaskDragScroll } from '../utils/task-drag-scroll';
 import AppIcon from './AppIcon.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
@@ -32,9 +33,15 @@ const props = defineProps<{
   assigneeRefreshKey: number;
   currentAccountId: string | null;
   currentAccountAvatar?: string | null;
+  currentAccountAdmin?: boolean;
+  commentsEnabled?: boolean;
+  commentsStatus?: string;
+  commentDirectory?: TaskAssignee[];
+  focusCommentId?: string;
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
+  retryComments: [];
   refreshBlocked: [value: boolean];
   graph: [nodeId: string];
   navigateChild: [child: string[], action?: 'push' | 'replace' | 'back'];
@@ -75,6 +82,13 @@ const commentEditorOpen = ref(false);
 const editingCommentId = ref<string | null>(null);
 const commentText = ref('');
 const commentTextBaseline = ref('');
+const commentReplyToId = ref<string | null>(null);
+const legacyMentionIds = ref<string[]>([]);
+const commentRecipientIds = computed(() => [...new Set([...legacyMentionIds.value, ...markdownMentionIds(commentText.value)])]);
+const commentMetadataSignature = computed(() => JSON.stringify([commentReplyToId.value, [...commentRecipientIds.value].sort()]));
+const commentMetadataBaseline = ref('');
+const commentList = ref<HTMLElement>();
+const commentEditor = ref<InstanceType<typeof MarkdownEditor>>();
 const detailSidebar = ref<'comments' | 'versions'>('comments');
 const detailSection = ref<'information' | 'children'>('information');
 const taskDetailDialog = ref<HTMLDialogElement>();
@@ -106,7 +120,8 @@ let stopDragScroll: (() => void) | undefined;
 let autoSaveQueued = false;
 
 const taskDraftDirty = computed(() => !!taskDraft.value && JSON.stringify(taskDraft.value) !== taskDraftBaseline.value);
-const commentDraftDirty = computed(() => commentEditorOpen.value && commentText.value !== commentTextBaseline.value);
+const commentDraftDirty = computed(() => commentEditorOpen.value && (commentText.value !== commentTextBaseline.value
+  || commentMetadataSignature.value !== commentMetadataBaseline.value));
 const hasUnsavedTaskChanges = computed(() => taskDraftDirty.value || commentDraftDirty.value || descriptionDirty.value);
 const taskDraftStale = computed(() => !graph.value || taskDraftRevision.value !== graph.value.project.revision);
 const taskFieldsDisabled = computed(() => !sharedWritable.value || (taskDraftStale.value && !saving.value) || (saving.value && !taskDraft.value?.id));
@@ -128,6 +143,12 @@ const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ??
 const legacyTypeNames = computed(() => legacyTaskTypeNames(graph.value?.project.typeOptions ?? []));
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeById = computed(() => new Map(assignees.value.map(assignee => [assignee.id, assignee])));
+const commentDirectory = computed(() => props.commentDirectory ?? assignees.value);
+const commentDirectoryById = computed(() => new Map(commentDirectory.value.map(account => [account.id, account])));
+const sortedComments = computed(() => [...(taskDraft.value?.comments ?? [])]
+  .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+const replyComment = computed(() => sortedComments.value.find(comment => comment.id === commentReplyToId.value));
+const commentActionsDisabled = computed(() => !props.commentsEnabled || !sharedWritable.value || saving.value || taskDraftStale.value || taskDraftDirty.value);
 const descriptionAttribution = computed(() => {
   const task = taskDraft.value;
   if (!task?.id) return [];
@@ -696,11 +717,66 @@ async function saveOptions() {
 }
 
 function beginNewComment() {
-  if (!taskDraft.value) return;
+  if (!taskDraft.value || commentActionsDisabled.value || !discardCommentForAction()) return;
   editingCommentId.value = null;
   commentText.value = '';
   commentTextBaseline.value = '';
+  commentReplyToId.value = null;
+  legacyMentionIds.value = [];
+  commentMetadataBaseline.value = JSON.stringify([null, []]);
   commentEditorOpen.value = true;
+  focusCommentEditor();
+}
+
+function discardCommentForAction() {
+  return !commentDraftDirty.value || window.confirm('放弃未保存的评论修改吗？');
+}
+
+function focusCommentEditor() {
+  void nextTick(() => commentEditor.value?.focusEnd());
+}
+
+function commentAuthor(comment: TaskComment) {
+  return comment.author?.name || '作者未记录';
+}
+
+function quotedComment(id: string) {
+  return sortedComments.value.find(comment => comment.id === id);
+}
+
+function commentAvatar(comment: TaskComment) {
+  const id = comment.author?.accountId;
+  return id === props.currentAccountId && id ? props.currentAccountAvatar : id ? commentDirectoryById.value.get(id)?.avatar : null;
+}
+
+function canEditComment(comment: TaskComment) {
+  return !!props.currentAccountAdmin || (!!comment.author?.accountId && comment.author.accountId === props.currentAccountId);
+}
+
+function mentionName(id: string) {
+  const account = commentDirectoryById.value.get(id);
+  if (account) return `${account.displayName}（@${account.username}）`;
+  const author = sortedComments.value.find(comment => comment.author?.accountId === id)?.author;
+  return author ? `${author.name}（账号不可用）` : `账号不可用（${id}）`;
+}
+
+function legacyCommentMentionIds(comment: TaskComment) {
+  const inline = new Set(markdownMentionIds(comment.text));
+  return (comment.mentionIds ?? []).filter(id => !inline.has(id));
+}
+
+function beginReply(comment: TaskComment) {
+  if (commentActionsDisabled.value || !discardCommentForAction()) return;
+  editingCommentId.value = null;
+  const author = comment.author?.accountId ? commentDirectoryById.value.get(comment.author.accountId) : undefined;
+  commentText.value = author && !author.disabled ? `${mentionMarkdown(author.id, author.displayName)} ` : '';
+  commentTextBaseline.value = '';
+  commentReplyToId.value = comment.id;
+  legacyMentionIds.value = [];
+  commentMetadataBaseline.value = JSON.stringify([null, []]);
+  commentEditorOpen.value = true;
+  detailSidebar.value = 'comments';
+  focusCommentEditor();
 }
 
 function closeTaskDetails() {
@@ -816,24 +892,38 @@ watch([() => props.optionsOpen, graph], async ([open, current]) => {
 }, { immediate: true });
 
 function beginEditComment(comment: TaskComment) {
+  if (commentActionsDisabled.value || !canEditComment(comment) || !discardCommentForAction()) return;
   editingCommentId.value = comment.id;
   commentText.value = comment.text;
   commentTextBaseline.value = comment.text;
+  commentReplyToId.value = comment.replyToId ?? null;
+  legacyMentionIds.value = legacyCommentMentionIds(comment);
+  commentMetadataBaseline.value = commentMetadataSignature.value;
   commentEditorOpen.value = true;
+  focusCommentEditor();
 }
 
 async function saveComment() {
   const text = commentText.value.trim();
-  if (!taskDraft.value || !text) return;
+  if (!taskDraft.value || !text || commentActionsDisabled.value) return;
   const current = structuredClone(toRaw(taskDraft.value));
   const now = new Date().toISOString();
   const comments = [...current.comments];
   if (editingCommentId.value) {
     const index = comments.findIndex(comment => comment.id === editingCommentId.value);
     if (index < 0) return;
-    if (comments[index]!.text !== text) comments[index] = { ...comments[index]!, text, updatedAt: now };
+    const existing = comments[index]!;
+    if (!canEditComment(existing)) return;
+    const mentionIds = [...commentRecipientIds.value];
+    if (existing.text === text && JSON.stringify([...(existing.mentionIds ?? [])].sort()) === JSON.stringify([...mentionIds].sort())) {
+      commentEditorOpen.value = false;
+      return;
+    }
+    comments[index] = { ...existing, text, updatedAt: now, mentionIds };
   } else {
-    comments.push({ id: crypto.randomUUID(), text, createdAt: now, updatedAt: now });
+    comments.push({ id: crypto.randomUUID(), text, createdAt: now, updatedAt: now,
+      ...(commentReplyToId.value ? { replyToId: commentReplyToId.value } : {}),
+      mentionIds: [...commentRecipientIds.value] });
   }
   if (await saveTask({ ...current, comments }, '评论已保存。')) {
     commentEditorOpen.value = false;
@@ -852,10 +942,30 @@ function cancelComment() {
 }
 
 async function deleteComment(comment: TaskComment) {
-  if (!taskDraft.value || !window.confirm('删除这条评论吗？')) return;
+  if (!taskDraft.value || commentActionsDisabled.value || commentDraftDirty.value || !canEditComment(comment)
+    || !window.confirm('删除这条评论吗？')) return;
   const current = structuredClone(toRaw(taskDraft.value));
   await saveTask({ ...current, comments: current.comments.filter(item => item.id !== comment.id) }, '评论已删除。');
 }
+
+function sendCommentShortcut(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey) || event.isComposing) return;
+  event.preventDefault();
+  void saveComment();
+}
+
+watch([() => props.focusCommentId, () => taskDraft.value?.id,
+  () => sortedComments.value.some(comment => comment.id === props.focusCommentId)], async ([id]) => {
+  if (!id || !taskDraft.value?.id) return;
+  detailSidebar.value = 'comments';
+  await nextTick();
+  const target = [...(commentList.value?.querySelectorAll<HTMLElement>('[data-comment-id]') ?? [])]
+    .find(element => element.dataset.commentId === id);
+  if (target) {
+    target.scrollIntoView({ block: 'center' });
+    target.focus({ preventScroll: true });
+  }
+}, { flush: 'post' });
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -1152,27 +1262,68 @@ onUnmounted(() => {
             </section>
           <section v-show="detailSidebar === 'comments'" class="task-comments" aria-labelledby="task-comments-title">
             <h4 id="task-comments-title" class="visually-hidden">评论</h4>
-            <ul v-if="taskDraft.comments.length" class="task-comment-list">
-              <li v-for="comment in taskDraft.comments" :key="comment.id" class="task-comment">
-                <div class="task-comment-meta"><time :datetime="comment.createdAt">{{ formatTime(comment.createdAt) }}</time><span v-if="comment.updatedAt !== comment.createdAt">已编辑 {{ formatTime(comment.updatedAt) }}</span></div>
-                <div class="markdown-content task-comment-content" v-html="renderMarkdown(comment.text)"></div>
-                <div class="task-comment-actions">
-                  <button type="button" class="secondary" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty" :aria-label="`编辑评论 ${formatTime(comment.createdAt)}`" @click="beginEditComment(comment)"><AppIcon name="edit" /></button>
-                  <button type="button" class="secondary" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty" :aria-label="`删除评论 ${formatTime(comment.createdAt)}`" @click="deleteComment(comment)"><AppIcon name="trash" /></button>
+            <p v-if="focusCommentId && !sortedComments.some(comment => comment.id === focusCommentId)" class="task-comment-notice" role="status">原评论已删除或不可用。</p>
+            <ul v-if="sortedComments.length" ref="commentList" class="task-comment-list">
+              <li v-for="comment in sortedComments" :key="comment.id" class="task-comment" :class="{ 'is-focused-comment': focusCommentId === comment.id }" :data-comment-id="comment.id" tabindex="-1">
+                <span class="task-comment-avatar" aria-hidden="true"
+                  :style="{ background: accountAvatarTheme(comment.author?.accountId ?? comment.author?.name).background, color: accountAvatarTheme(comment.author?.accountId ?? comment.author?.name).foreground }">
+                  {{ accountInitials(comment.author?.name) }}
+                  <img v-if="commentAvatar(comment)" :src="commentAvatar(comment)!" alt="" @error="showAttributionInitials">
+                </span>
+                <div class="task-comment-body">
+                  <div class="task-comment-header">
+                    <div class="task-comment-meta">
+                      <strong>{{ commentAuthor(comment) }}</strong>
+                      <time :datetime="comment.createdAt">{{ formatTime(comment.createdAt) }}</time>
+                      <span v-if="comment.updatedAt !== comment.createdAt">已编辑 {{ formatTime(comment.updatedAt) }}</span>
+                    </div>
+                    <div v-if="commentsEnabled" class="task-comment-actions">
+                      <button type="button" class="secondary" title="回复" :disabled="commentActionsDisabled" :aria-label="`回复 ${commentAuthor(comment)} 的评论`" @click="beginReply(comment)"><AppIcon name="reply" /></button>
+                      <template v-if="canEditComment(comment)">
+                        <button type="button" class="secondary" title="编辑" :disabled="commentActionsDisabled" :aria-label="`编辑 ${commentAuthor(comment)} 的评论`" @click="beginEditComment(comment)"><AppIcon name="edit" /></button>
+                        <button type="button" class="secondary comment-delete" title="删除" :disabled="commentActionsDisabled || commentDraftDirty" :aria-label="`删除 ${commentAuthor(comment)} 的评论`" @click="deleteComment(comment)"><AppIcon name="trash" /></button>
+                      </template>
+                    </div>
+                  </div>
+                  <blockquote v-if="comment.replyToId" class="task-comment-quote">
+                    <template v-if="quotedComment(comment.replyToId)">
+                      <strong>{{ commentAuthor(quotedComment(comment.replyToId)!) }}</strong>
+                      <span>{{ quotedComment(comment.replyToId)!.text }}</span>
+                    </template>
+                    <span v-else>原评论已删除</span>
+                  </blockquote>
+                  <div class="task-comment-mentions"><span v-for="id in legacyCommentMentionIds(comment)" :key="id">@{{ mentionName(id) }}</span></div>
+                  <div class="markdown-content task-comment-content" v-html="renderMarkdown(comment.text)"></div>
                 </div>
               </li>
             </ul>
             <p v-else class="task-comments-empty">暂无评论</p>
             <form v-if="commentEditorOpen" class="task-comment-editor" @submit.prevent="saveComment">
-              <h5>{{ editingCommentId ? '编辑评论' : '新建评论' }}</h5>
-              <MarkdownEditor :key="editingCommentId ?? 'new'" v-model="commentText" textarea-id="task-comment-markdown"
-                label="评论内容" :rows="5" compact-toolbar :disabled="saving" :readonly="!sharedWritable || taskDraftStale" />
-              <div class="task-comment-editor-actions">
-                <button type="submit" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty || !commentText.trim()"><AppIcon name="check" />保存评论</button>
-                <button type="button" class="secondary" :disabled="saving" @click="cancelComment">取消</button>
+              <h5 class="visually-hidden">{{ editingCommentId ? '编辑评论' : commentReplyToId ? '回复评论' : '新建评论' }}</h5>
+              <blockquote v-if="commentReplyToId" class="task-comment-quote">
+                <template v-if="replyComment"><strong>{{ commentAuthor(replyComment) }}</strong><span>{{ replyComment.text }}</span></template>
+                <span v-else>原评论已删除</span>
+              </blockquote>
+              <div v-if="legacyMentionIds.length" class="task-comment-selected-mentions" aria-label="保留的历史提及">
+                <span v-for="id in legacyMentionIds" :key="id">@{{ mentionName(id) }} <button type="button" class="secondary" :disabled="saving" :aria-label="`移除提及 ${mentionName(id)}`" @click="legacyMentionIds = legacyMentionIds.filter(item => item !== id)">移除</button></span>
+              </div>
+              <div @keydown="sendCommentShortcut">
+                <MarkdownEditor :key="editingCommentId ?? 'new'" ref="commentEditor" v-model="commentText" textarea-id="task-comment-markdown"
+                  label="评论内容" placeholder="评论内容，输入 @ 提及成员" :rows="5" compact-toolbar composer
+                  :mention-options="commentDirectory"
+                  :disabled="saving" :readonly="!commentsEnabled || !sharedWritable || taskDraftStale">
+                  <template #actions>
+                    <button type="button" class="secondary comment-cancel" :disabled="saving" @click="cancelComment">取消</button>
+                    <button type="submit" class="comment-send" :disabled="commentActionsDisabled || !commentText.trim()">{{ editingCommentId ? '保存' : '发送' }}</button>
+                  </template>
+                </MarkdownEditor>
               </div>
             </form>
-            <button v-else type="button" class="task-comment-composer" :disabled="!sharedWritable || saving || taskDraftStale || taskDraftDirty" @click="beginNewComment">添加评论…</button>
+            <button v-else-if="commentsEnabled" type="button" class="task-comment-composer" :disabled="commentActionsDisabled" @click="beginNewComment">评论内容…</button>
+            <div v-else class="task-comment-composer" role="status">
+              <span>{{ commentsStatus || '协作评论功能尚未确认，请重新检测。' }}</span>
+              <button type="button" class="secondary" :disabled="!currentAccountId || saving" @click="emit('retryComments')">重新检测</button>
+            </div>
           </section>
           </aside>
           <aside v-else class="task-comments-empty-note">保存任务后，可以在详情中继续添加评论和查看关联版本。</aside>
@@ -1381,14 +1532,43 @@ onUnmounted(() => {
 .task-comments-empty-note { display: grid; place-items: center; padding: 24px; border-left: 1px solid #35445c; color: #9eafc5; font-size: 12px; text-align: center; }
 .task-comment-composer { flex: 0 0 auto; min-height: 52px; margin: 10px 12px 12px; padding: 10px 12px; border: 1px solid #35445c; border-radius: 6px; background: #0c1523; color: #9eafc5; text-align: left; }
 .task-comment-composer:hover { border-color: #6684aa; color: #e6effc; }
-.task-comment-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; color: #afbdd2; font-size: 10px; font-variant-numeric: tabular-nums; }
-.task-comment-content { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
+.task-comment { display: flex; gap: 10px; padding: 12px 8px; border: 0; border-bottom: 1px solid #35445c; border-radius: 0; background: transparent; }
+.task-comment.is-focused-comment { outline: 2px solid #60a5fa; outline-offset: -2px; }
+.task-comment-avatar { position: relative; display: grid; flex: 0 0 34px; place-items: center; width: 34px; height: 34px; overflow: hidden; border-radius: 50%; font-size: 12px; font-weight: 700; }
+.task-comment-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.task-comment-body { min-width: 0; flex: 1; }
+.task-comment-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.task-comment-meta { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; color: #afbdd2; font-size: 11px; font-variant-numeric: tabular-nums; }
+.task-comment-meta strong { color: #eef4ff; font-size: 13px; overflow-wrap: anywhere; }
+.task-comment-content { margin: 8px 0; font-size: 13px; overflow-wrap: anywhere; }
 .task-comment-content :deep(img) { display: none; }
-.task-comment-actions { display: flex; justify-content: flex-end; gap: 6px; }
-.task-comment-actions button { min-height: 44px; padding: 5px 8px; font-size: 11px; }
-.task-comment-editor { flex: 0 0 auto; margin: 10px 12px 12px; padding: 10px; border: 1px solid #35445c; border-radius: 6px; background: #0c1523; }
+.task-comment-actions { display: flex; flex: 0 0 auto; gap: 0; opacity: 0; pointer-events: none; }
+.task-comment:hover .task-comment-actions, .task-comment:focus-within .task-comment-actions { opacity: 1; pointer-events: auto; }
+.task-comment-actions button { display: inline-flex; align-items: center; justify-content: center; width: 44px; min-width: 44px; min-height: 44px; margin: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #afbdd2; box-shadow: none; }
+.task-comment-actions .app-icon { width: 16px; height: 16px; }
+.task-comment-actions button:hover:enabled { color: #eef4ff; background: #20324b; }
+.task-comment-actions button.comment-delete:hover:enabled { color: #fca5a5; }
+.task-comment-actions button:focus-visible { outline: 2px solid #7dd3fc; outline-offset: -2px; }
+.task-comment-actions button:disabled { color: #74849b; cursor: not-allowed; }
+.task-comment-quote { display: grid; gap: 3px; margin: 8px 0; padding: 8px; border-left: 3px solid #6684aa; background: #101a2a; color: #c3d1e4; font-size: 12px; overflow-wrap: anywhere; }
+.task-comment-quote span { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; white-space: pre-wrap; }
+.task-comment-mentions, .task-comment-selected-mentions { display: flex; flex-wrap: wrap; gap: 6px; color: #a9ccff; font-size: 12px; overflow-wrap: anywhere; }
+.task-comment-selected-mentions span { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.task-comment-selected-mentions button { min-height: 44px; min-width: 44px; padding: 4px; }
+.task-comment-notice { margin: 12px; color: #c3d1e4; }
+@media (hover: none), (pointer: coarse) { .task-comment-actions { opacity: 1; pointer-events: auto; } }
+.task-comment-editor { flex: 0 0 auto; margin: 0; padding: 12px; border: 0; border-top: 1px solid #35445c; border-radius: 0; background: #0d1728; }
 .task-comment-editor h5 { margin: 0 0 8px; font-size: 12px; }
 .task-comment-editor :deep(.markdown-editor) { margin-bottom: 0; }
+.task-comment-editor .comment-cancel { padding: 0 6px; min-height: 44px; border: 0; background: transparent; }
+.task-comment-editor .comment-send { position: relative; min-height: 44px; min-width: 64px; padding: 0 12px; border: 0; background: transparent; isolation: isolate; }
+.task-comment-editor .comment-send::before { content: ''; position: absolute; z-index: -1; inset: 8px 0; background: #1d4ed8; border-radius: 4px; }
+@media (hover: hover) and (pointer: fine) {
+  .task-comment-actions button { width: 28px; min-width: 28px; min-height: 28px; height: 28px; }
+  .task-comment-editor .comment-cancel { min-width: 40px; min-height: 28px; }
+  .task-comment-editor .comment-send { min-width: 52px; min-height: 28px; padding: 0 10px; }
+  .task-comment-editor .comment-send::before { inset: 0; }
+}
 .task-comment-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .task-comment-editor-actions button { width: auto; min-height: 44px; }
 .task-options-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(760px, calc(100dvh - 24px)); overflow: auto; padding: 18px; border: 1px solid #52647e; border-radius: 8px; background: #121c2d; color: #eef4ff; }

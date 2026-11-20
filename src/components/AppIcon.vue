@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'chevron-left' | 'chevron-right' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'release-testing' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' | 'user' | 'calendar' | 'status' | 'status-not-started' | 'status-pending' | 'status-in-progress' | 'status-release-pending' | 'status-done' | 'status-default' }>();
+defineProps<{ name: 'sort' | 'folder' | 'copy' | 'refresh' | 'scan' | 'unlink' | 'stop' | 'check' | 'clear' | 'plus' | 'arrow' | 'chevron-left' | 'chevron-right' | 'top' | 'file' | 'documents' | 'shield' | 'download' | 'upload' | 'zoom-in' | 'zoom-out' | 'fit' | 'collapse' | 'tools' | 'reply' | 'edit' | 'trash' | 'branch' | 'merge' | 'compare' | 'link' | 'release' | 'release-partial' | 'release-testing' | 'unrelease' | 'undo' | 'cloud' | 'computer' | 'tasks' | 'user' | 'calendar' | 'status' | 'status-not-started' | 'status-pending' | 'status-in-progress' | 'status-release-pending' | 'status-done' | 'status-default' }>();
 const paths = {
   sort: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   folder: 'M3 7V5h6l2 2h10v13H3Z M3 10h18',
@@ -25,6 +25,7 @@ const paths = {
   fit: 'M4 8V4h4 M16 4h4v4 M20 16v4h-4 M8 20H4v-4',
   collapse: 'M4 9h5V4 M15 4v5h5 M20 15h-5v5 M9 20v-5H4',
   tools: 'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
+  reply: 'M4 4h16v12h-9l-5 4v-4H4Z M8 8h8 M8 12h5',
   edit: 'M12 20h9 M16.5 3.5l4 4L8 20l-4 1 1-4L16.5 3.5Z',
   trash: 'M4 7h16 M10 7V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2 M6 7l1 13h10l1-13 M10 11v6 M14 11v6',
   branch: 'M7 5v5 M7 10a3 3 0 1 0 0 6 M7 16v3 M19 5v2a3 3 0 0 1-3 3H8',

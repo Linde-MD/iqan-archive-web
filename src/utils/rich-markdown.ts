@@ -1,6 +1,7 @@
 import { MarkdownParser, MarkdownSerializer, defaultMarkdownParser, defaultMarkdownSerializer, schema } from 'prosemirror-markdown';
 import { Schema, type DOMOutputSpec } from 'prosemirror-model';
 import { createMarkdownTokenizer, renderMarkdown } from './markdown';
+import { mentionMarkdown } from './markdown-mentions';
 
 const alignment = (style: string | null) => /^text-align:(left|center|right)$/.exec(style ?? '')?.[1] ?? null;
 const cellDOM = (tag: string, align: string | null): DOMOutputSpec =>
@@ -11,6 +12,12 @@ export const richMarkdownSchema = new Schema({
     ...schema.nodes.list_item!.spec,
     attrs: { checked: { default: null } },
   }).append({
+    mention: {
+      group: 'inline', inline: true, atom: true,
+      attrs: { id: {}, name: {} },
+      toDOM: node => ['span', { class: 'markdown-mention', 'data-account-id': node.attrs.id }, `@${node.attrs.name}`],
+      leafText: node => `@${node.attrs.name}`,
+    },
     table: { group: 'block', content: 'table_head table_body?', toDOM: () => ['div', { class: 'markdown-table-scroll' }, ['table', 0]] },
     table_head: { content: 'table_row', toDOM: () => ['thead', 0] },
     table_body: { content: 'table_row+', toDOM: () => ['tbody', 0] },
@@ -30,6 +37,7 @@ const parser = new MarkdownParser(richMarkdownSchema, tokenizer, {
   ins: { mark: 'underline' },
   s: { mark: 'strike' },
   list_item: { block: 'list_item', getAttrs: token => ({ checked: token.meta?.checked ?? null }) },
+  archive_mention: { node: 'mention', getAttrs: token => ({ id: token.meta.id, name: token.meta.name }) },
   table: { block: 'table' },
   thead: { block: 'table_head' },
   tbody: { block: 'table_body' },
@@ -41,6 +49,7 @@ const parser = new MarkdownParser(richMarkdownSchema, tokenizer, {
 const alignmentMarker: Record<string, string> = { left: ':---', center: ':---:', right: '---:' };
 export const richMarkdownSerializer = new MarkdownSerializer({
   ...defaultMarkdownSerializer.nodes,
+  mention(state, node) { state.write(mentionMarkdown(node.attrs.id, node.attrs.name)); },
   list_item(state, node) {
     if (node.attrs.checked !== null) state.write(node.attrs.checked ? '[x] ' : '[ ] ');
     state.renderContent(node);

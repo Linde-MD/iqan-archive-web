@@ -115,6 +115,8 @@ function setup() {
     }] });
     if (path === '/projects' && init.method === 'GET') return response({ projects: [graph.project] });
     if (path === `/projects/${graph.project.id}` && init.method === 'GET') return response(graph.project);
+    if (path === `/projects/${graph.project.id}/revision` && init.method === 'GET')
+      return response({ revision: graph.project.revision });
     if (path === `/projects/${graph.project.id}/graph` && init.method === 'GET') {
       graphReads++;
       if (failRead) throw new TypeError('read failed');
@@ -174,18 +176,18 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
-  it('前台 15 秒检查一次，隐藏暂停并取消在途检查，切回立即检查', async () => {
+  it('前台两分钟检查一次，隐藏暂停并取消在途检查，切回立即检查', async () => {
     vi.useFakeTimers();
     const page = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
     const check = vi.fn((_signal: AbortSignal) => Promise.resolve());
     const stop = startProjectPolling(page, check);
     try {
-      await vi.advanceTimersByTimeAsync(14_999);
+      await vi.advanceTimersByTimeAsync(119_999);
       expect(check).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(check).toHaveBeenCalledTimes(1);
       check.mockImplementationOnce(() => new Promise(() => {}));
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(120_000);
       expect(check).toHaveBeenCalledTimes(2);
       page.visibilityState = 'hidden';
       page.dispatchEvent(new Event('visibilitychange'));
@@ -201,7 +203,92 @@ describe('共享副本与离线草稿', () => {
     } finally { stop(); vi.useRealTimers(); }
   });
 
-  it('自动检查只读取当前项目元数据，修订增加后才更新本机副本', async () => {
+  it('消息轮询在前台满五分钟才发出周期检查', async () => {
+    vi.useFakeTimers();
+    const page = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
+    const check = vi.fn(async () => {});
+    const stop = startProjectPolling(page, check, 300_000);
+    try {
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(check).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(check).toHaveBeenCalledOnce();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it('编辑检查复用二十秒新鲜度，合并在途请求并从实际检查重新计时', async () => {
+    vi.useFakeTimers();
+    const page = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
+    const check = vi.fn(async (_signal: AbortSignal, _reason: 'poll' | 'edit') => true);
+    const stop = startProjectPolling(page, check);
+    try {
+      stop.edited();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(check).toHaveBeenLastCalledWith(expect.any(AbortSignal), 'edit');
+      await vi.advanceTimersByTimeAsync(19_999);
+      stop.edited();
+      expect(check).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      let release!: () => void;
+      check.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(true); }));
+      stop.edited();
+      stop.edited();
+      expect(check).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(5_000);
+      release();
+      await vi.advanceTimersByTimeAsync(114_999);
+      expect(check).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(check).toHaveBeenCalledTimes(3);
+      expect(check).toHaveBeenLastCalledWith(expect.any(AbortSignal), 'poll');
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it('未实际执行的检查不消耗新鲜度，切换上下文取消旧检查并重新计时', async () => {
+    vi.useFakeTimers();
+    const page = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
+    const check = vi.fn(async (_signal: AbortSignal) => true);
+    check.mockResolvedValueOnce(false);
+    const stop = startProjectPolling(page, check);
+    try {
+      stop.edited();
+      await vi.advanceTimersByTimeAsync(0);
+      stop.edited();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(check).toHaveBeenCalledTimes(2);
+      check.mockImplementationOnce(() => new Promise(() => {}));
+      await vi.advanceTimersByTimeAsync(20_000);
+      stop.edited();
+      stop.reset();
+      expect(check.mock.calls[2]?.[0].aborted).toBe(true);
+      stop.edited();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(check).toHaveBeenCalledTimes(4);
+      stop();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(check).toHaveBeenCalledTimes(4);
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it('有编辑草稿时仍轻量检查并提示变化，不下载或替换图；草稿关闭后可同步', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const remote = s.graph();
+    const id = remote.project.id;
+    const before = await s.repository.get(id);
+    remote.project.revision++;
+    remote.project.partNumber = '456';
+    s.setGraph(remote);
+    s.fetcher.mockClear();
+    expect(await s.client.pollProject(id, () => true, new AbortController().signal, () => false)).toBe(true);
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([`/projects/${id}/revision`]);
+    expect(await s.repository.get(id)).toEqual(before);
+    expect(s.client.state.message).toContain('请先保存或取消');
+    await s.client.pollProject(id, () => true, new AbortController().signal);
+    expect((await s.repository.get(id)).project.partNumber).toBe('456');
+  });
+
+  it('自动检查只读取当前项目修订号，修订增加后才更新本机副本', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
     const remote = s.graph();
@@ -211,16 +298,28 @@ describe('共享副本与离线草稿', () => {
     const paths = () => s.fetcher.mock.calls.map(([url, init]) => [new URL(url).pathname, init.method]);
     s.fetcher.mockClear();
     await poll();
-    expect(paths()).toEqual([[`/projects/${id}`, 'GET']]);
+    expect(paths()).toEqual([[`/projects/${id}/revision`, 'GET']]);
     expect(await s.repository.get(id)).toEqual(before);
     remote.project.revision++;
     remote.project.partNumber = '456';
     s.setGraph(remote);
     s.fetcher.mockClear();
     await poll();
-    expect(paths()).toEqual([[`/projects/${id}`, 'GET'], ['/instance', 'GET'], [`/projects/${id}/graph`, 'GET']]);
+    expect(paths()).toEqual([[`/projects/${id}/revision`, 'GET'], ['/instance', 'GET'], [`/projects/${id}/graph`, 'GET']]);
     expect((await s.repository.get(id)).project).toMatchObject({ partNumber: '456', revision: before.project.revision + 1 });
     expect(await s.cache.pending.count()).toBe(0);
+  });
+
+  it('旧后端缺少修订号接口时回退摘要，不读取未变化的项目图', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const path = `/projects/${s.graph().project.id}`;
+    s.fetcher.mockClear();
+    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { code: 'NOT_FOUND', message: '接口不存在' },
+    }), { status: 404 }));
+    await s.client.pollProject(s.graph().project.id, () => true, new AbortController().signal);
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([`${path}/revision`, path]);
   });
 
   it.each(['editing', 'newer-mirror'] as const)('在途自动刷新不覆盖 %s', async mode => {
@@ -239,7 +338,7 @@ describe('共享副本与离线草稿', () => {
     });
     const fetch = s.fetcher.getMockImplementation()!;
     s.fetcher.mockImplementation((url, init) => url.endsWith('/graph') ? getGraph : fetch(url, init));
-    const poll = s.client.pollProject(id, () => active, new AbortController().signal);
+    const poll = s.client.pollProject(id, () => true, new AbortController().signal, () => active);
     await vi.waitFor(() => expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/graph'))).toHaveLength(2));
     if (mode === 'editing') active = false;
     else {
