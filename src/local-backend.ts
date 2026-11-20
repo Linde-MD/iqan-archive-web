@@ -4,6 +4,12 @@ export const DEFAULT_BACKEND_HOSTS = ['nb4cn25opxos', 'nb4cn35rxxr8', 'nb4cn25xl
 export const BACKEND_PROBE_TIMEOUT_MS = 3_000;
 export const BACKEND_RECHECK_INTERVAL_MS = 60_000;
 
+export interface BackendHostSettings {
+  hosts: string[];
+  notes: Record<string, string>;
+  defaultNotes: Record<string, string>;
+}
+
 export function parseBackendHosts(value: unknown): string[] {
   if (!Array.isArray(value)) throw new Error('设备名必须为列表。');
   const hosts = new Set<string>();
@@ -20,6 +26,18 @@ export function parseBackendHosts(value: unknown): string[] {
     hosts.add(host);
   }
   return [...hosts];
+}
+
+export function parseBackendHostNotes(hosts: string[], value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设备备注设置无效。');
+  const entries: [string, string][] = [];
+  for (const [host, note] of Object.entries(value)) {
+    if (!hosts.includes(host) || typeof note !== 'string' || note.length > 100 || /[\r\n]/.test(note)) {
+      throw new Error('设备备注无效，请填写不超过 100 个字符的单行文本。');
+    }
+    if (note.trim()) entries.push([host, note.trim()]);
+  }
+  return Object.fromEntries(entries);
 }
 
 export function backendAddress(host: string): string {

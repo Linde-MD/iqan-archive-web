@@ -43,7 +43,7 @@ describe('后端设备发现', () => {
     databases.push(db);
     const repository = new ArchiveRepository(db);
     expect(await repository.getBackendHosts()).toEqual(defaults);
-    expect(await db.backendSettings.get('connection')).toEqual({ id: 'connection', hosts: defaults });
+    expect(await db.backendSettings.get('connection')).toEqual({ id: 'connection', hosts: defaults, notes: {}, defaultNotes: {} });
     await repository.setBackendHosts([' PC-A ', 'pc-b', 'pc-a']);
     db.close();
     await db.open();
@@ -52,7 +52,7 @@ describe('后端设备发现', () => {
     expect(await db.archiveRoots.get('shared')).toEqual(root);
     await expect(repository.setBackendHosts(['bad:80'])).rejects.toThrow();
     expect(await repository.getBackendHosts()).toEqual(['pc-a', 'pc-b']);
-    await db.backendSettings.put({ id: 'connection', hosts: ['bad:80'] });
+    await db.backendSettings.put({ id: 'connection', hosts: ['bad:80'], notes: {}, defaultNotes: {} });
     await expect(repository.getBackendHosts()).rejects.toThrow();
   });
 
@@ -69,6 +69,71 @@ describe('后端设备发现', () => {
     db.close();
     await db.open();
     expect(await repository.getBackendHosts()).toEqual(['my-device']);
+  });
+
+  it.each([{ hosts: [] as string[] }, { hosts: ['nb4cn25opxos', 'my-device'] }])('v15 迁移保留设备列表并初始化空备注：$hosts', async ({ hosts }) => {
+    const name = `backend-notes-migration-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(15).stores({
+      projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId',
+      branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId', archiveRoots: 'id', backendSettings: 'id',
+    });
+    await old.table('backendSettings').put({ id: 'connection', hosts });
+    old.close();
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    expect(await new ArchiveRepository(db).getBackendHostSettings()).toEqual({ hosts, notes: {}, defaultNotes: {} });
+  });
+
+  it('v16 迁移保留已设置的默认设备备注，删除设备后默认备注仍可恢复', async () => {
+    const name = `backend-default-notes-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(16).stores({
+      projects: 'id', nodes: 'id, projectId, &[projectId+version]', edges: 'id, projectId',
+      branches: 'id, projectId', tasks: 'id, projectId, &[projectId+externalTaskId]',
+      directoryBindings: '[projectId+role], projectId', archiveRoots: 'id', backendSettings: 'id',
+    });
+    await old.table('backendSettings').put({
+      id: 'connection', hosts: [defaults[0], 'custom'], notes: { [defaults[0]!]: '本机备注', custom: '其他设备' },
+    });
+    old.close();
+    const db = new ArchiveDatabase(name);
+    databases.push(db);
+    const repository = new ArchiveRepository(db);
+    const initial = await repository.getBackendHostSettings();
+    expect(initial.defaultNotes).toEqual({ [defaults[0]!]: '本机备注' });
+    expect(initial.notes).toEqual({ [defaults[0]!]: '本机备注', custom: '其他设备' });
+    await repository.setBackendHosts(['custom'], { custom: '其他设备' }, initial.defaultNotes);
+    db.close();
+    await db.open();
+    expect(await repository.getBackendHostSettings()).toEqual({
+      hosts: ['custom'], notes: { custom: '其他设备' }, defaultNotes: { [defaults[0]!]: '本机备注' },
+    });
+  });
+
+  it('备注本机保存、重新打开及清空，设备解析和探测仍只使用设备名', async () => {
+    const db = new ArchiveDatabase(`backend-notes-${crypto.randomUUID()}`);
+    databases.push(db);
+    const repository = new ArchiveRepository(db);
+    expect(await repository.getBackendHostSettings()).toEqual({ hosts: defaults, notes: {}, defaultNotes: {} });
+    await repository.setBackendHosts([' PC-A ', 'pc-b'], { 'pc-a': ' 办公室电脑 ', 'pc-b': '' });
+    db.close();
+    await db.open();
+    expect(await repository.getBackendHostSettings()).toEqual({ hosts: ['pc-a', 'pc-b'], notes: { 'pc-a': '办公室电脑' }, defaultNotes: {} });
+    const fetcher = vi.fn(async (_url: string) => response());
+    vi.stubGlobal('fetch', fetcher);
+    await expect(repository.testBackendHosts(new AbortController().signal)).rejects.toThrow('多个设备');
+    expect(fetcher.mock.calls.map(call => call[0])).toEqual(['http://pc-a/health', 'http://pc-b/health']);
+    await expect(repository.setBackendHosts(['pc-a'], { 'pc-a': 'x'.repeat(101) })).rejects.toThrow('设备备注');
+    await expect(repository.setBackendHosts(['pc-a'], { 'pc-b': '旧设备' })).rejects.toThrow('设备备注');
+    await expect(repository.setBackendHosts(['pc-a'], { 'pc-a': '第一行\n第二行' })).rejects.toThrow('设备备注');
+    await expect(repository.setBackendHosts(['pc-a'], {}, { 'pc-a': '非默认设备' })).rejects.toThrow('设备备注');
+    expect(await repository.getBackendHostSettings()).toEqual({ hosts: ['pc-a', 'pc-b'], notes: { 'pc-a': '办公室电脑' }, defaultNotes: {} });
+    await repository.setBackendHosts(['pc-a'], { 'pc-a': '' });
+    expect(await repository.getBackendHostSettings()).toEqual({ hosts: ['pc-a'], notes: {}, defaultNotes: {} });
+    await repository.setBackendHosts(['__proto__'], Object.fromEntries([['__proto__', '测试']]));
+    expect(await repository.getBackendHostSettings()).toEqual({ hosts: ['__proto__'], notes: Object.fromEntries([['__proto__', '测试']]), defaultNotes: {} });
   });
 
   it('每台只测试一次，全部完成后只选择唯一兼容主机，不广播凭据', async () => {

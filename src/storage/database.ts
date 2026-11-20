@@ -5,7 +5,7 @@ import { moveTaskInBoard } from '../domain/task-board';
 import { registerCandidates, type FileCandidate } from '../domain/filenames';
 import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHandle } from '../files/directories';
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
-import { BackendConnection, DEFAULT_BACKEND_HOSTS, parseBackendHosts } from '../local-backend';
+import { BackendConnection, DEFAULT_BACKEND_HOSTS, parseBackendHostNotes, parseBackendHosts, type BackendHostSettings } from '../local-backend';
 import type { RepositorySync } from './repository-sync';
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
@@ -50,7 +50,7 @@ export class ArchiveDatabase extends Dexie {
   tasks!: Table<Task, string>;
   directoryBindings!: Table<DirectoryBinding, [string, DirectoryRole]>;
   archiveRoots!: Table<ArchiveRootBinding, string>;
-  backendSettings!: Table<{ id: 'connection'; hosts: string[] }, string>;
+  backendSettings!: Table<{ id: 'connection' } & BackendHostSettings, string>;
   readonly backendConnection = new BackendConnection();
 
   constructor(name = 'iqan-archive-web') {
@@ -193,6 +193,20 @@ export class ArchiveDatabase extends Dexie {
     this.version(15).stores({}).upgrade(async transaction => {
       await transaction.table('backendSettings').put({ id: 'connection', hosts: [...DEFAULT_BACKEND_HOSTS] });
     });
+    this.version(16).stores({}).upgrade(async transaction => {
+      const settings = transaction.table('backendSettings');
+      const current = await settings.get('connection');
+      if (current) await settings.put({ ...current, notes: {} });
+    });
+    this.version(17).stores({}).upgrade(async transaction => {
+      const settings = transaction.table<{ id: 'connection'; hosts: string[]; notes: Record<string, string> }>('backendSettings');
+      const current = await settings.get('connection');
+      if (current) {
+        const defaultNotes = Object.fromEntries(Object.entries(current.notes).filter(([host]) =>
+          DEFAULT_BACKEND_HOSTS.some(name => name === host)));
+        await transaction.table('backendSettings').put({ ...current, defaultNotes });
+      }
+    });
     this.on('ready', () => {
       // Dexie scales native versions by ten and otherwise accepts newer schemas.
       requireCondition(this.backendDB().version === this.verno * 10, 'SCHEMA_VERSION', '数据库版本超出当前应用支持范围，请使用匹配的新版应用，勿清除本机数据。');
@@ -205,12 +219,21 @@ export class ArchiveRepository {
   get permissions() { return this.sync?.permissions; }
 
   async getBackendHosts(): Promise<string[]> {
-    const settings = await this.db.backendSettings.get('connection');
-    return settings ? parseBackendHosts(settings.hosts) : [...DEFAULT_BACKEND_HOSTS];
+    return (await this.getBackendHostSettings()).hosts;
   }
 
-  async setBackendHosts(hosts: string[]): Promise<void> {
-    await this.db.backendSettings.put({ id: 'connection', hosts: parseBackendHosts(hosts) });
+  async getBackendHostSettings(): Promise<BackendHostSettings> {
+    const settings = await this.db.backendSettings.get('connection');
+    if (!settings) return { hosts: [...DEFAULT_BACKEND_HOSTS], notes: {}, defaultNotes: {} };
+    const hosts = parseBackendHosts(settings.hosts);
+    return { hosts, notes: parseBackendHostNotes(hosts, settings.notes),
+      defaultNotes: parseBackendHostNotes([...DEFAULT_BACKEND_HOSTS], settings.defaultNotes) };
+  }
+
+  async setBackendHosts(hosts: string[], notes: Record<string, string> = {}, defaultNotes: Record<string, string> = {}): Promise<void> {
+    const parsedHosts = parseBackendHosts(hosts);
+    await this.db.backendSettings.put({ id: 'connection', hosts: parsedHosts, notes: parseBackendHostNotes(parsedHosts, notes),
+      defaultNotes: parseBackendHostNotes([...DEFAULT_BACKEND_HOSTS], defaultNotes) });
     this.db.backendConnection.reset();
   }
 

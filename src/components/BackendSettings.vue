@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import type { ArchiveRepository } from '../storage/database';
 import { buildStartBackendUri } from '../domain/iqan-protocol';
-import { BACKEND_PROBE_TIMEOUT_MS, DEFAULT_BACKEND_HOSTS, backendAddress, parseBackendHosts } from '../local-backend';
+import { BACKEND_PROBE_TIMEOUT_MS, DEFAULT_BACKEND_HOSTS, backendAddress, parseBackendHostNotes, parseBackendHosts } from '../local-backend';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ repository: ArchiveRepository; disabled?: boolean }>();
@@ -16,7 +16,13 @@ const testTrigger = ref<HTMLButtonElement>();
 const errorHeading = ref<HTMLElement>();
 const hosts = ref<string[]>([]);
 const newHost = ref('');
+const newNote = ref('');
+const hostNotes = ref<Record<string, string>>({});
+const defaultNotes = ref<Record<string, string>>({});
 const savedHosts = ref<string[]>([]);
+const savedNotes = ref<Record<string, string>>({});
+const savedDefaultNotes = ref<Record<string, string>>({});
+const editingHost = ref('');
 const loading = ref(false);
 const loadFailed = ref(false);
 const saving = ref(false);
@@ -28,7 +34,8 @@ const connection = props.repository.db.backendConnection.state;
 const isTesting = computed(() => testing.value || connection.testing);
 const busy = computed(() => loading.value || saving.value || isTesting.value);
 const selectedAddress = computed(() => connection.host ? backendAddress(connection.host) : '');
-const dirty = computed(() => hosts.value.join('\n') !== savedHosts.value.join('\n'));
+const dirty = computed(() => JSON.stringify([hosts.value, hosts.value.map(host => hostNotes.value[host]), DEFAULT_BACKEND_HOSTS.map(host => defaultNotes.value[host])])
+  !== JSON.stringify([savedHosts.value, savedHosts.value.map(host => savedNotes.value[host]), DEFAULT_BACKEND_HOSTS.map(host => savedDefaultNotes.value[host])]));
 const probes = computed(() => new Map(connection.results.map(result => [result.host, result])));
 const completedCount = computed(() => hosts.value.filter(host => probes.value.has(host)).length);
 const availableCount = computed(() => hosts.value.filter(host => probes.value.get(host)?.available).length);
@@ -49,7 +56,11 @@ watch(() => connection.notice, async notice => {
   }
 }, { flush: 'post' });
 
-watch([hosts, newHost], () => { fieldError.value = ''; error.value = ''; message.value = ''; }, { flush: 'sync' });
+watch([hosts, hostNotes, defaultNotes, newHost, newNote], () => { fieldError.value = ''; error.value = ''; message.value = ''; }, { flush: 'sync', deep: true });
+
+function notesForHosts(names: string[], notes: Record<string, string>) {
+  return Object.fromEntries(names.map(host => [host, Object.hasOwn(notes, host) ? notes[host]! : '']));
+}
 
 function statusLabel(host: string) {
   const result = probes.value.get(host);
@@ -57,14 +68,47 @@ function statusLabel(host: string) {
   return result.available ? (result.initialized ? '可连接' : '可连接 · 待初始化') : '不可连接';
 }
 
+function updateDefaultNote(host: string) {
+  if (DEFAULT_BACKEND_HOSTS.some(name => name === host)) defaultNotes.value[host] = hostNotes.value[host] ?? '';
+}
+
+function updateHostNote(host: string, event: Event) {
+  if (!(event.target instanceof HTMLInputElement)) throw new Error('备注输入无效。');
+  hostNotes.value[host] = event.target.value;
+  updateDefaultNote(host);
+}
+
+async function editNote(host: string) {
+  editingHost.value = host;
+  await nextTick();
+  dialog.value?.querySelector<HTMLInputElement>('.backend-device-note input')?.focus();
+}
+
+async function finishNoteEdit(host: string) {
+  editingHost.value = '';
+  await nextTick();
+  const buttons = dialog.value?.querySelectorAll<HTMLButtonElement>('.backend-device-edit');
+  [...(buttons ?? [])].find(button => button.dataset.host === host)?.focus();
+}
+
 function addHosts(): boolean {
   try {
     const added = parseBackendHosts(newHost.value.split(/[\s,，]+/));
     if (!added.length) throw new Error('请先输入设备名。');
+    if (newNote.value.trim() && added.length !== 1) throw new Error('批量添加时请先留空备注，添加后逐台填写。');
     const next = parseBackendHosts([...hosts.value, ...added]);
     const count = next.length - hosts.value.length;
+    if (!count && newNote.value.trim()) throw new Error('设备已在列表中，请直接修改该设备的备注。');
+    const notes = notesForHosts(next, hostNotes.value);
+    for (const host of added) {
+      if (hosts.value.includes(host)) continue;
+      notes[host] = newNote.value.trim() || (Object.hasOwn(defaultNotes.value, host) ? defaultNotes.value[host]! : '');
+    }
     hosts.value = next;
+    hostNotes.value = notes;
+    for (const host of added) if (newNote.value.trim()) updateDefaultNote(host);
     newHost.value = '';
+    newNote.value = '';
     message.value = count ? `已添加 ${count} 台设备，请保存后测试。` : '设备已在列表中，无需重复添加。';
     hostInput.value?.focus();
     return true;
@@ -76,16 +120,21 @@ function addHosts(): boolean {
 }
 
 async function removeHost(host: string) {
+  if (editingHost.value === host) editingHost.value = '';
   hosts.value = hosts.value.filter(value => value !== host);
+  hostNotes.value = notesForHosts(hosts.value, hostNotes.value);
   message.value = '设备已从待保存列表移除，请保存更改。';
   await nextTick();
   hostInput.value?.focus();
 }
 
 async function useDefaults() {
+  editingHost.value = '';
   hosts.value = [...DEFAULT_BACKEND_HOSTS];
+  hostNotes.value = notesForHosts(hosts.value, defaultNotes.value);
   newHost.value = '';
-  message.value = '已填入四台默认设备，请保存后测试。';
+  newNote.value = '';
+  message.value = '已填入默认设备和本机默认备注，请保存后测试。未设置的备注仍为空。';
   await nextTick();
   hostInput.value?.focus();
 }
@@ -104,11 +153,17 @@ async function restore() {
   error.value = '';
   message.value = '';
   newHost.value = '';
+  newNote.value = '';
+  editingHost.value = '';
   try {
-    const value = await props.repository.getBackendHosts();
+    const value = await props.repository.getBackendHostSettings();
     if (attempt !== loadAttempt) return;
-    savedHosts.value = [...value];
-    hosts.value = value;
+    savedHosts.value = [...value.hosts];
+    hosts.value = [...value.hosts];
+    savedNotes.value = notesForHosts(value.hosts, value.notes);
+    hostNotes.value = notesForHosts(value.hosts, value.notes);
+    savedDefaultNotes.value = notesForHosts([...DEFAULT_BACKEND_HOSTS], value.defaultNotes);
+    defaultNotes.value = notesForHosts([...DEFAULT_BACKEND_HOSTS], value.defaultNotes);
   } catch (cause) {
     if (attempt !== loadAttempt) return;
     loadFailed.value = true;
@@ -135,13 +190,25 @@ function closed() {
 }
 
 async function save() {
+  if (newNote.value.trim() && !newHost.value.trim()) {
+    fieldError.value = '请先输入设备名，或清空待添加的备注。';
+    hostInput.value?.focus();
+    return;
+  }
   if (newHost.value.trim() && !addHosts()) return;
   saving.value = true;
   error.value = '';
   message.value = '';
   try {
-    await props.repository.setBackendHosts(hosts.value);
+    const notes = parseBackendHostNotes(hosts.value, hostNotes.value);
+    const defaults = parseBackendHostNotes([...DEFAULT_BACKEND_HOSTS], defaultNotes.value);
+    await props.repository.setBackendHosts(hosts.value, notes, defaults);
     savedHosts.value = [...hosts.value];
+    savedNotes.value = notesForHosts(hosts.value, notes);
+    hostNotes.value = notesForHosts(hosts.value, notes);
+    savedDefaultNotes.value = notesForHosts([...DEFAULT_BACKEND_HOSTS], defaults);
+    defaultNotes.value = notesForHosts([...DEFAULT_BACKEND_HOSTS], defaults);
+    editingHost.value = '';
     emit('saved');
     message.value = '设备列表已保存，原连接已清除。请测试连接，再登录或重新连接。';
   } catch (cause) {
@@ -154,7 +221,7 @@ async function save() {
 }
 
 async function testConnection() {
-  if (dirty.value || newHost.value.trim()) { await showError(new Error('请先保存设备列表，再测试连接。')); return; }
+  if (dirty.value || newHost.value.trim() || newNote.value.trim()) { await showError(new Error('请先保存设备列表，再测试连接。')); return; }
   const controller = new AbortController();
   request = controller;
   testing.value = true;
@@ -204,6 +271,7 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
           <span class="backend-eyebrow">当前后端地址</span>
           <code v-if="selectedAddress">{{ selectedAddress }}</code>
           <strong v-else>{{ isTesting ? '正在发现主机…' : '尚未选定主机' }}</strong>
+          <span v-if="connection.host && savedNotes[connection.host]" class="backend-connection-hint">备注：{{ savedNotes[connection.host] }}</span>
           <span class="backend-connection-hint">{{ isTesting ? `已完成 ${completedCount} / ${hosts.length} 台检测` : '只有一台可连接时，才会启用该地址' }}</span>
         </div>
         <div class="backend-connection-tags"><span>HTTP 80</span><span>{{ BACKEND_PROBE_TIMEOUT_MS / 1000 }} 秒超时</span></div>
@@ -226,8 +294,11 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
               placeholder="输入设备名或 DNS 主机名" :disabled="busy || loadFailed" :aria-invalid="!!fieldError" aria-describedby="backend-host-help backend-host-error">
             <button type="submit" class="secondary" :disabled="busy || loadFailed || !newHost.trim()"><AppIcon name="plus" />添加</button>
           </div>
+          <label for="backend-host-note" class="backend-note-label">备注名（可选）</label>
+          <input id="backend-host-note" v-model="newNote" type="text" maxlength="100" autocomplete="off"
+            placeholder="例如：办公室电脑" :disabled="busy || loadFailed" />
           <p id="backend-host-error" class="backend-field-error" aria-live="polite">{{ fieldError }}</p>
-          <p id="backend-host-help" class="backend-help-text">可用空格或逗号批量添加，不限数量；不填 IP、协议、端口或路径。</p>
+          <p id="backend-host-help" class="backend-help-text">可批量添加设备；备注仅保存在本机浏览器。默认设备的备注保存后可随“恢复默认”带回。设备名不含 IP、协议、端口或路径。</p>
         </form>
         <div class="backend-results-heading" role="status">
           <span>{{ isTesting ? '正在并行检测所有设备' : completedCount ? '最近检测结果' : '等待测试连接' }}</span>
@@ -239,15 +310,32 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
             <div class="backend-device-main">
               <span class="backend-device-icon"><AppIcon name="computer" /></span>
               <div class="backend-device-identity">
-                <strong>{{ host.toUpperCase() }}</strong>
+                <strong v-if="hostNotes[host]" class="backend-device-name">{{ hostNotes[host] }}</strong>
+                <code>{{ host.toUpperCase() }}</code>
                 <span class="backend-device-status">
                   <AppIcon :name="probes.get(host)?.available ? 'check' : probes.has(host) ? 'clear' : isTesting ? 'status-in-progress' : 'status-default'" />
                   {{ statusLabel(host) }}
+                  <span v-if="connection.host === host" class="backend-selected-label">当前主机</span>
                 </span>
               </div>
-              <button type="button" class="icon-button backend-device-remove" :aria-label="`移除设备 ${host.toUpperCase()}`" :disabled="busy || loadFailed" @click="removeHost(host)"><AppIcon name="trash" /></button>
+              <div class="backend-device-actions">
+                <button type="button" class="icon-button backend-device-edit" :data-host="host" :aria-label="`编辑设备 ${host.toUpperCase()} 的备注`" title="编辑备注" :disabled="busy || loadFailed" @click="editNote(host)"><AppIcon name="edit" /></button>
+                <button type="button" class="icon-button backend-device-remove" :aria-label="`移除设备 ${host.toUpperCase()}`" title="移除设备" :disabled="busy || loadFailed" @click="removeHost(host)"><AppIcon name="trash" /></button>
+              </div>
             </div>
-            <span v-if="connection.host === host" class="backend-selected-label">当前主机</span>
+            <div v-if="editingHost === host" class="backend-device-note">
+              <div class="backend-note-heading">
+                <label :for="`backend-note-${host}`">备注名</label>
+                <span>仅本机</span>
+              </div>
+              <div class="backend-note-row">
+                <input :id="`backend-note-${host}`" :value="hostNotes[host]" type="text" maxlength="100" autocomplete="off" placeholder="输入备注名"
+                  :aria-label="`设备 ${host.toUpperCase()} 的备注名`" :disabled="busy || loadFailed"
+                  @input="updateHostNote(host, $event)" @keydown.enter.prevent="finishNoteEdit(host)" @keydown.esc.stop.prevent="finishNoteEdit(host)" />
+                <button type="button" class="secondary" :disabled="busy || loadFailed" @click="finishNoteEdit(host)">完成</button>
+              </div>
+              <p>完成后请保存设备列表。</p>
+            </div>
             <details v-if="probes.get(host)?.error" class="backend-device-error"><summary>查看失败原因</summary><p>{{ probes.get(host)?.error }}</p></details>
           </li>
         </ul>
@@ -261,11 +349,11 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
       </details>
     </div>
     <footer class="backend-settings-footer">
-      <p v-if="dirty || newHost.trim()" class="backend-unsaved">设备列表有未保存的更改，保存后需重新测试。</p>
+      <p v-if="dirty || newHost.trim() || newNote.trim()" class="backend-unsaved">设备列表或备注有未保存的更改，保存后需重新测试。</p>
       <p v-if="message" class="backend-message" role="status">{{ message }}</p>
       <div class="backend-footer-actions">
         <button type="button" class="secondary" :disabled="busy || loadFailed" @click="save">{{ saving ? '正在保存…' : '保存设备列表' }}</button>
-        <button ref="testTrigger" type="button" :disabled="busy || loadFailed || dirty || !!newHost.trim()" @click="testConnection"><AppIcon name="scan" />{{ isTesting ? '正在测试…' : '测试连接' }}</button>
+        <button ref="testTrigger" type="button" :disabled="busy || loadFailed || dirty || !!newHost.trim() || !!newNote.trim()" @click="testConnection"><AppIcon name="scan" />{{ isTesting ? '正在测试…' : '测试连接' }}</button>
       </div>
       <p class="backend-safety">团队仅运行一台后端 · HTTP 不加密，仅用于获准的可信局域网</p>
     </footer>
@@ -308,8 +396,10 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
 .backend-add-form { margin-top: 8px; }
 .backend-add-form label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
 .backend-add-row { display: flex; gap: 8px; }
-.backend-add-row input { flex: 1; min-width: 0; width: 100%; margin: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--canvas); color: var(--ink); font-family: inherit; }
-.backend-add-row input::placeholder { color: var(--muted); }
+.backend-add-row input, .backend-add-form > input, .backend-device-note input { min-width: 0; width: 100%; margin: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--canvas); color: var(--ink); font-family: inherit; }
+.backend-add-row input { flex: 1; }
+.backend-add-form input::placeholder, .backend-device-note input::placeholder { color: var(--muted); }
+.backend-add-form .backend-note-label { margin-top: 10px; }
 .backend-add-row button { flex-shrink: 0; width: auto; }
 .backend-help-text { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .backend-field-error { margin: 8px 0 0; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
@@ -322,14 +412,30 @@ onUnmounted(() => { ++loadAttempt; request?.abort(); });
 .backend-device-icon { flex-basis: 34px; width: 34px; height: 34px; border-radius: 7px; background: var(--canvas); }
 .backend-device-icon .app-icon { width: 18px; height: 18px; }
 .backend-device-identity { flex: 1; min-width: 0; }
-.backend-device-identity > strong { display: block; font-family: ui-monospace, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.backend-device-identity > strong, .backend-device-identity > code { display: block; overflow-wrap: anywhere; }
+.backend-device-identity > strong { color: var(--ink); font-size: 14px; }
+.backend-device-identity > code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--ink); }
+.backend-device-identity > strong + code { margin-top: 3px; color: var(--muted); }
 .backend-device-status { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--muted); font-size: 12px; }
 .backend-device-status .app-icon { width: 14px; height: 14px; }
 .is-reachable .backend-device-status { color: var(--success); }
 .is-unreachable .backend-device-status { color: var(--danger); }
-.backend-device-remove { color: var(--muted); margin-right: -6px; }
-.backend-device-remove .app-icon { width: 16px; height: 16px; }
-.backend-selected-label { display: inline-block; margin: 10px 0 0 44px; color: var(--success); font-size: 11px; }
+.backend-device-actions { display: flex; flex: none; align-self: flex-start; margin: -6px -6px 0 0; }
+.backend-device-actions .icon-button { color: var(--muted); }
+.backend-device-actions .icon-button .app-icon { width: 16px; height: 16px; }
+@media (hover: hover) and (pointer: fine) {
+  .backend-device-actions { opacity: 0; }
+  .backend-device:hover .backend-device-actions, .backend-device:focus-within .backend-device-actions { opacity: 1; }
+}
+.backend-device-note { min-width: 0; margin-top: 12px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--canvas); }
+.backend-note-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.backend-note-heading label { display: block; margin: 0; color: var(--ink); font-size: 12px; }
+.backend-note-heading span { color: var(--muted); font-size: 12px; }
+.backend-note-row { display: flex; gap: 8px; min-width: 0; }
+.backend-device-note .backend-note-row input { flex: 1 1 0; width: 0; margin: 0; font-size: 13px; }
+.backend-note-row button { flex: none; width: auto; min-height: 44px; margin: 0; padding: 0 12px; }
+.backend-device-note p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.backend-selected-label { margin-left: 4px; color: var(--success); font-size: 11px; }
 .backend-device-error { margin: 8px 0 -4px; border-top: 1px solid var(--border); }
 .backend-device-error summary, .backend-help summary { display: flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
 .backend-device-error summary::before, .backend-help summary::before { content: ''; width: 6px; height: 6px; flex-shrink: 0; border-right: 1px solid var(--accent); border-bottom: 1px solid var(--accent); transform: rotate(-45deg); }
