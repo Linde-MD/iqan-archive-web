@@ -448,8 +448,19 @@ export class ArchiveRepository {
     return this.change(projectId, revision, graph => updateNode(graph, nodeId, update));
   }
 
+  async saveNodeWithParents(
+    projectId: string, revision: number, nodeId: string,
+    update: { version: string; description: string; taskId: string | null }, parentIds: readonly string[],
+  ): Promise<ProjectGraph> {
+    const values = { version: update.version, description: update.description, taskId: update.taskId };
+    const parents = [...parentIds];
+    return this.change(projectId, revision, graph => setNodeParents(updateNode(graph, nodeId, values), nodeId, parents),
+      false, { type: 'edit-node', nodeId, update: values, parentIds: parents });
+  }
+
   async saveNodeParents(projectId: string, revision: number, childId: string, parentIds: readonly string[]): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => setNodeParents(graph, childId, parentIds), false, { type: 'parents', nodeId: childId, parentIds });
+    const parents = [...parentIds];
+    return this.change(projectId, revision, graph => setNodeParents(graph, childId, parents), false, { type: 'parents', nodeId: childId, parentIds: parents });
   }
 
   async changeRelations(projectId: string, revision: number, nodeIds: readonly string[], action: BatchRelationAction): Promise<ProjectGraph> {

@@ -204,6 +204,27 @@ describe('Dexie 原子持久化', () => {
     return repo.get(graph.project.id);
   }
 
+  it('版本和父关系共同保存、撤销，非法关系和过期修订不产生部分写入', async () => {
+    const repo = repository();
+    const before = await seed(repo);
+    const update = { version: 'D2', description: '新说明', taskId: null };
+    await expect(repo.saveNodeWithParents(before.project.id, before.project.revision, 'R', update, ['D'])).rejects.toThrow('成环');
+    expect(await repo.get(before.project.id)).toEqual(before);
+    const result = await repo.saveNodeWithParents(before.project.id, before.project.revision, 'D', update, ['R']);
+    expect(result.project.revision).toBe(before.project.revision + 1);
+    expect(result.nodes.find(node => node.id === 'D')).toMatchObject(update);
+    expect(result.edges.filter(edge => edge.childId === 'D').map(edge => edge.parentId)).toEqual(['R']);
+    await expect(repo.saveNodeWithParents(before.project.id, before.project.revision, 'D', update, ['B'])).rejects.toThrow('其他标签页已更新项目');
+    const stored = await repo.get(before.project.id);
+    expect(stored.project).toEqual(result.project);
+    expect(stored.nodes).toEqual(result.nodes);
+    expect(stored.edges).toEqual(expect.arrayContaining(result.edges));
+    expect(stored.edges).toHaveLength(result.edges.length);
+    const restored = await repo.restoreUndo(before.project.id, result.project.revision, before);
+    expect(restored.nodes).toEqual(before.nodes);
+    expect(restored.edges).toEqual(before.edges);
+  });
+
   it('任务删除原子解除所有版本关联，放行/父边/分支保留，修订保护及撤销可恢复', async () => {
     const repo = repository();
     let graph = await seed(repo);

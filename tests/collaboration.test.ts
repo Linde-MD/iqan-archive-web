@@ -6,12 +6,12 @@ import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { CollaborationDatabase, CollaborationRepository, collaborationSnapshot } from '../src/storage/collaboration';
 import { createProject, type ProjectGraph, type Task, type VersionNode } from '../src/domain/model';
 import { parseProjectSnapshot } from '../src/domain/project-snapshot';
-import { assertOfflineChanges } from '../src/domain/collaboration';
+import { applyCollaborationCommand, assertOfflineChanges } from '../src/domain/collaboration';
 import { createProjectDelta, type EntityChanges, type ProjectChanges } from '../src/domain/project-changes';
 import { orderedBranches } from '../src/domain/model';
 import { projectWriteBlockedReason } from '../src/storage/repository-sync';
 import { startProjectPolling } from '../src/storage/project-polling';
-import { applyDeletionMany, planDeletionMany, type MultiDeletionPlan } from '../src/domain/graph';
+import { planDeletionMany } from '../src/domain/graph';
 
 const databases: (ArchiveDatabase | CollaborationDatabase)[] = [];
 const testAvatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
@@ -96,6 +96,7 @@ function setup() {
     role: 'admin', disabled: false, mustChangePassword: false, avatar: null,
   };
   let graph = parseProjectSnapshot(collaborationSnapshot(createProject('共享项目', '123')));
+  let oldBackend = false;
   let offline = false, loseResponse = false, failRead = false, legacyReceipt = false, graphReads = 0;
   const receipts = new Map<string, unknown>();
   const requests: { id: string; body: unknown }[] = [];
@@ -138,11 +139,12 @@ function setup() {
       if ((envelope.revision ?? envelope.expectedRevision) !== graph.project.revision)
         return response({ error: { code: 'STALE_REVISION', message: '共享项目已变化' } }, 409);
     } else if (path.endsWith('/command')) {
-      const envelope = body as { revision: number; command: { type: string; plan: MultiDeletionPlan; confirmedVersions: Record<string, string> } };
-      if (envelope.command.type !== 'delete') throw new Error('测试未支持的图命令');
+      const envelope = body as { revision: number; command: unknown };
+      if (oldBackend && (envelope.command as { type: string }).type === 'edit-node')
+        return response({ error: { code: 'COMMAND', message: '未知图命令。' } }, 400);
       if (envelope.revision !== graph.project.revision)
         return response({ error: { code: 'STALE_REVISION', message: '共享项目已变化' } }, 409);
-      next = applyDeletionMany(graph, envelope.command.plan, envelope.command.confirmedVersions);
+      next = applyCollaborationCommand(graph, envelope.command);
     } else if (path.endsWith('/offline')) {
       next = applyProjectChanges(graph, body as ProjectChanges);
       assertOfflineChanges(graph, next);
@@ -175,6 +177,7 @@ function setup() {
     graph: () => structuredClone(graph),
     graphReads: () => graphReads,
     setGraph: (next: ProjectGraph) => { graph = next; },
+    oldBackend: () => { oldBackend = true; },
     network: (value: boolean) => { offline = !value; },
     loseResponse: () => { loseResponse = true; },
     failRead: (value: boolean) => { failRead = value; },
@@ -183,6 +186,45 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('协作版本编辑一次提交字段及父关系，响应式输入可安全保存', async () => {
+    const s = setup();
+    const initial = s.graph();
+    const parent = createNode(initial, { version: 'V1', description: '' });
+    const child = createNode(initial, { version: 'V2', description: '' });
+    initial.nodes.push(parent, child);
+    s.setGraph(initial);
+    await s.client.login('admin', 'test', true);
+    const before = await s.repository.get(initial.project.id);
+    const update = reactive({ version: 'V3', description: '变更', taskId: null });
+    const parents = reactive([parent.id]);
+    const result = await s.repository.saveNodeWithParents(initial.project.id, before.project.revision, child.id, update, parents);
+    expect(result.project.revision).toBe(before.project.revision + 1);
+    expect(result.nodes.find(node => node.id === child.id)).toMatchObject({ version: 'V3', description: '变更' });
+    expect(result.edges).toEqual([expect.objectContaining({ parentId: parent.id, childId: child.id })]);
+    expect(s.requests.at(-1)?.body).toMatchObject({ command: { type: 'edit-node', update, parentIds: [parent.id] } });
+    expect(await s.cache.pending.count()).toBe(0);
+    const cleared = await s.repository.saveNodeParents(initial.project.id, result.project.revision, child.id, reactive([]));
+    expect(cleared.edges).toEqual([]);
+    expect(s.requests.at(-1)?.body).toMatchObject({ command: { type: 'parents', parentIds: [] } });
+  });
+
+  it('旧后端拒绝组合命令时明确提示升级且不产生部分修改', async () => {
+    const s = setup();
+    const initial = s.graph();
+    const parent = createNode(initial, { version: 'V1', description: '' });
+    const child = createNode(initial, { version: 'V2', description: '' });
+    initial.nodes.push(parent, child);
+    s.setGraph(initial);
+    await s.client.login('admin', 'test', true);
+    const before = await s.repository.get(initial.project.id);
+    s.oldBackend();
+    await expect(s.repository.saveNodeWithParents(initial.project.id, before.project.revision, child.id,
+      { version: 'V2', description: '更改', taskId: null }, [parent.id])).rejects.toThrow('升级并重启后端');
+    expect(await s.repository.get(initial.project.id)).toEqual(before);
+    expect(s.graph()).toEqual(initial);
+    expect(await s.cache.pending.count()).toBe(0);
+  });
+
   it('协作删除接受响应式预览，提交放行确认、父边重连和分支头的普通数据快照', async () => {
     const s = setup();
     const initial = s.graph();
@@ -810,6 +852,11 @@ describe('共享副本与离线草稿', () => {
     current = await s.repository.addNode(current.project.id, current.project.revision, first, [], null);
     const second = createNode(current, { version: 'V2', description: '草稿二' });
     current = await s.repository.addNode(current.project.id, current.project.revision, second, [first.id], null);
+    current = await s.repository.saveNodeWithParents(current.project.id, current.project.revision, second.id,
+      { version: 'V2', description: '离线组合编辑', taskId: null }, []);
+    expect(current.edges).toHaveLength(0);
+    current = await s.repository.saveNodeWithParents(current.project.id, current.project.revision, second.id,
+      { version: 'V2', description: '离线组合编辑', taskId: null }, [first.id]);
     current = await s.repository.saveNode(current.project.id, current.project.revision, first.id, { version: 'V1a', description: '已编辑', taskId: null });
     expect(s.graph().nodes).toHaveLength(0);
     await expect(s.repository.setPartNumber(current.project.id, current.project.revision, '789')).rejects.toThrow('只读');
@@ -817,6 +864,7 @@ describe('共享副本与离线草稿', () => {
     await reopened.initialize();
     const cached = await reopened.get(current.project.id);
     expect(cached.nodes.map(node => node.version)).toEqual(['V1a', 'V2']);
+    expect(cached.nodes.find(node => node.id === second.id)?.description).toBe('离线组合编辑');
     expect(cached.edges[0]?.parentId).toBe(first.id);
     s.network(true);
     await reopened.reconnect();

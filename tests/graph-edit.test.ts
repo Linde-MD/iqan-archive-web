@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProject, type ProjectGraph } from '../src/domain/model';
-import { createBranch, release, reorderBranches, revokeRelease, setNodeParents, updateBranch, updateNode } from '../src/domain/graph';
+import { createBranch, release, reorderBranches, revokeRelease, setNodeParents, startReleaseTesting, updateBranch, updateNode } from '../src/domain/graph';
+import { applyCollaborationCommand } from '../src/domain/collaboration';
 
 function fixture(): ProjectGraph {
   const graph = createProject('工程', '123');
@@ -16,6 +17,21 @@ function fixture(): ProjectGraph {
 }
 
 describe('节点与分支编辑', () => {
+  it('组合命令编辑测试中版本时为新祖先补齐测试状态，非法命令不修改原图', () => {
+    const graph = fixture();
+    graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null });
+    const testing = startReleaseTesting(graph, 'B', '2026-01-01T00:00:00.000Z');
+    const before = structuredClone(testing);
+    const command = { type: 'edit-node', nodeId: 'B', update: { version: 'B', description: '更新', taskId: 't' }, parentIds: ['C'] };
+    const result = applyCollaborationCommand(testing, command);
+    expect(result.nodes.find(node => node.id === 'B')).toMatchObject({ description: '更新', taskId: 't' });
+    expect(result.nodes.find(node => node.id === 'C')?.testingAt).not.toBeNull();
+    expect(result.edges.map(edge => edge.parentId)).toEqual(['C']);
+    expect(() => applyCollaborationCommand(testing, { ...command, parentIds: ['B'] })).toThrow('自己的父节点');
+    expect(() => applyCollaborationCommand(testing, { ...command, update: { ...command.update, taskId: 1 } })).toThrow('命令无效');
+    expect(testing).toEqual(before);
+  });
+
   it('父节点集合可替换并保留其他图数据及未变化父边身份', () => {
     const graph = fixture();
     graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null });

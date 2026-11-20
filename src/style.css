@@ -330,6 +330,39 @@ tbody tr.row-selected { background: #1a3557; }
 .graph-sidebar .graph-form h3 { margin-top: 0; overflow-wrap: anywhere; }
 .graph-sidebar .graph-form label, .graph-sidebar .deletion-rewires label { display: flex; flex-wrap: wrap; }
 .graph-sidebar .graph-form input, .graph-sidebar .graph-form select, .graph-sidebar .graph-form textarea { min-width: 0; max-width: 100%; }
+.node-editor-heading, .node-editor-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.node-editor-state, .node-editor-section-heading span { flex: none; padding: 3px 8px; border: 1px solid #536985; border-radius: 999px; color: #d7e5f8; font-size: 12px; }
+.node-editor-section { min-width: 0; margin-bottom: 12px; padding: 12px; border: 1px solid #40536e; border-radius: 8px; background: #101d30; }
+.node-editor-section h4 { margin: 0 0 10px; color: #e6effc; font-size: 14px; }
+.node-editor-section-heading h4 { margin: 0; }
+.node-editor-section-heading { margin-bottom: 8px; }
+.node-editor-section .markdown-editor { margin-bottom: 0; }
+.node-editor-parents .parent-picker { margin: 10px 0 0; }
+.node-editor-parents .parent-picker > label {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.node-editor-parents .node-parent-relations {
+  position: relative; display: flex; flex-direction: column; gap: 0;
+  margin: 0; padding: 2px 0; border: 1px solid #40536e; border-radius: 7px; background: #0d1a2c;
+}
+.node-editor-parents .node-parent-relations::before {
+  content: ''; position: absolute; top: 24px; bottom: 24px; left: 19px; width: 1px; background: #557396;
+}
+.node-editor-parents .node-parent-relations li {
+  position: relative; display: flex; min-width: 0; width: 100%; gap: 10px; padding: 0 2px 0 15px;
+  border: 0; border-radius: 0; background: transparent;
+}
+.node-editor-parents .node-parent-relations li + li { border-top: 1px solid #293b53; }
+.node-editor-parents .node-parent-relations li::before {
+  content: ''; flex: 0 0 9px; width: 9px; height: 9px; border: 2px solid #89bdf5;
+  border-radius: 50%; background: #0d1a2c; z-index: 1;
+}
+.node-editor-parents .node-parent-relations li span { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+.node-editor-parents .node-parent-relations .icon-button { flex: 0 0 44px; }
+.node-editor-parents .form-help { margin: 8px 0 0; }
+.node-editor-parents .node-parent-empty { margin: 0; padding: 10px 12px; border: 1px dashed #536985; border-radius: 7px; }
+.node-editor-description { margin-inline: -4px; padding: 0; border: 0; background: transparent; }
 .markdown-editor { min-width: 0; margin-bottom: 14px; }
 .markdown-editor-header,
 .markdown-editor-actions { display: flex; align-items: center; gap: 4px; }
@@ -337,6 +370,8 @@ tbody tr.row-selected { background: #1a3557; }
 .markdown-editor .markdown-editor-label { margin: 0; color: #d7e3f3; font-size: 13px; font-weight: 600; }
 .markdown-editor-surface { min-width: 0; border: 1px solid #52647e; border-radius: 7px; background: #0d1728; }
 .markdown-editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; padding: 0 4px; border-bottom: 1px solid #35445c; border-radius: 6px 6px 0 0; background: #162235; }
+.node-editor .markdown-editor-toolbar { padding: 0; }
+.node-editor .markdown-editor-toolbar .markdown-block-select { width: 52px; padding: 0 1px; font-size: 12px; }
 .markdown-format-group { display: flex; align-items: center; position: relative; }
 .markdown-format-group::before { content: ''; width: 1px; height: 18px; margin: 0 3px; background: #52647e; }
 .markdown-editor-toolbar.is-compact { --compact-tool-size: 44px; flex-wrap: nowrap; }

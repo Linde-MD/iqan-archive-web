@@ -1,5 +1,5 @@
 import { requireCondition, type ProjectGraph } from './model';
-import { applyDeletionMany, setNodeParents } from './graph';
+import { applyDeletionMany, setNodeParents, updateNode } from './graph';
 import { changeVersionRelations } from './relations';
 
 function record(value: unknown): Record<string, unknown> {
@@ -17,6 +17,17 @@ export function applyCollaborationCommand(graph: ProjectGraph, value: unknown): 
   if (command.type === 'parents') {
     requireCondition(typeof command.nodeId === 'string', 'COMMAND', '缺少版本 ID。');
     return setNodeParents(graph, command.nodeId, strings(command.parentIds));
+  }
+  if (command.type === 'edit-node') {
+    const update = record(command.update);
+    requireCondition(typeof command.nodeId === 'string'
+      && typeof update.version === 'string' && typeof update.description === 'string'
+      && (update.taskId === null || typeof update.taskId === 'string')
+      && Object.keys(update).every(key => ['version', 'description', 'taskId'].includes(key)),
+    'COMMAND', '版本编辑命令无效。');
+    return setNodeParents(updateNode(graph, command.nodeId, {
+      version: update.version, description: update.description, taskId: update.taskId,
+    }), command.nodeId, strings(command.parentIds));
   }
   if (command.type === 'relations') {
     requireCondition(command.action === 'clear' || command.action === 'linear', 'COMMAND', '关系操作无效。');

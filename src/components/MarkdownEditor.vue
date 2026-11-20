@@ -24,6 +24,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean;
   readonly?: boolean;
   compactToolbar?: boolean;
+  inspectorToolbar?: boolean;
   composer?: boolean;
   placeholder?: string;
   mentionOptions?: TaskAssignee[];
@@ -297,6 +298,9 @@ const tools: FormatTool[][] = [
   ],
 ];
 const compactTools = [...tools[0]!, tools[4]![1]!, ...tools[2]!, ...tools[3]!, ...tools[1]!, tools[4]![0]!];
+const inspectorTools = [tools[0]![0]!, tools[0]![1]!, ...tools[2]!, tools[4]![1]!,
+  tools[0]![2]!, tools[0]![3]!, ...tools[3]!, ...tools[1]!, tools[4]![0]!];
+const compactOrder = computed(() => props.inspectorToolbar ? inspectorTools : compactTools);
 const toolbar = ref<HTMLElement>();
 const blockSelect = ref<HTMLSelectElement>();
 const moreFormats = ref<HTMLElement>();
@@ -304,15 +308,15 @@ const availableToolWidth = ref(0);
 const compactToolSize = ref(44);
 const visibleToolCount = computed(() => {
   const slots = Math.floor(availableToolWidth.value / compactToolSize.value);
+  if (props.inspectorToolbar) return Math.min(5, Math.max(0, slots - 1));
   return !props.composer && slots >= compactTools.length ? compactTools.length : Math.max(0, slots - 1);
 });
-const toolbarGroups = computed(() => props.compactToolbar ? [compactTools.slice(0, visibleToolCount.value)] : tools);
-const overflowTools = computed(() => props.compactToolbar ? compactTools.slice(visibleToolCount.value) : []);
+const toolbarGroups = computed(() => props.compactToolbar ? [compactOrder.value.slice(0, visibleToolCount.value)] : tools);
+const overflowTools = computed(() => props.compactToolbar ? compactOrder.value.slice(visibleToolCount.value) : []);
 const overflowId = computed(() => `${props.textareaId}-more-formats`);
 
-watch(toolbar, (element, _old, onCleanup) => {
-  const select = blockSelect.value;
-  if (!props.compactToolbar || !element || !select) return;
+watch([toolbar, blockSelect, () => props.compactToolbar], ([element, select, compact], _old, onCleanup) => {
+  if (!compact || !element || !select) return;
   const measure = () => {
     const style = getComputedStyle(element);
     compactToolSize.value = parseFloat(style.getPropertyValue('--compact-tool-size')) || 44;

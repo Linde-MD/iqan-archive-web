@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { liveQuery } from 'dexie';
 import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type VersionNode } from '../domain/model';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
@@ -312,8 +312,9 @@ type NodeSwitchSource = 'node-add' | 'node-edit' | 'parent-edit' | 'merge' | 'br
 const pendingNodeSwitch = ref<{ nodeId: string; mode: 'details' | 'edit'; source: NodeSwitchSource } | null>(null);
 const nodeTaskId = ref('');
 const nodeDraftBaseline = ref('');
+const nodeEditRevision = ref<number | null>(null);
 const branchDraftBaseline = ref('');
-const nodeDraftValue = () => JSON.stringify([nodeForm.value, nodeTaskId.value]);
+const nodeDraftValue = () => JSON.stringify([{ ...nodeForm.value, parentIds: [...nodeForm.value.parentIds].sort() }, nodeTaskId.value]);
 const branchDraftValue = () => JSON.stringify([
   branchForm.value.name, branchForm.value.description, branchForm.value.color, branchForm.value.headId,
 ]);
@@ -455,11 +456,7 @@ watch(() => saving.value || editorOpen.value || !!draggedBranch.value || !!pendi
 const branchHeadOptions = computed(() => [...(graph.value?.nodes ?? [])]
   .sort((a, b) => compareVersions(a.version, b.version)));
 const orderedBranchList = computed(() => orderedBranches(graph.value?.branches ?? []));
-const nodeEditDirty = computed(() => panel.value === 'node-edit' && !!selectedNode.value && (
-  nodeForm.value.version !== selectedNode.value.version
-  || nodeForm.value.description !== selectedNode.value.description
-  || nodeTaskId.value !== (selectedNode.value.taskId ?? '')
-));
+const nodeEditDirty = computed(() => panel.value === 'node-edit' && nodeDraftValue() !== nodeDraftBaseline.value);
 const pendingNodeSwitchTarget = computed(() => pendingNodeSwitch.value
   ? nodeById.value.get(pendingNodeSwitch.value.nodeId)
   : undefined);
@@ -1022,7 +1019,7 @@ const childIdsOf = computed(() => {
   return children;
 });
 const parentTarget = computed(() => panel.value === 'parent-edit' ? selectedNode.value?.version : nodeForm.value.version);
-const parentExcludedId = computed(() => panel.value === 'parent-edit' ? selectedNode.value?.id ?? null : null);
+const parentExcludedId = computed(() => panel.value === 'parent-edit' || panel.value === 'node-edit' ? selectedNode.value?.id ?? null : null);
 const rankedParentOptions = computed(() => {
   if (!graph.value || !parentTarget.value) return [];
   return recommendedParentNodes(graph.value, parentTarget.value, parentExcludedId.value)
@@ -1324,7 +1321,7 @@ async function restoreHistory(redo: boolean) {
   status.value = '';
   try {
     const before = structuredClone(current);
-    graph.value = await props.repository.restoreUndo(props.projectId, current.project.revision, entry.before);
+    graph.value = await props.repository.restoreUndo(props.projectId, current.project.revision, structuredClone(toRaw(entry.before)));
     source.pop();
     destination.push({ before, afterRevision: graph.value.project.revision, label: entry.label });
     for (const history of [source, destination]) {
@@ -1795,10 +1792,11 @@ function openNodeEdit() {
   nodeForm.value = {
     version: selectedNode.value.version,
     description: selectedNode.value.description,
-    parentIds: [],
+    parentIds: [...(parentIdsOf.value.get(selectedNode.value.id) ?? [])],
     targetBranchId: '',
   };
   nodeDraftBaseline.value = nodeDraftValue();
+  nodeEditRevision.value = graph.value?.project.revision ?? null;
   panel.value = 'node-edit';
 }
 
@@ -1818,8 +1816,9 @@ function openNodeEditFor(nodeId: string) {
   activeBranchId.value = null;
   closeMenu(false);
   nodeTaskId.value = node.taskId ?? '';
-  nodeForm.value = { version: node.version, description: node.description, parentIds: [], targetBranchId: '' };
+  nodeForm.value = { version: node.version, description: node.description, parentIds: [...(parentIdsOf.value.get(node.id) ?? [])], targetBranchId: '' };
   nodeDraftBaseline.value = nodeDraftValue();
+  nodeEditRevision.value = graph.value?.project.revision ?? null;
   error.value = '';
   status.value = '';
   panel.value = 'node-edit';
@@ -1970,6 +1969,7 @@ async function submitNode(): Promise<boolean> {
         };
       }
     } else if (actionPanel === 'node-edit') {
+      if (current.project.revision !== nodeEditRevision.value) throw new Error('项目已更新，请保留草稿，刷新后重新编辑。');
       const currentNode = selectedNode.value!;
       if (normalizeVersion(nodeForm.value.version) !== normalizeVersion(currentNode.version)) {
         const associations = await findEngineeringFiles(current, currentNode);
@@ -2016,11 +2016,19 @@ async function submitNode(): Promise<boolean> {
           if (!window.confirm(`无法完整扫描共享和本地工程目录（${unavailableLine}）。${foundLine}\n\n仍保存版本号吗？保存后请手动检查并修改关联工程文件名。`)) return;
         }
       }
-      graph.value = await props.repository.saveNode(props.projectId, current.project.revision, selectedNode.value!.id, {
+      const update = {
         version: nodeForm.value.version,
         description: nodeForm.value.description,
         taskId: nodeTaskId.value || null,
-      });
+      };
+      if (parentSelectionUnchanged.value) {
+        graph.value = await props.repository.saveNode(props.projectId, current.project.revision, currentNode.id, update);
+      } else if (normalizeVersion(update.version) === currentNode.version
+        && update.description.trim() === currentNode.description && update.taskId === currentNode.taskId) {
+        graph.value = await props.repository.saveNodeParents(props.projectId, current.project.revision, currentNode.id, nodeForm.value.parentIds);
+      } else {
+        graph.value = await props.repository.saveNodeWithParents(props.projectId, current.project.revision, currentNode.id, update, nodeForm.value.parentIds);
+      }
       savedNodeId = currentNode.id;
       status.value = '版本已更新。';
     } else if (actionPanel === 'merge') {
@@ -3228,24 +3236,42 @@ function onIqanDialogClosed() {
       </div>
     </div>
 
-    <div v-if="panel === 'node-add' || panel === 'node-edit' || panel === 'merge'" class="graph-form" role="dialog" aria-modal="false" :aria-label="panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : '新增版本'">
-      <h3 tabindex="-1">{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
+    <div v-if="panel === 'node-add' || panel === 'node-edit' || panel === 'merge'" class="graph-form" :class="{ 'node-editor': panel === 'node-edit' }" role="dialog" aria-modal="false" :aria-label="panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : '新增版本'">
+      <div class="node-editor-heading">
+        <h3 tabindex="-1">{{ panel === 'merge' ? '合并版本' : panel === 'node-edit' ? '编辑版本' : nodeForm.parentIds.length ? '新增子版本' : '新增未关联版本' }}</h3>
+        <span v-if="panel === 'node-edit'" class="node-editor-state">{{ selectedNode?.releasedAt ? '已放行' : selectedNode?.testingAt ? '放行测试中' : '未放行' }}</span>
+      </div>
       <form @submit.prevent="submitNode">
-        <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
-        <p v-if="sharedWriteBlockedReason" class="form-help">{{ sharedWriteBlockedReason }}</p>
-        <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' ? !selectedWritable || !!selectedNode?.releasedAt : !newVersionWritable)" placeholder="例如：1479-1 20260115" />
-        <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" label="改动说明" :disabled="saving" />
-        <TaskPicker v-model="nodeTaskId" :tasks="graph.tasks" :disabled="saving" />
-        <p class="form-help">每个版本可不关联任务，或关联一个任务；任务在项目任务看板中维护。</p>
-        <template v-if="panel !== 'node-edit'">
-          <ParentVersionPicker :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />
-          <ul v-if="nodeForm.parentIds.length" class="selected-parent-list" aria-label="已选父版本">
+        <section :class="{ 'node-editor-section': panel === 'node-edit' }" aria-label="版本信息">
+          <h4 v-if="panel === 'node-edit'">版本信息</h4>
+          <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
+          <p v-if="sharedWriteBlockedReason" class="form-help">{{ sharedWriteBlockedReason }}</p>
+          <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' ? !selectedWritable || !!selectedNode?.releasedAt : !newVersionWritable)" placeholder="例如：1479-1 20260115" />
+          <TaskPicker v-model="nodeTaskId" :tasks="graph.tasks" :disabled="saving" />
+          <p class="form-help">每个版本可不关联任务，或关联一个任务；任务在项目任务看板中维护。</p>
+        </section>
+        <section :class="{ 'node-editor-section': panel === 'node-edit', 'node-editor-parents': panel === 'node-edit' }" aria-label="父版本关系">
+          <div v-if="panel === 'node-edit'" class="node-editor-section-heading">
+            <h4>直接父版本</h4><span>{{ nodeForm.parentIds.length }} 个</span>
+          </div>
+          <ParentVersionPicker v-if="panel !== 'node-edit'" :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />
+          <ul v-if="nodeForm.parentIds.length" class="selected-parent-list" :class="{ 'node-parent-relations': panel === 'node-edit' }" aria-label="已选父版本">
             <li v-for="id in nodeForm.parentIds" :key="id">
-              {{ nodeById.get(id)?.version ?? id }}
+              <span>{{ nodeById.get(id)?.version ?? id }}</span>
               <button type="button" class="secondary icon-button" :disabled="saving" :aria-label="`移除父版本 ${nodeById.get(id)?.version ?? id}`" @click="removeParent(id)"><AppIcon name="clear" /></button>
             </li>
           </ul>
-          <p v-else class="form-help">没有选择父版本：版本将显示在“未关联版本”列。</p>
+          <p v-else class="form-help node-parent-empty">{{ panel === 'node-edit' ? '暂无父版本，此版本为根版本。' : '没有选择父版本：版本将显示在“未关联版本”列。' }}</p>
+          <ParentVersionPicker v-if="panel === 'node-edit'" :options="rankedParentOptions" :disabled="saving" @add="addParentCandidate" />
+          <p v-if="panel === 'node-edit' && selectedNode?.releasedAt" class="form-help">新父版本及其未放行祖先将补齐放行状态；旧祖先保留原状态，分支头不变。</p>
+          <p v-else-if="panel === 'node-edit' && selectedNode?.testingAt" class="form-help">新父版本及其未放行祖先将进入放行测试；旧祖先保留原状态，分支头不变。</p>
+          <p v-else-if="panel === 'node-edit' && !parentSelectionUnchanged" class="form-help">修改父关系不会自动改变分支头。</p>
+        </section>
+        <section :class="{ 'node-editor-section': panel === 'node-edit', 'node-editor-description': panel === 'node-edit' }" aria-label="版本改动说明">
+          <MarkdownEditor v-model="nodeForm.description" textarea-id="git-description" label="改动说明" :disabled="saving"
+            :compact-toolbar="panel === 'node-edit'" :inspector-toolbar="panel === 'node-edit'" />
+        </section>
+        <template v-if="panel !== 'node-edit'">
           <label for="git-target-branch">{{ panel === 'merge' ? '合并目标分支' : '推进目标分支' }}</label>
           <select id="git-target-branch" v-model="nodeForm.targetBranchId" :disabled="saving || !sharedWritable">
             <option v-if="panel !== 'merge'" value="">不推进分支</option>

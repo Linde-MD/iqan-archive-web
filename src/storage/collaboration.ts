@@ -820,7 +820,16 @@ export class CollaborationRepository implements RepositorySync {
     if (!deletion && !hasProjectChanges(changes)) return current;
     const body = metadata?.state ? { revision: sharedRevision, nodeId: metadata.nodeId, action: metadata.state }
       : metadata ? { revision: sharedRevision, command: metadata } : changes;
-    const result = await this.mutate(suffix ? 'POST' : 'PATCH', `/projects/${id}${suffix ? `/${suffix}` : ''}`, body, id);
+    let result: ProjectGraph | null;
+    try {
+      result = await this.mutate(suffix ? 'POST' : 'PATCH', `/projects/${id}${suffix ? `/${suffix}` : ''}`, body, id);
+    } catch (cause) {
+      if (metadata?.type === 'edit-node' && cause instanceof CollaborationError
+        && cause.code === 'COMMAND' && cause.message === '未知图命令。') {
+        throw new CollaborationError('当前后端版本不支持同时保存版本与父关系，请升级并重启后端；编辑草稿已保留。', cause.status, cause.code);
+      }
+      throw cause;
+    }
     requireCondition(result, 'RESPONSE', '保存响应无效。');
     return result;
   }
