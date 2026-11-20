@@ -117,13 +117,35 @@ describe('文件名和版本身份', () => {
     expect(parseEngineeringName('001 V1.idvx').extension).toBe('.idvx');
     expect(normalizeVersion(' V1 \t 2026 ')).toBe('V1 2026');
   });
+  it('识别分隔符和版本号中的下划线，保留完整版本文本', () => {
+    expect(parseEngineeringName('14813605200_V1.0_45 20260211_7.06.IDAX')).toEqual({
+      partNumber: '14813605200', version: 'V1.0_45 20260211_7.06', extension: '.idax',
+    });
+    expect(parseEngineeringName('001 \t_ V1_2.idsx').version).toBe('V1_2');
+    expect(parseEngineeringName('001 V1_2.idvx').version).toBe('V1_2');
+  });
   it('替换工程相对路径的文件名时保留所有子目录且不重复项目目录', () => {
     expect(replaceRelativeFileName('001 V1.idax', '001 V2.idax')).toBe('001 V2.idax');
     expect(replaceRelativeFileName('nested/deeper/001 V1.idax', '001 V2.idax')).toBe('nested/deeper/001 V2.idax');
     expect(() => replaceRelativeFileName('nested/001 V1.idax', '../001 V2.idax')).toThrow();
   });
-  it.each(['001 V.idax', '001 v---.idax', '001 V1_2.idax', '001 R1.idax', 'abc V1.idax', '001 V1.idax.idsx', '001 V1.exe', '001 V中文.idax', '001 V1\n2026.idax'])('拒绝非法文件名：%s', name => {
+  it.each(['001 V.idax', '001 v---.idax', '001_V___.idax', '001V1.idax', '001 R1.idax', 'abc V1.idax', '001 V1.idax.idsx', '001 V1.exe', '001 V中文.idax', '001 V1\n2026.idax'])('拒绝非法文件名：%s', name => {
     expect(() => parseEngineeringName(name)).toThrow();
+  });
+  it('扫描和登记按完整版本匹配下划线，不把分隔符计入版本', () => {
+    const graph = registerCandidates(createProject('项目', '14813605200'), [
+      candidate('14813605200_V1.0_45 20260211_7.06.idax'),
+      candidate('14813605200 V1.0_45  20260211_7.06.idsx'),
+      candidate('14813605200_V1.0_45 20260211_7.07.idax'),
+    ]);
+    expect(graph.nodes.map(node => node.version)).toEqual(['V1.0_45 20260211_7.06', 'V1.0_45 20260211_7.07']);
+    const result = matchScannedFiles(graph, [
+      candidate('14813605200 V1.0_45\t20260211_7.06.IDVX'),
+      candidate('14813605200_V1.0_45 20260211_7.07.idax'),
+      candidate('14813605201_V1.0_45 20260211_7.06.idax'),
+    ]);
+    expect(result.rows.map(row => row.nodeId)).toEqual([graph.nodes[0]!.id, graph.nodes[1]!.id, null]);
+    expect(result.rows[2]!.reason).toContain('零件号不匹配');
   });
   it('登记仅创建缺失根节点，同完整版本去重，不保存文件、不推进分支', () => {
     const graph = registerCandidates(createProject('项目', '001'), [
