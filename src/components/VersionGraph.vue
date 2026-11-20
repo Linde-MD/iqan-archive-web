@@ -1202,7 +1202,11 @@ function updateBranchLabelPosition() {
   const scroller = graphScroller.value;
   if (!scroller) return;
   branchLabelWidth.value = Math.min(300, (scroller.clientWidth / scale.value) * 0.42);
-  branchLabelLeft.value = (scroller.scrollLeft + scroller.clientWidth - 12) / scale.value - branchLabelWidth.value;
+  const contentWidth = Math.max(canvasWidth.value, scroller.clientWidth / scale.value);
+  branchLabelLeft.value = Math.min(
+    (scroller.scrollLeft + scroller.clientWidth - 12) / scale.value - branchLabelWidth.value,
+    contentWidth - branchLabelWidth.value,
+  );
 }
 
 watch(graphScroller, scroller => {
@@ -1212,7 +1216,7 @@ watch(graphScroller, scroller => {
   graphScrollerResizeObserver.observe(scroller);
   void nextTick(updateBranchLabelPosition);
 }, { flush: 'post' });
-watch(scale, () => void nextTick(updateBranchLabelPosition), { flush: 'post' });
+watch([scale, canvasWidth], () => void nextTick(updateBranchLabelPosition), { flush: 'post' });
 
 function clearSelectionsForFilter() {
   const visible = new Set(graphLayout.value?.rows.map(row => row.node.id) ?? []);
@@ -2847,8 +2851,8 @@ function onIqanDialogClosed() {
                 @scroll="updateBranchLabelPosition"
         @wheel="onWheel"
       >
-        <div class="git-graph-canvas" :style="{ width: `${canvasWidth * scale}px`, height: `${displayHeight * scale}px` }">
-          <div class="git-graph-zoom-content" :style="{ width: `${canvasWidth}px`, height: `${displayHeight}px`, transform: `scale(${scale})`, '--graph-header-height': `${GIT_GRAPH.headerHeight}px`, '--graph-row-height': `${GIT_GRAPH.rowHeight}px` }">
+        <div class="git-graph-canvas" :style="{ width: `max(100%, ${canvasWidth * scale}px)`, height: `${displayHeight * scale}px` }">
+          <div class="git-graph-zoom-content" :style="{ width: `max(${canvasWidth}px, ${100 / scale}%)`, height: `${displayHeight}px`, transform: `scale(${scale})`, '--graph-header-height': `${GIT_GRAPH.headerHeight}px`, '--graph-row-height': `${GIT_GRAPH.rowHeight}px` }">
             <div class="git-graph-column-head" :style="{ gridTemplateColumns: graphColumns }">
               <span>分支轨道</span><span>版本 / 任务与改动信息 · 分支名悬浮于可视区右侧</span><span v-if="!hideIsolated">未关联版本</span>
             </div>

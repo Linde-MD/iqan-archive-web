@@ -33,6 +33,11 @@ const displayName = ref('');
 const email = ref('');
 const avatar = ref<string | null>(null);
 const members = ref<CollaborationUser[]>([]);
+const membersLoaded = ref(false);
+const memberSearch = ref('');
+const memberForm = ref<'create' | 'reset' | null>(null);
+const memberFormHeading = ref<HTMLElement>();
+let memberFormTrigger: HTMLElement | null = null;
 const memberName = ref('');
 const memberUsername = ref('');
 const memberEmail = ref('');
@@ -41,6 +46,11 @@ const resetUsername = ref('');
 const resetPassword = ref('');
 const deletingMember = ref<CollaborationUser | null>(null);
 const deleteHeading = ref<HTMLElement>();
+const filteredMembers = computed(() => {
+  const query = memberSearch.value.trim().toLocaleLowerCase();
+  return query ? members.value.filter(member =>
+    [member.displayName, member.username, member.email].some(value => value.toLocaleLowerCase().includes(query))) : members.value;
+});
 const passwordReuse = computed(() => currentPassword.value.length > 0 && currentPassword.value === newPassword.value);
 const preview = shallowRef<{ graph: ProjectGraph; nodes: ProjectGraph['nodes'] } | null>(null);
 const drafts = shallowRef<Awaited<ReturnType<CollaborationRepository['draftDetails']>>>();
@@ -63,13 +73,16 @@ const accountSection = computed(() => route.path.match(/^\/account\/(login|profi
 const accountPage = computed(() => accountSection.value !== '');
 const avatarInitials = computed(() => accountInitials(state.user?.displayName, state.user?.username));
 const avatarThemeStyle = computed(() => {
-  const theme = accountAvatarTheme(state.user?.id ?? state.user?.username);
+  return memberAvatarStyle(state.user?.id ?? state.user?.username);
+});
+function memberAvatarStyle(id: string | undefined) {
+  const theme = accountAvatarTheme(id);
   return {
     '--avatar-background': theme.background,
     '--avatar-foreground': theme.foreground,
     '--avatar-border': theme.border,
   };
-});
+}
 const pageTitle = computed(() => ({
   login: '登录协作',
   profile: '个人资料',
@@ -183,13 +196,33 @@ async function changePassword() {
   });
 }
 async function loadMembers() {
-  await run(async () => { members.value = await props.client.listUsers(); });
+  await run(async () => { members.value = await props.client.listUsers(); membersLoaded.value = true; });
 }
 watch([accountSection, isAdmin], async ([section, admin]) => {
   deletingMember.value = null;
+  memberForm.value = null;
+  membersLoaded.value = false;
   if (section === 'members' && admin) await loadMembers();
 }, { immediate: true });
 
+async function openMemberForm(form: 'create' | 'reset', event: MouseEvent, member?: CollaborationUser) {
+  memberFormTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (member && resetUsername.value !== member.username) {
+    if (resetPassword.value) {
+      message.value = '保留了尚未提交的重置密码和账号，请先处理该草稿。';
+    } else {
+      resetUsername.value = member.username;
+    }
+  }
+  memberForm.value = form;
+  await nextTick();
+  memberFormHeading.value?.focus();
+}
+async function closeMemberForm() {
+  memberForm.value = null;
+  await nextTick();
+  memberFormTrigger?.focus();
+}
 async function resetMember() {
   await run(async () => {
     const updated = await props.client.manageUser(resetUsername.value, false, resetPassword.value);
@@ -197,7 +230,9 @@ async function resetMember() {
     resetPassword.value = '';
     members.value = members.value.map(member => member.id === updated.id ? updated : member);
     message.value = '已重置并启用此成员，旧会话失效，首次登录须改密。';
+    await closeMemberForm();
   });
+  if (!memberForm.value) { await nextTick(); memberFormTrigger?.focus(); }
 }
 async function confirmMemberDeletion(member: CollaborationUser) {
   deletingMember.value = member;
@@ -239,10 +274,13 @@ async function selectAvatar(event: Event) {
 }
 async function createMember() {
   await run(async () => {
-    await props.client.createUser({ username: memberUsername.value, password: memberPassword.value, displayName: memberName.value, email: memberEmail.value });
-    memberPassword.value = ''; members.value = await props.client.listUsers();
+    const created = await props.client.createUser({ username: memberUsername.value, password: memberPassword.value, displayName: memberName.value, email: memberEmail.value });
+    members.value = [...members.value.filter(member => member.id !== created.id), created];
+    memberUsername.value = ''; memberName.value = ''; memberEmail.value = ''; memberPassword.value = '';
     message.value = '成员已创建，首次登录需修改初始密码。';
+    await closeMemberForm();
   });
+  if (!memberForm.value) { await nextTick(); memberFormTrigger?.focus(); }
 }
 async function previewSync() {
   await run(async () => { preview.value = await props.client.previewDrafts(props.projectId); });
@@ -330,7 +368,7 @@ async function saveDraft() {
       </a>
       <button type="button" class="secondary account-return" @click="closeAccountPage"><AppIcon name="arrow" />返回工作台</button>
     </header>
-    <div class="account-page-content">
+    <div class="account-page-content" :class="{ 'account-page-content-members': accountSection === 'members' && isAdmin }">
       <div class="account-page-heading">
         <div><p class="eyebrow">ACCOUNT CONTROL</p><h1 id="collaboration-title">个人账户</h1></div>
         <span class="account-session-chip" :class="{ 'is-connected': state.authenticated && state.connected }">
@@ -338,7 +376,7 @@ async function saveDraft() {
           {{ state.restoring ? '正在恢复连接…' : state.authenticated ? (state.connected ? '共享服务在线' : '离线缓存模式') : state.connected ? '后端可达 · 需登录' : '未登录' }}
         </span>
       </div>
-      <section class="account-profile-banner" aria-label="账户摘要">
+      <section v-if="accountSection !== 'members'" class="account-profile-banner" aria-label="账户摘要">
         <span class="account-avatar account-avatar-large" :style="avatarThemeStyle" aria-hidden="true">
           <img v-if="state.user?.avatar" :src="state.user.avatar" alt="">
           <span v-else>{{ avatarInitials }}</span>
@@ -367,8 +405,10 @@ async function saveDraft() {
           <div><p class="eyebrow">ACCOUNT / {{ accountSection.toUpperCase() }}</p><h2 :id="`account-page-title-${accountSection}`" ref="heading" tabindex="-1">{{ pageTitle }}</h2></div>
           <span v-if="state.user" class="account-identity-compact"><AppIcon name="user" />{{ state.user.username }}</span>
         </header>
-    <p class="form-help">Access 是共享权威数据；本机 IndexedDB 保留副本和离线草稿。仅可信小团队使用，不是公司级权限隔离。</p>
-    <p class="form-help">未同步版本仅保存在当前浏览器，清除浏览器数据可能丢失草稿和会话；迁移前请导出 JSON。后端断开不代表网页资源支持完全断网加载。</p>
+    <template v-if="accountSection !== 'members'">
+      <p class="form-help">Access 是共享权威数据；本机 IndexedDB 保留副本和离线草稿。仅可信小团队使用，不是公司级权限隔离。</p>
+      <p class="form-help">未同步版本仅保存在当前浏览器，清除浏览器数据可能丢失草稿和会话；迁移前请导出 JSON。后端断开不代表网页资源支持完全断网加载。</p>
+    </template>
     <div v-if="error" role="alert" class="collaboration-error"><h3 ref="errorHeading" tabindex="-1">操作未完成</h3><p>{{ error }}</p></div>
     <p v-if="state.restoring" role="status">正在检测后端并恢复登录…</p>
     <template v-else>
@@ -426,34 +466,62 @@ async function saveDraft() {
         <button type="button" class="secondary" :disabled="busy" @click="run(() => client.reconnect())">重新连接 / 刷新共享数据</button>
       </div>
     </template>
-    <section v-if="accountSection === 'members' && isAdmin" aria-labelledby="member-management-title">
-      <h3 id="member-management-title">成员管理</h3>
-      <form @submit.prevent="createMember">
-        <label for="member-username">成员账号（3–32 位小写字母、数字、点、横线或下划线，以字母开头）</label><input id="member-username" v-model="memberUsername" autocomplete="off" pattern="[a-z][a-z0-9._\-]{2,31}" required :disabled="busy">
-        <label for="member-name">显示名称</label><input id="member-name" v-model="memberName" required maxlength="80" :disabled="busy">
-        <label for="member-email">邮箱</label><input id="member-email" v-model="memberEmail" type="email" required :disabled="busy">
-        <label for="member-password">初始密码（6–128 个字符，无需复杂组合）</label><input id="member-password" v-model="memberPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy">
-        <div class="actions"><button type="submit" :disabled="busy">创建成员</button><button type="button" class="secondary" :disabled="busy" @click="loadMembers">刷新成员</button></div>
-      </form>
-      <ul class="collaboration-members"><li v-for="member in members" :key="member.id">
-        <div class="account-member-identity"><strong>{{ member.displayName }}</strong><code>@{{ member.username }}</code><span class="account-member-status">{{ member.disabled ? '已停用' : '已启用' }}</span></div>
-        <div class="account-member-actions">
-          <button type="button" class="secondary" :disabled="busy || member.role === 'admin'" @click="run(async () => { const updated = await client.manageUser(member.username, !member.disabled); members = members.map(item => item.id === updated.id ? updated : item); message = `成员 ${updated.username} 已${updated.disabled ? '停用' : '启用'}。`; })">{{ member.disabled ? '启用' : '停用' }}</button>
-          <button v-if="member.role === 'member'" type="button" class="secondary account-member-delete" :disabled="busy" :aria-label="`删除成员 ${member.username}`" @click="confirmMemberDeletion(member)">删除账号</button>
+    <section v-if="accountSection === 'members' && isAdmin" class="member-management" aria-labelledby="member-management-title">
+      <div class="member-toolbar">
+        <div class="member-toolbar-title">
+          <h3 id="member-management-title">全部成员 <span v-if="membersLoaded">{{ members.length }}</span></h3>
+          <p>管理团队账号与访问状态</p>
         </div>
-      </li></ul>
+        <div class="member-toolbar-actions">
+          <label class="member-search"><span>搜索</span><input v-model="memberSearch" type="search" placeholder="名称、账号或邮箱"></label>
+          <button type="button" class="secondary member-refresh" :disabled="busy" @click="loadMembers"><AppIcon name="refresh" />刷新</button>
+          <button type="button" :disabled="busy" :aria-expanded="memberForm === 'create'" @click="openMemberForm('create', $event)"><AppIcon name="plus" />添加成员</button>
+        </div>
+      </div>
+      <div v-if="memberForm" class="member-form-panel">
+        <div class="member-form-heading">
+          <div><h3 ref="memberFormHeading" tabindex="-1">{{ memberForm === 'create' ? '添加成员' : '重置成员密码' }}</h3>
+            <p>{{ memberForm === 'create' ? '创建后成员首次登录须修改初始密码。' : '重置后账号将启用，旧会话失效，首次登录须改密。' }}</p></div>
+          <button type="button" class="secondary member-form-close" :disabled="busy" aria-label="收起表单，保留草稿" @click="closeMemberForm"><AppIcon name="clear" /></button>
+        </div>
+        <form v-if="memberForm === 'create'" class="member-form" @submit.prevent="createMember">
+          <div><label for="member-username">成员账号（3–32 位，以字母开头）</label><input id="member-username" v-model="memberUsername" autocomplete="off" pattern="[a-z][a-z0-9._\-]{2,31}" required :disabled="busy"><p class="form-help">小写字母、数字、点、横线或下划线</p></div>
+          <div><label for="member-name">显示名称</label><input id="member-name" v-model="memberName" required maxlength="80" :disabled="busy"></div>
+          <div><label for="member-email">邮箱</label><input id="member-email" v-model="memberEmail" type="email" required :disabled="busy"></div>
+          <div><label for="member-password">初始密码（6–128 个字符）</label><input id="member-password" v-model="memberPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy"></div>
+          <div class="member-form-actions"><button type="button" class="secondary" :disabled="busy" @click="closeMemberForm">收起</button><button type="submit" :disabled="busy">创建成员</button></div>
+        </form>
+        <form v-else class="member-form" @submit.prevent="resetMember">
+          <div><label for="reset-username">重置成员账号</label><input id="reset-username" v-model="resetUsername" list="reset-member-options" autocomplete="off" required :disabled="busy">
+            <datalist id="reset-member-options"><option v-for="member in members.filter(item => item.role === 'member')" :key="member.id" :value="member.username">{{ member.displayName }}</option></datalist></div>
+          <div><label for="reset-password">新的初始密码（6–128 个字符）</label><input id="reset-password" v-model="resetPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy"></div>
+          <div class="member-form-actions"><button type="button" class="secondary" :disabled="busy" @click="closeMemberForm">收起</button><button type="submit" :disabled="busy || resetUsername.trim().toLowerCase() === 'admin'">重置并启用成员</button></div>
+        </form>
+      </div>
       <section v-if="deletingMember" class="account-delete-confirmation" aria-labelledby="delete-member-title">
         <h3 id="delete-member-title" ref="deleteHeading" tabindex="-1">确认删除成员 {{ deletingMember.username }}？</h3>
         <p>该账号将无法登录，所有旧会话会撤销。项目、任务和评论不会删除，既有负责人引用保留为账号信息不可用。</p>
         <p>该账号的本机未同步草稿将无法再由它同步；重建同名账号也不会继承旧账号身份。此操作不可撤销。</p>
         <div class="actions"><button type="button" class="secondary" :disabled="busy" @click="deletingMember = null; heading?.focus()">取消删除</button><button type="button" class="danger" :disabled="busy" @click="deleteMember">确认删除此成员</button></div>
       </section>
-      <form @submit.prevent="resetMember">
-        <label for="reset-username">重置成员账号</label><input id="reset-username" v-model="resetUsername" list="reset-member-options" autocomplete="off" required :disabled="busy">
-        <datalist id="reset-member-options"><option v-for="member in members.filter(item => item.role === 'member')" :key="member.id" :value="member.username">{{ member.displayName }}</option></datalist>
-        <label for="reset-password">新的初始密码（6–128 个字符，无需复杂组合）</label><input id="reset-password" v-model="resetPassword" type="password" autocomplete="new-password" required minlength="6" maxlength="128" :disabled="busy">
-        <button type="submit" class="secondary" :disabled="busy || resetUsername.trim().toLowerCase() === 'admin'">重置并启用成员</button>
-      </form>
+      <p v-if="!membersLoaded" class="member-empty" role="status">{{ busy ? '正在加载成员…' : '成员列表尚未加载，请刷新重试。' }}</p>
+      <div v-else class="member-table-scroll" tabindex="0" role="region" aria-label="成员列表，可横向滚动">
+        <table class="member-table">
+          <thead><tr><th scope="col">成员</th><th scope="col">账号</th><th scope="col">邮箱</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
+          <tbody><tr v-for="member in filteredMembers" :key="member.id">
+            <td><div class="member-name-cell"><span class="account-avatar account-avatar-small" :style="memberAvatarStyle(member.id)" aria-hidden="true"><img v-if="member.avatar" :src="member.avatar" alt=""><span v-else>{{ accountInitials(member.displayName, member.username) }}</span></span><span><strong>{{ member.displayName }}</strong><small v-if="member.role === 'admin'">管理员</small></span></div></td>
+            <td><code>{{ member.username }}</code></td><td>{{ member.email }}</td>
+            <td><span class="account-member-status" :class="{ 'is-disabled': member.disabled }">{{ member.disabled ? '已停用' : '已启用' }}</span></td>
+            <td><div v-if="member.role === 'member'" class="account-member-actions">
+              <button type="button" class="secondary" :disabled="busy" :aria-label="`重置成员 ${member.username} 的密码`" @click="openMemberForm('reset', $event, member)">重置密码</button>
+              <button type="button" class="secondary" :disabled="busy" @click="run(async () => { const updated = await client.manageUser(member.username, !member.disabled); members = members.map(item => item.id === updated.id ? updated : item); message = `成员 ${updated.username} 已${updated.disabled ? '停用' : '启用'}。`; })">{{ member.disabled ? '启用' : '停用' }}</button>
+              <button type="button" class="secondary account-member-delete" :disabled="busy" :aria-label="`删除成员 ${member.username}`" @click="confirmMemberDeletion(member)">删除</button>
+            </div><span v-else class="member-admin-note">管理员账号</span></td>
+          </tr></tbody>
+        </table>
+        <p v-if="!filteredMembers.length" class="member-empty" role="status">{{ memberSearch.trim() ? '没有匹配的成员，请尝试其他关键词。' : '暂无成员。' }}</p>
+      </div>
+      <button type="button" class="secondary member-reset-link" :disabled="busy" :aria-expanded="memberForm === 'reset'" @click="openMemberForm('reset', $event)">重置成员密码</button>
     </section>
     </template>
     <section v-if="accountSection === 'sync' && !state.restoring" aria-labelledby="collab-sync-title">
@@ -552,6 +620,7 @@ async function saveDraft() {
 .account-return { flex: 0 0 auto; min-height: 44px; padding: 8px 12px; font-size: 12px; white-space: nowrap; }
 .account-return .app-icon { transform: rotate(180deg); width: 17px; height: 17px; }
 .account-page-content { width: min(1040px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 24px; }
+.account-page-content-members { width: min(1380px, calc(100% - 40px)); }
 .account-page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .account-page-heading .eyebrow { margin-bottom: 6px; color: #9fc2e8; }
 .account-page-heading h1 { margin: 0; font-size: clamp(24px, 3vw, 31px); letter-spacing: -.03em; }
@@ -621,17 +690,46 @@ async function saveDraft() {
 }
 .collaboration-error h3 { margin: 0 0 4px; }
 .collaboration-error p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
-.collaboration-members { padding: 0; list-style: none; }
-.collaboration-members li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); color: #d7e5f8; font-size: 12px; }
-.collaboration-members button { width: auto; flex: 0 0 auto; }
-.account-member-identity { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
-.account-member-identity strong { font-size: 13px; overflow-wrap: anywhere; }
-.account-member-identity code { color: var(--muted); overflow-wrap: anywhere; }
-.account-member-status { padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 5px; font-size: 11px; white-space: nowrap; }
+.account-content .member-management { margin-top: 0; padding-top: 18px; border: 0; }
+.member-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.member-toolbar-title h3 { margin: 0; font-size: 15px; }
+.member-toolbar-title h3 span { margin-left: 5px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.member-toolbar-title p, .member-form-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.member-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.member-toolbar-actions button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.member-toolbar-actions .app-icon { width: 16px; height: 16px; }
+.member-search { display: flex; align-items: center; gap: 8px; min-width: 250px; margin: 0; color: #d7e5f8; font-size: 12px; }
+.member-search span { white-space: nowrap; }
+.member-search input { width: 100%; min-height: 44px; margin: 0; }
+.member-form-panel { margin-top: 18px; padding: 16px; border: 1px solid #405672; border-radius: 8px; background: #18253a; }
+.member-form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.member-form-heading h3 { margin: 0; font-size: 14px; outline-offset: 4px; }
+.member-form-close { flex: 0 0 44px; width: 44px; height: 44px; padding: 10px; }
+.member-form-close .app-icon { width: 18px; height: 18px; }
+.account-content .member-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; border: 0; padding: 0; margin-top: 16px; }
+.member-form label { display: block; }
+.member-form input { width: 100%; margin-bottom: 0; }
+.member-form .form-help { margin: 4px 0 0; }
+.member-form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+.member-form-actions button { width: auto; min-width: 100px; min-height: 44px; }
+.member-table-scroll { max-width: 100%; overflow-x: auto; margin-top: 20px; border-top: 1px solid var(--border); }
+.member-table { width: 100%; min-width: 820px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.member-table th { padding: 13px 12px; color: #c1d0e4; font-weight: 600; white-space: nowrap; }
+.member-table td { padding: 12px; border-top: 1px solid var(--border); color: #d7e5f8; overflow-wrap: anywhere; }
+.member-table tbody tr:hover { background: #1a2a41; }
+.member-table code { color: #c1d0e4; }
+.member-name-cell { display: flex; align-items: center; gap: 10px; min-width: 150px; }
+.member-name-cell > span:last-child { display: grid; gap: 3px; }
+.member-name-cell strong { color: var(--ink); font-size: 13px; }
+.member-name-cell small, .member-admin-note { color: #c1d0e4; font-size: 11px; }
+.account-member-status { display: inline-block; padding: 4px 8px; border: 1px solid #3d806c; border-radius: 5px; background: #102b2b; color: #b7f4df; font-size: 11px; white-space: nowrap; }
+.account-member-status.is-disabled { border-color: var(--border-strong); background: var(--surface-soft); color: #d7e5f8; }
 .account-member-actions { display: flex; flex-shrink: 0; gap: 8px; }
-.account-member-actions button { min-width: 76px; min-height: 44px; }
+.account-member-actions button { min-height: 44px; padding: 8px 10px; white-space: nowrap; }
 .account-member-actions .account-member-delete { border-color: var(--danger); color: var(--danger); background: transparent; }
 .account-member-actions .account-member-delete:hover { background: var(--surface-raised); }
+.member-empty { padding: 28px 12px; text-align: center; color: var(--muted); font-size: 13px; }
+.member-reset-link { margin-top: 12px; min-height: 44px; }
 @media (max-width: 700px) {
   .account-page-content { width: min(100% - 28px, 620px); padding-top: 20px; }
   .account-profile-banner { grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 14px; }
@@ -639,8 +737,9 @@ async function saveDraft() {
   .account-profile-metrics { grid-column: 1 / -1; justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--border); }
 }
 @media (max-width: 520px) {
-  .collaboration-members li { align-items: stretch; flex-direction: column; }
-  .account-member-actions { justify-content: flex-end; }
+  .member-toolbar-actions { width: 100%; }
+  .member-search { flex: 1 1 100%; min-width: 0; }
+  .account-content .member-form { grid-template-columns: minmax(0, 1fr); }
   .account-avatar-trigger { padding-right: 5px; }
   .account-trigger-label, .account-avatar-trigger > .app-icon { display: none; }
   .account-page-header { gap: 12px; padding-inline: 12px; }
