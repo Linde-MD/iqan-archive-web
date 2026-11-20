@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { computed } from 'vue';
+import { computed, reactive } from 'vue';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { CollaborationDatabase, CollaborationRepository, collaborationSnapshot } from '../src/storage/collaboration';
 import { createProject, type ProjectGraph, type Task, type VersionNode } from '../src/domain/model';
@@ -11,6 +11,7 @@ import { createProjectDelta, type EntityChanges, type ProjectChanges } from '../
 import { orderedBranches } from '../src/domain/model';
 import { projectWriteBlockedReason } from '../src/storage/repository-sync';
 import { startProjectPolling } from '../src/storage/project-polling';
+import { applyDeletionMany, planDeletionMany, type MultiDeletionPlan } from '../src/domain/graph';
 
 const databases: (ArchiveDatabase | CollaborationDatabase)[] = [];
 const testAvatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
@@ -136,6 +137,12 @@ function setup() {
       next = parseProjectSnapshot(envelope.snapshot);
       if ((envelope.revision ?? envelope.expectedRevision) !== graph.project.revision)
         return response({ error: { code: 'STALE_REVISION', message: '共享项目已变化' } }, 409);
+    } else if (path.endsWith('/command')) {
+      const envelope = body as { revision: number; command: { type: string; plan: MultiDeletionPlan; confirmedVersions: Record<string, string> } };
+      if (envelope.command.type !== 'delete') throw new Error('测试未支持的图命令');
+      if (envelope.revision !== graph.project.revision)
+        return response({ error: { code: 'STALE_REVISION', message: '共享项目已变化' } }, 409);
+      next = applyDeletionMany(graph, envelope.command.plan, envelope.command.confirmedVersions);
     } else if (path.endsWith('/offline')) {
       next = applyProjectChanges(graph, body as ProjectChanges);
       assertOfflineChanges(graph, next);
@@ -176,6 +183,35 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('协作删除接受响应式预览，提交放行确认、父边重连和分支头的普通数据快照', async () => {
+    const s = setup();
+    const initial = s.graph();
+    const id = initial.project.id;
+    const removed = createNode(initial, { version: 'V1', description: '' });
+    const child = createNode(initial, { version: 'V2', description: '' });
+    removed.releasedAt = '2026-11-20T00:00:00.000Z';
+    initial.nodes.push(removed, child);
+    initial.edges.push({ id: crypto.randomUUID(), projectId: id, parentId: removed.id, childId: child.id });
+    const branchId = crypto.randomUUID();
+    initial.branches.push({ id: branchId, projectId: id, name: '主线', description: '', color: '#2563eb', headId: removed.id });
+    s.setGraph(initial);
+    await s.client.login('admin', 'test', true);
+    const before = await s.repository.get(id);
+    const preview = reactive(planDeletionMany(before, [removed.id]));
+    const childParents = reactive({ [child.id]: [] as string[] });
+    const confirmedVersions = reactive({ [removed.id]: removed.version });
+    const plan = { ...preview, childParents, branchHeads: { [branchId]: child.id } };
+
+    const result = await s.repository.deleteNodes(id, before.project.revision, plan, confirmedVersions);
+    expect(result.nodes.map(node => node.id)).toEqual([child.id]);
+    expect(result.edges).toEqual([]);
+    expect(result.branches[0]?.headId).toBe(child.id);
+    expect(s.requests.at(-1)?.body).toMatchObject({
+      command: { type: 'delete', plan: { nodeIds: [removed.id], childParents: { [child.id]: [] }, branchHeads: { [branchId]: child.id } }, confirmedVersions: { [removed.id]: removed.version } },
+    });
+    expect(await s.cache.pending.count()).toBe(0);
+  });
+
   it('前台两分钟检查一次，隐藏暂停并取消在途检查，切回立即检查', async () => {
     vi.useFakeTimers();
     const page = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });

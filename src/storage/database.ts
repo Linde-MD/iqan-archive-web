@@ -417,7 +417,15 @@ export class ArchiveRepository {
   }
 
   async deleteNodes(projectId: string, revision: number, plan: MultiDeletionPlan, confirmedVersions: Readonly<Record<string, string>>): Promise<ProjectGraph> {
-    return this.change(projectId, revision, graph => applyDeletionMany(graph, plan, confirmedVersions), true, { type: 'delete', plan, confirmedVersions });
+    const snapshot: MultiDeletionPlan = {
+      nodeIds: [...plan.nodeIds],
+      childParents: Object.fromEntries(Object.entries(plan.childParents).map(([id, parents]) => [id, [...parents]])),
+      branchHeads: { ...plan.branchHeads },
+    };
+    const confirmations = { ...confirmedVersions };
+    return this.change(projectId, revision, graph => applyDeletionMany(graph, snapshot, confirmations), true, {
+      type: 'delete', plan: snapshot, confirmedVersions: confirmations,
+    });
   }
 
   async addNode(projectId: string, revision: number, node: VersionNode, parentIds: readonly string[], targetBranchId: string | null): Promise<ProjectGraph> {
