@@ -13,6 +13,7 @@ import type { TaskAssignee } from '../domain/model';
 import { addMarkdownTableColumn, addMarkdownTableRow, insertMarkdownTable, moveMarkdownCell, removeMarkdownTable, selectionAncestor, setMarkdownCodeBlock, toggleChecklist } from '../utils/markdown-editor-commands';
 import AppIcon from './AppIcon.vue';
 import { readRichMarkdown, richMarkdownSchema as schema, richMarkdownSerializer } from '../utils/rich-markdown';
+import { clipboardContent } from '../utils/markdown-clipboard';
 import 'prosemirror-view/style/prosemirror.css';
 
 const props = withDefaults(defineProps<{
@@ -52,6 +53,7 @@ const linkPanel = ref<{ from: number; to: number; text: string; url: string; exi
 const linkTextInput = ref<HTMLInputElement>();
 const linkUrlInput = ref<HTMLInputElement>();
 const linkError = ref('');
+const pasteError = ref('');
 let view: EditorView | undefined;
 const mentionMenu = ref<HTMLElement>();
 const mentionTarget = shallowRef<{
@@ -482,7 +484,6 @@ function mountEditor() {
         ...(mentionTarget.value ? { 'aria-controls': mentionMenuId.value, 'aria-activedescendant': activeMentionId.value ?? '' } : {}),
       } : {}),
     }),
-    // Keep clipboard data as text and do not let an external drop insert HTML or images.
     nodeViews: {
       list_item(node, editor, getPos) {
         const dom = document.createElement('li');
@@ -522,10 +523,20 @@ function mountEditor() {
       },
       paste(editor, event) {
         event.preventDefault();
-        const text = event.clipboardData?.getData('text/plain');
-        if (editable.value && text) {
-          if (inside('table', editor.state)) editor.dispatch(editor.state.tr.insertText(text.replace(/[\r\n]+/g, ' ')));
-          else editor.pasteText(text);
+        pasteError.value = '';
+        try {
+          const text = event.clipboardData?.getData('text/plain');
+          const html = event.clipboardData?.getData('text/html');
+          const sanitized = (html || text) && !inside('table', editor.state) && !inside('code_block', editor.state)
+            ? clipboardContent(html ?? '', text ?? '', document).html : '';
+          if (editable.value && sanitized) {
+            editor.pasteHTML(sanitized);
+          } else if (editable.value && text) {
+            if (inside('table', editor.state)) editor.dispatch(editor.state.tr.insertText(text.replace(/[\r\n]+/g, ' ')));
+            else editor.pasteText(text);
+          }
+        } catch (cause) {
+          pasteError.value = `粘贴失败，请检查内容后重试或以纯文本粘贴。${cause instanceof Error ? cause.message : String(cause)}`;
         }
         return true;
       },
@@ -544,6 +555,25 @@ function mountEditor() {
   });
   view = editor;
   editorState.value = state;
+}
+
+function pasteSource(event: ClipboardEvent) {
+  const html = event.clipboardData?.getData('text/html');
+  const input = sourceInput.value;
+  if (!html || !input || !editable.value) return;
+  event.preventDefault();
+  pasteError.value = '';
+  try {
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    const markdown = clipboardContent(html, text, document).markdown || text;
+    if (!markdown) return;
+    if (!document.execCommand('insertText', false, markdown))
+      input.setRangeText(markdown, input.selectionStart, input.selectionEnd, 'end');
+    source.value = input.value;
+    updateSourceMention();
+  } catch (cause) {
+    pasteError.value = `粘贴失败，请检查内容后重试或以纯文本粘贴。${cause instanceof Error ? cause.message : String(cause)}`;
+  }
 }
 
 function switchMode(event: Event) {
@@ -675,7 +705,7 @@ onBeforeUnmount(() => {
           :aria-autocomplete="mentionOptions ? 'list' : undefined"
           :aria-haspopup="mentionOptions ? 'listbox' : undefined"
           :aria-controls="mentionTarget ? mentionMenuId : undefined" :aria-activedescendant="activeMentionId"
-          @input="updateSourceMention" @keyup="updateSourceMention" @click="updateSourceMention" @select="updateSourceMention"></textarea>
+          @paste="pasteSource" @input="updateSourceMention" @keyup="updateSourceMention" @click="updateSourceMention" @select="updateSourceMention"></textarea>
         <div v-else class="markdown-content markdown-editor-preview" role="region" :aria-label="`${label}预览`">
           <div v-if="source.trim()" v-html="renderMarkdown(source)"></div>
           <p v-else class="markdown-empty">暂无内容。</p>
@@ -692,6 +722,7 @@ onBeforeUnmount(() => {
       <slot name="actions" />
     </div>
     <p v-if="unsupported" class="form-help markdown-editor-help" role="status">此内容包含富文本模式不能无损编辑的格式，请使用 Markdown 源码编辑。原文已保留。</p>
+    <p v-if="pasteError" class="form-help markdown-editor-help" role="alert">{{ pasteError }}</p>
     <p :id="helpId" class="form-help markdown-editor-help" :hidden="mode !== 'source'">原始 HTML 不执行，图片不加载。</p>
     <div v-if="mentionOptions" ref="mentionMenu" class="markdown-mention-menu" popover="manual" :style="mentionMenuStyle">
       <div class="markdown-mention-heading">项目成员</div>

@@ -11,6 +11,11 @@ export const richMarkdownSchema = new Schema({
   nodes: schema.spec.nodes.update('list_item', {
     ...schema.nodes.list_item!.spec,
     attrs: { checked: { default: null } },
+    parseDOM: [{ tag: 'li', getAttrs: dom => {
+      const checked = (dom as HTMLElement).getAttribute('data-checked');
+      return { checked: checked === 'true' ? true : checked === 'false' ? false : null };
+    } }],
+    toDOM: node => ['li', node.attrs.checked === null ? {} : { 'data-checked': String(node.attrs.checked) }, 0],
   }).append({
     mention: {
       group: 'inline', inline: true, atom: true,
@@ -18,16 +23,16 @@ export const richMarkdownSchema = new Schema({
       toDOM: node => ['span', { class: 'markdown-mention', 'data-account-id': node.attrs.id }, `@${node.attrs.name}`],
       leafText: node => `@${node.attrs.name}`,
     },
-    table: { group: 'block', content: 'table_head table_body?', toDOM: () => ['div', { class: 'markdown-table-scroll' }, ['table', 0]] },
-    table_head: { content: 'table_row', toDOM: () => ['thead', 0] },
-    table_body: { content: 'table_row+', toDOM: () => ['tbody', 0] },
-    table_row: { content: 'table_header+ | table_cell+', toDOM: () => ['tr', 0] },
-    table_header: { content: 'inline*', attrs: { align: { default: null } }, toDOM: node => cellDOM('th', node.attrs.align) },
-    table_cell: { content: 'inline*', attrs: { align: { default: null } }, toDOM: node => cellDOM('td', node.attrs.align) },
+    table: { group: 'block', content: 'table_head table_body?', parseDOM: [{ tag: 'table' }], toDOM: () => ['div', { class: 'markdown-table-scroll' }, ['table', 0]] },
+    table_head: { content: 'table_row', parseDOM: [{ tag: 'thead' }], toDOM: () => ['thead', 0] },
+    table_body: { content: 'table_row+', parseDOM: [{ tag: 'tbody' }], toDOM: () => ['tbody', 0] },
+    table_row: { content: 'table_header+ | table_cell+', parseDOM: [{ tag: 'tr' }], toDOM: () => ['tr', 0] },
+    table_header: { content: 'inline*', attrs: { align: { default: null } }, parseDOM: [{ tag: 'th', getAttrs: dom => ({ align: alignment((dom as HTMLElement).getAttribute('style')) }) }], toDOM: node => cellDOM('th', node.attrs.align) },
+    table_cell: { content: 'inline*', attrs: { align: { default: null } }, parseDOM: [{ tag: 'td', getAttrs: dom => ({ align: alignment((dom as HTMLElement).getAttribute('style')) }) }], toDOM: node => cellDOM('td', node.attrs.align) },
   }),
   marks: schema.spec.marks
-    .addBefore('code', 'underline', { toDOM: () => ['ins', 0] })
-    .addBefore('code', 'strike', { toDOM: () => ['s', 0] }),
+    .addBefore('code', 'underline', { parseDOM: [{ tag: 'ins' }, { tag: 'u' }, { style: 'text-decoration', getAttrs: value => /\bunderline\b/.test(value) && null }], toDOM: () => ['ins', 0] })
+    .addBefore('code', 'strike', { parseDOM: [{ tag: 's' }, { tag: 'del' }, { tag: 'strike' }, { style: 'text-decoration', getAttrs: value => /\bline-through\b/.test(value) && null }], toDOM: () => ['s', 0] }),
 });
 
 const tokenizer = createMarkdownTokenizer(true);
