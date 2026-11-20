@@ -147,7 +147,6 @@ const dueDateInput = computed({
   set: (value: string) => { if (taskDraft.value) taskDraft.value.dueDate = value || null; },
 });
 
-const typeNameById = computed(() => new Map((graph.value?.project.typeOptions ?? []).map(option => [option.id, option.name])));
 const legacyTypeNames = computed(() => legacyTaskTypeNames(graph.value?.project.typeOptions ?? []));
 const priorityOptionById = computed(() => new Map((graph.value?.project.priorityOptions ?? []).map(option => [option.id, option])));
 const assigneeById = computed(() => new Map(assignees.value.map(assignee => [assignee.id, assignee])));
@@ -517,20 +516,65 @@ async function submitTask() {
   }
 }
 
-async function deleteCurrentTask() {
+async function deleteTask(task: Task) {
   const current = graph.value;
-  const task = taskDraft.value;
-  if (!current || !task?.id || !window.confirm(`删除“${task.name}”及其评论，并解除所有版本关联吗？${childTasks.value.length} 个直接子任务将解除父任务关联，不会被删除。版本图关系不会改变。`)) return;
+  if (!current || !task.id || saving.value || !sharedWritable.value) return;
+  const childCount = current.tasks.filter(candidate => candidate.parentTaskId === task.id).length;
+  if (!window.confirm(`删除“${task.name}”及其评论，并解除所有版本关联吗？${childCount} 个直接子任务将解除父任务关联，不会被删除。版本图关系不会改变。`)) return;
   saving.value = true;
   try {
     graph.value = await props.repository.deleteTask(props.projectId, current.project.revision, task.id);
-    taskDraft.value = null;
-    taskDraftRevision.value = -1;
-    taskDraftBaseline.value = '';
-    selectedTaskId.value = '';
-    emit('navigateChild', [], 'replace');
+    if (taskDraft.value?.id === task.id) {
+      taskDraft.value = null;
+      taskDraftRevision.value = -1;
+      taskDraftBaseline.value = '';
+      emit('navigateChild', [], 'replace');
+    }
+    if (selectedTaskId.value === task.id) selectedTaskId.value = '';
     statusMessage.value = '任务已删除；关联版本已解除任务关联。';
     error.value = '';
+  } catch (cause) {
+    reportError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+function deleteCurrentTask() {
+  if (taskDraft.value) void deleteTask(taskDraft.value);
+}
+
+function deleteBoardTask(taskId: string) {
+  if (hasUnsavedTaskChanges.value || quickTask.value) return;
+  const task = graph.value?.tasks.find(candidate => candidate.id === taskId);
+  if (!task) {
+    reportError(new Error('此任务不存在或已删除，请重新读取项目。'));
+    return;
+  }
+  void deleteTask(task);
+}
+
+async function changeBoardTaskField(taskId: string, field: 'assigneeId' | 'typeOptionId', value: string | null) {
+  const current = graph.value;
+  if (!current || saving.value || !sharedWritable.value || hasUnsavedTaskChanges.value || quickTask.value) return;
+  const task = current.tasks.find(candidate => candidate.id === taskId);
+  if (!task) {
+    reportError(new Error('此任务不存在或已删除，请重新读取项目。'));
+    return;
+  }
+  if (value === task[field]) return;
+  if (value && (field === 'assigneeId'
+    ? !activeAssignees.value.some(member => member.id === value)
+    : !current.project.typeOptions.some(option => option.id === value))) {
+    reportError(new Error(field === 'assigneeId' ? '该负责人不可用，请重新读取成员。' : '该任务类型已不存在，请重新读取项目。'));
+    return;
+  }
+  saving.value = true;
+  error.value = '';
+  try {
+    const persisted = await props.repository.saveTask(props.projectId, current.project.revision, { ...structuredClone(toRaw(task)), [field]: value });
+    if (!graph.value || graph.value.project.revision <= persisted.project.revision) graph.value = persisted;
+    statusMessage.value = field === 'assigneeId' ? '负责人已更新。' : '任务类型已更新。';
   } catch (cause) {
     reportError(cause);
   } finally {
@@ -1143,7 +1187,6 @@ onUnmounted(() => {
   <section class="panel task-board" aria-labelledby="task-board-title" :aria-busy="loading || saving">
     <header class="task-board-header">
       <div>
-        <p class="eyebrow">PROJECT TASKS</p>
         <h2 id="task-board-title">{{ projectName }} · 任务管理</h2>
       </div>
       <div class="task-board-header-actions">
@@ -1152,36 +1195,39 @@ onUnmounted(() => {
       </div>
     </header>
     <p v-if="sharedWriteBlockedReason" class="form-help" role="status">{{ sharedWriteBlockedReason }}</p>
-    <div class="task-scope-switch" role="group" aria-label="任务范围">
-      <button type="button" :aria-pressed="taskScope === 'all'" :disabled="!!dragState" @click="taskScope = 'all'">全部任务</button>
-      <button type="button" :aria-pressed="taskScope === 'mine'" :disabled="!currentAccountId || !!dragState"
-        :aria-describedby="!currentAccountId ? 'task-scope-login-help' : undefined" @click="taskScope = 'mine'">我负责的任务</button>
-      <span v-if="!currentAccountId" id="task-scope-login-help" class="form-help">登录后可按本人筛选</span>
-    </div>
-    <div class="task-view-controls">
-      <div class="task-view-switch" role="group" aria-label="任务视图">
-        <button type="button" :aria-pressed="taskView === 'board'" @click="taskView = 'board'">看板</button>
-        <button id="task-list-view" type="button" :disabled="!!quickTask" :aria-pressed="taskView === 'list'" @click="taskView = 'list'">工作项列表</button>
+    <div class="task-board-controls">
+      <div class="task-scope-switch" role="group" aria-label="任务范围">
+        <button type="button" :aria-pressed="taskScope === 'all'" :disabled="!!dragState" @click="taskScope = 'all'">全部任务</button>
+        <button type="button" :aria-pressed="taskScope === 'mine'" :disabled="!currentAccountId || !!dragState"
+          :aria-describedby="!currentAccountId ? 'task-scope-login-help' : undefined" @click="taskScope = 'mine'">我负责的任务</button>
+        <span v-if="!currentAccountId" id="task-scope-login-help" class="form-help">登录后可按本人筛选</span>
       </div>
-      <label v-if="taskView === 'list'" class="task-nesting-toggle"><input v-model="nestedTasks" type="checkbox" />显示父子嵌套</label>
-    </div>
-    <div class="task-board-toolbar">
-      <label class="task-board-search-label" for="task-board-search-mode">筛选条件</label>
-      <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading || !!quickTask" aria-label="任务搜索条件">
-        <option value="id">ID</option>
-        <option value="keyword">关键字</option>
-        <option value="assignee">负责人</option>
-      </select>
-      <input id="task-board-search" v-model="query" type="search" :aria-label="searchMode === 'id' ? 'Task ID 精确值或范围' : searchMode === 'assignee' ? '负责人名称' : '任务关键字'"
-        :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading || !!quickTask" />
-      <span class="task-board-count" role="status">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
+      <div class="task-view-controls">
+        <div class="task-view-switch" role="group" aria-label="任务视图">
+          <button type="button" :aria-pressed="taskView === 'board'" @click="taskView = 'board'">看板</button>
+          <button id="task-list-view" type="button" :disabled="!!quickTask" :aria-pressed="taskView === 'list'" @click="taskView = 'list'">工作项列表</button>
+        </div>
+        <label v-if="taskView === 'list'" class="task-nesting-toggle"><input v-model="nestedTasks" type="checkbox" />显示父子嵌套</label>
+      </div>
+      <div class="task-board-toolbar">
+        <label class="task-board-search-label" for="task-board-search-mode">筛选条件</label>
+        <select id="task-board-search-mode" v-model="searchMode" class="task-board-search-mode" :disabled="loading || !!quickTask" aria-label="任务搜索条件">
+          <option value="id">ID</option>
+          <option value="keyword">关键字</option>
+          <option value="assignee">负责人</option>
+        </select>
+        <input id="task-board-search" v-model="query" type="search" :aria-label="searchMode === 'id' ? 'Task ID 精确值或范围' : searchMode === 'assignee' ? '负责人名称' : '任务关键字'"
+          :placeholder="searchMode === 'id' ? '精确 ID 或范围，例如 100-199' : searchMode === 'assignee' ? '负责人名称' : '任务名或说明关键词'" :disabled="loading || !!quickTask" />
+        <span class="task-board-count" role="status">{{ taskMatches.length }} / {{ graph?.tasks.length ?? 0 }} 项</span>
+      </div>
     </div>
     <p v-if="taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
     <p v-if="loading" class="task-board-state" role="status">正在读取任务…</p>
     <p v-else-if="!graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
     <p v-else-if="!taskMatches.length" class="task-board-state">{{ taskScope === 'mine' ? (query.trim() ? '没有符合当前搜索条件的本人任务。' : '当前项目没有分配给你的任务。') : '没有匹配的任务。' }}</p>
     <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
-    <div v-else-if="statusMessage && !taskDraft" class="task-board-message" role="status">{{ statusMessage }}</div>
+    <div v-else-if="statusMessage && !taskDraft" class="task-board-message is-success" role="status">{{ statusMessage }}</div>
+    <div v-if="assigneesError && !taskDraft" class="task-board-message is-error" role="alert">负责人账号读取失败：{{ assigneesError }} <button type="button" class="secondary" :disabled="assigneesLoading" @click="loadAssignees">重新读取成员</button></div>
 
     <TaskList v-if="graph && taskView === 'list' && taskMatches.length" :graph="graph" :rows="listRows" :nested="nestedTasks" :selected-task-id="selectedTaskId" :assignee-by-id="assigneeById" :disabled="saving" @open="switchTask" @toggle="toggleListTask" />
     <div v-if="graph && taskView === 'board'" class="task-board-layout">
@@ -1190,13 +1236,19 @@ onUnmounted(() => {
           <div class="task-board-lanes">
             <TaskBoardLane
               v-for="lane in lanes" :key="lane.status?.id ?? 'unassigned'"
-              :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId" :type-name-by-id="typeNameById"
+              :status="lane.status" :tasks="lane.tasks" :selected-task-id="selectedTaskId"
               :priority-option-by-id="priorityOptionById" :assignee-by-id="assigneeById"
-              :disabled="!sharedWritable || saving || taskDraftDirty || !!quickTask" :saving="saving"
+              :assignees="activeAssignees" :assignees-unavailable="assigneesLoading || !!assigneesError"
+              :status-options="graph.project.statusOptions" :type-options="graph.project.typeOptions"
+              :disabled="!sharedWritable || saving || hasUnsavedTaskChanges || !!quickTask" :saving="saving"
               :quick-task="quickTask && quickTask.statusId === (lane.status?.id ?? null) ? quickTask : null"
               :quick-error="quickError" :quick-stale="quickStale"
               @open-task="switchTask" @add-task="startQuickTask" @submit-quick="submitQuickTask" @cancel-quick="cancelQuickTask" @refresh-quick="refreshQuickTask"
               @move-task="(taskId, beforeId) => persistMove(taskId, lane.status?.id ?? null, beforeId)"
+              @move-status="(taskId, statusId) => persistMove(taskId, statusId, null)"
+              @change-type="(taskId, typeId) => changeBoardTaskField(taskId, 'typeOptionId', typeId)"
+              @change-assignee="(taskId, assigneeId) => changeBoardTaskField(taskId, 'assigneeId', assigneeId)"
+              @delete-task="deleteBoardTask"
             />
           </div>
           <DragOverlay>
@@ -1492,38 +1544,40 @@ onUnmounted(() => {
 }
 .task-attribution-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .task-description-attribution time { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.task-board { min-width: 0; border-top: 2px solid #3b82f6; padding: 18px; }
+.task-board { min-width: 0; border-top: 2px solid #3b82f6; padding: 12px; }
 .task-board-header, .task-board-header-actions, .task-board-toolbar, .task-options-heading, .task-options-footer { display: flex; align-items: center; gap: 10px; }
-.task-board-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+.task-board-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 6px; }
 .task-board-header h2 { overflow-wrap: anywhere; }
 .task-board-header-actions { flex-wrap: wrap; }
 .task-board-header-actions button { min-height: 44px; }
-.task-scope-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.task-board-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-bottom: 8px; }
+.task-scope-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .task-scope-switch button { min-height: 44px; padding: 8px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
 .task-scope-switch button:hover:not(:disabled) { background: var(--surface-raised); }
 .task-scope-switch button[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
-.task-view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
-.task-view-switch { display: flex; gap: 4px; padding: 3px; border: 1px solid #35445c; border-radius: 7px; background: #101a2a; }
+.task-view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.task-view-switch { display: flex; gap: 2px; padding: 0; border: 1px solid #35445c; border-radius: 7px; background: #101a2a; }
 .task-view-switch button { min-height: 44px; padding: 8px 14px; border: 1px solid transparent; background: transparent; color: #afbdd2; }
 .task-view-switch button:hover { background: #253650; color: #eef4ff; }
 .task-view-switch button[aria-pressed="true"] { border-color: #52647e; background: #1d2b42; color: #eef4ff; }
 .task-nesting-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; color: #eef4ff; cursor: pointer; }
 .task-nesting-toggle input { width: 18px; height: 18px; margin: 0; accent-color: #60a5fa; }
-.task-board-toolbar { min-width: 0; margin-bottom: 12px; }
+.task-board-toolbar { flex: 1 1 320px; min-width: 0; gap: 6px; }
 .task-board-search-label { flex: 0 0 auto; margin: 0; }
-.task-board-search-mode { flex: 0 0 132px; min-width: 0; margin: 0; }
+.task-board-search-mode { flex: 0 0 100px; min-width: 0; margin: 0; }
 .task-board-toolbar input { flex: 1; min-width: 120px; margin: 0; }
 .task-board-count { color: #afbdd2; font-size: 11px; white-space: nowrap; }
 .task-board-message, .task-board-state { margin: 8px 0; color: #cbd9ed; font-size: 12px; line-height: 1.6; }
 .task-board-message { padding: 9px 11px; border: 1px solid #35445c; border-radius: 6px; background: #101a2a; }
 .task-board-message.is-error { border-color: #9c4a55; background: #2a1820; color: #ffd1d5; }
+.task-board-message.is-success { margin: 2px 0 6px; padding: 0; border: 0; background: transparent; }
 .task-board-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .task-board-scroll { display: block; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .task-drag-preview { padding: 10px; border: 1px solid #8bc3ff; border-radius: 6px; background: #17243a; color: #eef4ff; box-shadow: 0 4px 12px #02061766; pointer-events: none; }
 .task-drag-preview > span { display: block; margin-bottom: 12px; color: #afbdd2; font-size: 10px; }
 .task-drag-preview strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
 .task-drag-preview code { margin-right: 6px; }
-.task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; height: clamp(320px, calc(100dvh - 260px), 680px); padding: 2px 2px 10px; }
+.task-board-lanes { display: flex; align-items: stretch; gap: 10px; width: max-content; min-width: 100%; height: clamp(320px, calc(100dvh - 185px), 1000px); padding: 2px 2px 10px; }
 .task-detail-dialog { width: min(1480px, calc(100vw - 48px)); height: min(920px, calc(100dvh - 48px)); max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid #52647e; border-radius: 8px; background: #101a2a; color: #eef4ff; box-shadow: 0 24px 80px #020617aa; }
 .task-detail-dialog::backdrop { background: #020617a8; backdrop-filter: blur(2px); }
 .task-detail-modal { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100%; min-width: 0; }

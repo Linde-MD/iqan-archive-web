@@ -23,6 +23,7 @@ import AppBrandMark from './components/AppBrandMark.vue';
 import { checkPermission, sameDirectory, type ArchiveRoots, type DirectoryHandle, type FileHandle } from './files/directories';
 import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listProjectBackups, writeJsonBackup, writeSelectedJsonFile, type ProjectBackupList } from './files/archive-json';
 import { parseWorkspaceLocation, projectOverlayPath, projectPath, type ProjectView } from './workspace-routes';
+import { getCollaborationNotice } from './utils/collaboration-notice';
 
 const db = new ArchiveDatabase();
 const collaboration = new CollaborationRepository(new ArchiveRepository(db));
@@ -125,6 +126,11 @@ const pollProjectId = computed(() => !isAccountRoute.value && canWrite.value && 
   ? activeProjectId.value : '');
 const pollError = shallowRef<{ id: string; message: string }>();
 const errorHeading = ref<HTMLElement | null>(null);
+const dismissedCollaborationNotice = ref('');
+const collaborationNotice = computed(() => getCollaborationNotice(collaboration.state, sharedWriteBlockedReason.value,
+  pollError.value?.id === activeProjectId.value ? pollError.value.message : ''));
+const collaborationNoticeKey = computed(() => collaborationNotice.value ? JSON.stringify(collaborationNotice.value) : '');
+watch(collaborationNoticeKey, () => { dismissedCollaborationNotice.value = ''; });
 let subscription: { unsubscribe(): void } | undefined;
 let collaborationSubscription: { unsubscribe(): void } | undefined;
 let loadAttempt = 0;
@@ -709,16 +715,17 @@ onUnmounted(() => {
   <main id="workspace" v-show="!isAccountRoute" :class="{ 'projects-collapsed': activeProjectId && projectsCollapsed }"
     @input.capture="checkRevisionOnEdit" @change.capture="checkRevisionOnEdit"
     @click.capture="checkRevisionOnEdit" @submit.capture="checkRevisionOnEdit">
-    <section class="notice" aria-label="共享连接与副本状态">
+    <section v-if="collaborationNotice && collaborationNoticeKey !== dismissedCollaborationNotice" class="collaboration-notice" aria-label="共享连接与副本状态">
       <div>
-        <h2>{{ collaboration.state.restoring ? '正在检测后端并恢复登录…' : collaboration.state.connected ? (collaboration.state.authenticated ? (collaboration.state.pending ? '共享协作已连接 · 提交待确认' : '共享协作已连接') : '后端可达 · 需要登录或重新验证') : collaboration.state.source ? '本机缓存视图 · 未连接后端' : '历史单人数据 · 只读' }}</h2>
-        <p v-if="!collaboration.state.restoring">{{ collaboration.state.message || '请点击顶栏右上角账户头像登录；无共享副本时，历史 IndexedDB 数据保留为只读，可先导出 JSON 再由管理员恢复到共享库。' }}</p>
-        <p v-if="collaboration.state.source">待同步版本 {{ collaboration.state.draftCount }} 个{{ collaboration.state.pending ? ' · 存在未确认提交，请在账号入口用原请求重试' : '' }}。{{ activeProjectId && canWrite ? '前台每 2 分钟检查更新；编辑时距上次检查满 20 秒即检查，草稿不会被覆盖。' : '可在账号入口手动刷新共享数据。' }}{{ collaboration.state.updatedAt ? `副本读取时间：${new Date(collaboration.state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
-        <p v-if="pollError && pollError.id === activeProjectId" role="status">自动刷新未完成，仍显示本机副本：{{ pollError.message }}</p>
-        <p v-if="collaboration.state.conflictMessage" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaboration.state.conflictMessage }}</p>
-        <p v-if="sharedWriteBlockedReason" role="status">{{ sharedWriteBlockedReason }}</p>
-        <button v-if="collaboration.state.pending" type="button" class="secondary" :disabled="saving || workspaceBusy" @click="router.push({ path: '/account/sync', query: { from: route.fullPath } })">前往处理未确认提交</button>
+        <h2>{{ collaborationNotice.title }}</h2>
+        <p v-if="collaborationNotice.message" role="status">{{ collaborationNotice.message }}</p>
+        <p v-if="collaborationNotice.draftCount">待同步版本 {{ collaborationNotice.draftCount }} 个。</p>
+        <p v-if="collaborationNotice.refreshError" role="status">自动刷新未完成，仍显示本机副本：{{ collaborationNotice.refreshError }}</p>
+        <p v-if="collaborationNotice.conflict" role="alert">草稿冲突已保留，请在账号入口检查 / 修复：{{ collaborationNotice.conflict }}</p>
+        <p v-if="collaborationNotice.blocked" role="status">{{ collaborationNotice.blocked }}</p>
+        <button v-if="collaborationNotice.pending" type="button" class="secondary" :disabled="saving || workspaceBusy" @click="router.push({ path: '/account/sync', query: { from: route.fullPath } })">前往处理未确认提交</button>
       </div>
+      <button type="button" class="collaboration-notice-close" aria-label="关闭协作状态提醒" @click="dismissedCollaborationNotice = collaborationNoticeKey"><AppIcon name="clear" /></button>
     </section>
     <Transition name="surface">
       <div v-if="error" class="error" role="alert">
@@ -900,13 +907,6 @@ onUnmounted(() => {
       @busy="taskBoardBusy = $event" @refresh-blocked="taskRefreshBlocked = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 
-    <section class="notice" aria-labelledby="storage-title">
-      <div class="notice-mark" aria-hidden="true">i</div>
-      <div>
-        <h2 id="storage-title">共享 Access + 当前浏览器持久副本</h2>
-        <p>未同步版本仅保存在当前浏览器，清除浏览器数据可能丢失草稿和会话；迁移前请导出 JSON。后端断开不代表网页资源支持完全断网加载。</p>
-      </div>
-    </section>
     <footer><span>IQAN Archive</span><span>可信团队协作 · 本机服务 + 共享 Access · 文件操作独立</span></footer>
   </main>
 </template>

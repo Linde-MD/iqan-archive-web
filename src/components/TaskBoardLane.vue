@@ -9,9 +9,12 @@ const props = defineProps<{
   status: TaskOption | null;
   tasks: Task[];
   selectedTaskId: string;
-  typeNameById: ReadonlyMap<string, string>;
   priorityOptionById: ReadonlyMap<string, TaskOption>;
   assigneeById: ReadonlyMap<string, TaskAssignee>;
+  assignees: TaskAssignee[];
+  assigneesUnavailable: boolean;
+  statusOptions: TaskOption[];
+  typeOptions: TaskOption[];
   disabled: boolean;
   saving: boolean;
   quickTask: { statusId: string | null; name: string; revision: number } | null;
@@ -25,6 +28,10 @@ const emit = defineEmits<{
   cancelQuick: [];
   refreshQuick: [];
   moveTask: [taskId: string, beforeTaskId: string | null];
+  moveStatus: [taskId: string, statusId: string | null];
+  changeType: [taskId: string, typeId: string | null];
+  changeAssignee: [taskId: string, assigneeId: string | null];
+  deleteTask: [taskId: string];
 }>();
 const lane = ref<HTMLElement | null>(null);
 const quickName = ref<HTMLTextAreaElement | null>(null);
@@ -102,16 +109,21 @@ onUnmounted(() => {
     <div class="task-lane-list">
       <TaskBoardCard
         v-for="(task, index) in tasks" :key="task.id" :task="task" :index="index"
-        :group="laneId" :status-name="status?.name ?? '未分组'"
-        :type-name="task.typeOptionId ? typeNameById.get(task.typeOptionId) ?? null : null"
+        :group="laneId"
         :priority-name="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.name ?? null : null"
         :priority-indicator-count="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorCount ?? null : null"
         :priority-indicator-color="task.priorityOptionId ? priorityOptionById.get(task.priorityOptionId)?.indicatorColor ?? null : null"
         :assignee="task.assigneeId ? assigneeById.get(task.assigneeId) ?? null : null"
+        :assignees="assignees" :assignees-unavailable="assigneesUnavailable"
+        :status-options="statusOptions" :type-options="typeOptions"
         :selected="selectedTaskId === task.id"
         :disabled="disabled" :can-move-up="index > 0" :can-move-down="index < tasks.length - 1"
         @open="emit('openTask', task.id)"
         @move-up="move(index, -1)" @move-down="move(index, 1)"
+        @move-status="statusId => emit('moveStatus', task.id, statusId)"
+        @change-type="typeId => emit('changeType', task.id, typeId)"
+        @change-assignee="assigneeId => emit('changeAssignee', task.id, assigneeId)"
+        @delete="emit('deleteTask', task.id)"
       />
       <div v-if="!tasks.length" key="empty" class="task-lane-empty">
         <span>{{ isDropTarget ? '放开以移动任务' : '此泳道暂无任务' }}</span>
@@ -140,11 +152,11 @@ onUnmounted(() => {
   min-height: 0; height: 100%; border: 1px solid #35445c; border-radius: 8px; background: #101a2a;
 }
 .task-lane.is-drop-target { border-color: #82bfff; box-shadow: inset 0 0 0 2px #60a5fa55; }
-.task-lane-heading { display: flex; flex: 0 0 48px; align-items: center; gap: 8px; min-height: 48px; padding: 8px 10px; border-bottom: 1px solid #35445c; border-radius: 8px 8px 0 0; background: #17243a; }
+.task-lane-heading { display: flex; flex: 0 0 38px; align-items: center; gap: 8px; min-height: 38px; padding: 4px 10px; border-bottom: 1px solid #35445c; border-radius: 8px 8px 0 0; background: #17243a; }
 .task-lane-heading h3 { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .task-lane-count { display: grid; flex: 0 0 24px; place-items: center; width: 24px; height: 24px; border: 1px solid #40516a; border-radius: 50%; color: #c1d0e4; font-size: 10px; font-variant-numeric: tabular-nums; }
-.task-lane-list { display: grid; align-content: start; gap: 8px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding: 8px; }
-.task-lane-footer { flex: 0 0 auto; max-height: calc(100% - 48px); overflow-y: auto; padding: 8px; border-top: 1px solid #35445c; background: #101a2a; border-radius: 0 0 8px 8px; }
+.task-lane-list { display: grid; align-content: start; gap: 6px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding: 6px; }
+.task-lane-footer { flex: 0 0 auto; max-height: calc(100% - 38px); overflow-y: auto; padding: 0 4px; border-top: 1px solid #35445c; background: #101a2a; border-radius: 0 0 8px 8px; }
 .task-lane-empty { display: grid; place-items: center; min-height: 64px; color: #afbdd2; font-size: 12px; text-align: center; }
 .task-lane-add { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #c1d0e4; font-size: 13px; font-weight: 500; text-align: left; }
 .task-lane-add:hover:not(:disabled) { background: #1d2b42; border-color: #40516a; color: #eef4ff; }

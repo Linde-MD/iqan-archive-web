@@ -280,7 +280,8 @@ async function saveDraft() {
 <template>
   <div ref="menuRoot" class="account-menu-root">
     <button ref="trigger" class="account-avatar-trigger" type="button" :disabled="disabled || state.busy"
-      :aria-expanded="menuOpen" :aria-controls="menuOpen ? 'account-menu' : undefined" aria-label="打开账户菜单" @click="toggleMenu">
+      :aria-expanded="menuOpen" :aria-controls="menuOpen ? 'account-menu' : undefined"
+      :aria-label="`打开账户菜单，${state.restoring ? '正在恢复连接' : state.authenticated ? (state.connected ? (state.pending ? '已连接，提交待确认' : '共享协作已连接') : '缓存账号，未连接') : '需要登录或重新验证'}`" @click="toggleMenu">
       <span class="account-avatar account-avatar-small" :style="avatarThemeStyle" aria-hidden="true">
         <img v-if="state.user?.avatar" :src="state.user.avatar" alt="">
         <span v-else>{{ avatarInitials }}</span>
@@ -367,6 +368,7 @@ async function saveDraft() {
           <span v-if="state.user" class="account-identity-compact"><AppIcon name="user" />{{ state.user.username }}</span>
         </header>
     <p class="form-help">Access 是共享权威数据；本机 IndexedDB 保留副本和离线草稿。仅可信小团队使用，不是公司级权限隔离。</p>
+    <p class="form-help">未同步版本仅保存在当前浏览器，清除浏览器数据可能丢失草稿和会话；迁移前请导出 JSON。后端断开不代表网页资源支持完全断网加载。</p>
     <div v-if="error" role="alert" class="collaboration-error"><h3 ref="errorHeading" tabindex="-1">操作未完成</h3><p>{{ error }}</p></div>
     <p v-if="state.restoring" role="status">正在检测后端并恢复登录…</p>
     <template v-else>
@@ -456,6 +458,8 @@ async function saveDraft() {
     </template>
     <section v-if="accountSection === 'sync' && !state.restoring" aria-labelledby="collab-sync-title">
       <h3 id="collab-sync-title">待同步版本：{{ state.draftCount }}</h3>
+      <p class="form-help">{{ projectId && state.authenticated && state.connected ? '前台每 2 分钟检查更新；编辑时距上次检查满 20 秒即检查，草稿不会被覆盖。' : '连接并登录后可手动刷新共享数据。' }}{{ state.updatedAt ? `副本读取时间：${new Date(state.updatedAt).toLocaleString()}` : '显示上次持久副本。' }}</p>
+      <p v-if="state.conflictMessage" role="alert">草稿冲突已保留：{{ state.conflictMessage }}</p>
       <p class="form-help">仅当前选择项目的草稿作为一次原子提交。先刷新和预览，不自动上传；父版本或任务失效时保留草稿，请先修正。</p>
       <button type="button" class="secondary" :disabled="busy || !projectId || !state.draftCount" @click="loadDrafts">检查 / 修复当前项目草稿</button>
       <template v-if="drafts">
@@ -490,8 +494,8 @@ async function saveDraft() {
 .account-delete-confirmation { margin: 16px 0; padding: 16px; border: 1px solid var(--danger); border-radius: 8px; background: var(--surface-soft); }
 .account-delete-confirmation p { overflow-wrap: anywhere; }
 .account-avatar-trigger {
-  min-width: 44px; min-height: 48px; display: flex; align-items: center; gap: 10px;
-  padding: 3px 10px 3px 4px; border: 1px solid #35445c; border-radius: 9px;
+  min-width: 44px; min-height: 44px; display: flex; align-items: center; gap: 8px;
+  padding: 3px 10px 3px 5px; border: 1px solid #35445c; border-radius: 9px;
   background: #111d30; color: var(--ink); text-align: left;
 }
 .account-avatar-trigger:hover { border-color: var(--accent); background: #17263d; }
@@ -506,7 +510,7 @@ async function saveDraft() {
   color: var(--avatar-foreground); font-weight: 700; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
 }
 .account-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.account-avatar-small { width: 40px; height: 40px; font-size: 13px; }
+.account-avatar-small { width: 34px; height: 34px; font-size: 12px; }
 .account-avatar-menu { width: 44px; height: 44px; font-size: 14px; }
 .account-menu-root { position: relative; }
 .account-menu-popover {
