@@ -21,6 +21,7 @@ export interface DirectoryHandle {
 export interface FileHandle {
   readonly kind: 'file';
   readonly name: string;
+  isSameEntry?(other: FileHandle): Promise<boolean>;
   getFile(): Promise<File>;
   createWritable?(): Promise<FileSystemWritableFileStream>;
 }

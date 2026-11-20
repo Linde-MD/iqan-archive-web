@@ -5,6 +5,7 @@ import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, t
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
+import { deleteEngineeringFile } from '../files/engineering-deletion';
 import type { ArchiveRepository } from '../storage/database';
 import { projectWriteBlockedReason } from '../storage/repository-sync';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
@@ -1684,7 +1685,7 @@ async function copyEngineeringFileForNode(
   }
 }
 
-async function deleteLocalEngineeringFile(nodeId: string, selectedFile: FileCandidate) {
+async function deleteEngineeringFileForNode(nodeId: string, location: ArchiveLocation, selectedFile: FileCandidate) {
   if (saving.value) return;
   closeMenu(false);
   saving.value = true;
@@ -1693,47 +1694,14 @@ async function deleteLocalEngineeringFile(nodeId: string, selectedFile: FileCand
   status.value = '';
   try {
     const current = await props.repository.get(props.projectId);
-    const node = current.nodes.find(item => item.id === nodeId);
-    if (!node) throw new Error('版本已不存在，请重新读取版本图。');
-    const initialScan = await scanEngineeringSourcesForNode(current, nodeId);
-    if (!initialScan.files.local.some(file => file.relativePath === selectedFile.relativePath))
-      throw new Error('所选本地工程文件已变化，请重新打开文件状态菜单。');
-    if (await sameDirectory(initialScan.roots.get('local')!, initialScan.roots.get('shared')!))
-      throw new Error('共享与本地归档根目录指向同一位置，无法单独删除本地副本。');
-    const initialSharedCopyExists = initialScan.files.shared.length > 0;
-    const locationWarning = initialSharedCopyExists
-      ? '共享目录仍有此版本工程文件。'
-      : '共享目录当前没有此版本工程文件。';
-    if (!window.confirm(`确定删除本地工程文件？\n${selectedFile.relativePath}\n${locationWarning}`)) return;
-
-    let confirmedLocalOnly = false;
-    let latestGraph = await props.repository.get(props.projectId);
-    if (latestGraph.project.revision !== current.project.revision)
-      throw new Error('版本图已变化，请重新读取后再删除文件。');
-    let scan = await scanEngineeringSourcesForNode(latestGraph, nodeId);
-    if (!scan.files.local.some(file => file.relativePath === selectedFile.relativePath))
-      throw new Error('确认期间本地工程文件已变化，未删除。');
-    if (!scan.files.shared.length) {
-      if (!window.confirm(`该版本目前只有本地工程文件：\n${selectedFile.relativePath}\n删除后共享目录没有该版本副本，仍要继续吗？`)) return;
-      confirmedLocalOnly = true;
-    }
-
-    latestGraph = await props.repository.get(props.projectId);
-    if (latestGraph.project.revision !== current.project.revision)
-      throw new Error('版本图已变化，请重新读取后再删除文件。');
-    scan = await scanEngineeringSourcesForNode(latestGraph, nodeId);
-    if (!scan.files.local.some(file => file.relativePath === selectedFile.relativePath))
-      throw new Error('删除前本地工程文件已变化，未删除。');
-    if (await sameDirectory(scan.roots.get('local')!, scan.roots.get('shared')!))
-      throw new Error('共享与本地归档根目录指向同一位置，无法单独删除本地副本。');
-    if (!scan.files.shared.length && !confirmedLocalOnly
-      && !window.confirm(`共享目录没有该版本副本。删除“${selectedFile.relativePath}”后将只剩本地其他候选文件；仍要继续吗？`)) return;
-    const localRoot = scan.roots.get('local');
-    const localDirectory = scan.directories.get('local');
-    if (!localRoot || !localDirectory || !await checkPermission(localRoot, false, 'readwrite'))
-      throw new Error('本地根目录没有读写授权，请重新授权后再试。');
-    await removeArchiveFile(localDirectory, selectedFile.relativePath);
-    status.value = `已删除本地工程文件：${selectedFile.relativePath}`;
+    const deleted = await deleteEngineeringFile({
+      graph: current, nodeId, location, selectedFile,
+      getGraph: () => props.repository.get(props.projectId),
+      scan: scanEngineeringSourcesForNode,
+      confirm: message => window.confirm(message),
+    });
+    if (!deleted) return;
+    status.value = `已删除${archiveLocationLabel(location)}工程文件：${selectedFile.relativePath}`;
     void refreshEngineeringFileStates();
   } catch (cause) {
     showError(cause);
@@ -3051,7 +3019,7 @@ function onIqanDialogClosed() {
             <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`upload:${file.relativePath}`" role="menuitem" class="graph-menu-file-action" :disabled="saving" :title="`上传 ${file.relativePath} 到共享目录`" @click="copyEngineeringFileForNode(menu.id, 'local', 'shared', file)">
               <AppIcon name="upload" /><span><strong>上传到共享</strong><small>{{ file.relativePath }}</small></span>
             </button>
-            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`delete:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除本地文件 ${file.relativePath}`" @click="deleteLocalEngineeringFile(menu.id, file)">
+            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`delete:local:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除本地文件 ${file.relativePath}`" @click="deleteEngineeringFileForNode(menu.id, 'local', file)">
               <AppIcon name="trash" /><span><strong>删除本地文件</strong><small>{{ file.relativePath }}</small></span>
             </button>
           </template>
@@ -3059,10 +3027,16 @@ function onIqanDialogClosed() {
             <button v-for="file in engineeringFilesForNode(menu.id).shared" :key="`download:${file.relativePath}`" role="menuitem" class="graph-menu-file-action" :disabled="saving" :title="`下载 ${file.relativePath} 到本地目录`" @click="copyEngineeringFileForNode(menu.id, 'shared', 'local', file)">
               <AppIcon name="download" /><span><strong>下载到本地</strong><small>{{ file.relativePath }}</small></span>
             </button>
+            <button v-for="file in engineeringFilesForNode(menu.id).shared" :key="`delete:shared:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除共享文件 ${file.relativePath}`" @click="deleteEngineeringFileForNode(menu.id, 'shared', file)">
+              <AppIcon name="trash" /><span><strong>删除共享文件</strong><small>{{ file.relativePath }}</small></span>
+            </button>
           </template>
           <template v-else-if="engineeringFileStateForNode(menu.id).kind === 'both'">
-            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`delete:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除本地文件 ${file.relativePath}`" @click="deleteLocalEngineeringFile(menu.id, file)">
+            <button v-for="file in engineeringFilesForNode(menu.id).local" :key="`delete:local:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除本地文件 ${file.relativePath}`" @click="deleteEngineeringFileForNode(menu.id, 'local', file)">
               <AppIcon name="trash" /><span><strong>删除本地文件</strong><small>{{ file.relativePath }}</small></span>
+            </button>
+            <button v-for="file in engineeringFilesForNode(menu.id).shared" :key="`delete:shared:${file.relativePath}`" role="menuitem" class="graph-menu-file-action graph-menu-file-danger" :disabled="saving" :title="`删除共享文件 ${file.relativePath}`" @click="deleteEngineeringFileForNode(menu.id, 'shared', file)">
+              <AppIcon name="trash" /><span><strong>删除共享文件</strong><small>{{ file.relativePath }}</small></span>
             </button>
           </template>
           <button v-else role="menuitem" :disabled="saving" @click="refreshEngineeringFileStates"><AppIcon name="refresh" />重新扫描工程目录</button>

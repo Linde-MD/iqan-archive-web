@@ -9,6 +9,7 @@ import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle, type FileHandle } from '../src/files/directories';
 import { deleteProjectBackups, JSON_BACKUP_LOCATION, jsonBackupFileName, listImportJsonBackups, listJsonBackups, listProjectBackups, MAX_ARCHIVE_ROOT_ENTRIES, writeJsonBackup, writeSelectedJsonFile } from '../src/files/archive-json';
 import { deleteLocalDocumentCopy, scanDocumentDirectories, scanDocumentDirectory, scanDocumentLocalDeletion } from '../src/files/document-directories';
+import { deleteEngineeringFile, type EngineeringFileScan } from '../src/files/engineering-deletion';
 
 const databases: Dexie[] = [];
 afterEach(async () => { for (const db of databases.splice(0)) await db.delete(); });
@@ -166,6 +167,133 @@ describe('文件名和版本身份', () => {
     const added = registerCandidates(released, [candidate(), candidate('001 V2.idax')]);
     expect(added.nodes[0]).toEqual(released.nodes[0]);
     expect(added.nodes).toHaveLength(2);
+  });
+});
+
+describe('版本节点工程文件删除', () => {
+  function fixture(localHasFile = true) {
+    const selectedFile = candidate('001 V1.idax');
+    const graph = registerCandidates(createProject('项目', '001'), [selectedFile]);
+    const makeFile = (contents = 'original'): FileHandle => ({
+      kind: 'file', name: selectedFile.fileName,
+      async getFile() { return new File([contents], selectedFile.fileName, { lastModified: 1234 }); },
+    });
+    const localEntries: (DirectoryHandle | FileHandle)[] = localHasFile ? [makeFile()] : [];
+    const sharedEntries: (DirectoryHandle | FileHandle)[] = [makeFile(), file('001 V2.idax')];
+    const localDirectory = directory('local-project', localEntries);
+    const sharedDirectory = directory('shared-project', sharedEntries);
+    const roots = new Map([['local' as const, directory('local', [])], ['shared' as const, directory('shared', [])]]);
+    const directories = new Map([['local' as const, localDirectory], ['shared' as const, sharedDirectory]]);
+    const scan = async (): Promise<EngineeringFileScan> => ({
+      roots: new Map(roots), directories: new Map(directories),
+      files: {
+        local: localEntries.filter(item => item.kind === 'file' && item.name === selectedFile.fileName).map(() => selectedFile),
+        shared: sharedEntries.filter(item => item.kind === 'file' && item.name === selectedFile.fileName).map(() => selectedFile),
+      },
+    });
+    return { selectedFile, graph, nodeId: graph.nodes[0]!.id, localEntries, sharedEntries, roots, scan, makeFile };
+  }
+
+  it('明确确认后仅删除选中的共享文件，保留本地副本、其他文件和版本图', async () => {
+    const f = fixture();
+    const before = structuredClone(f.graph);
+    const prompts: string[] = [];
+    expect(await deleteEngineeringFile({
+      ...f, location: 'shared', getGraph: async () => f.graph,
+      confirm: message => { prompts.push(message); return true; },
+    })).toBe(true);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('共享文件删除后可能影响其他用户，且无法撤销');
+    expect(f.sharedEntries.map(item => item.name)).toEqual(['001 V2.idax']);
+    expect(f.localEntries.map(item => item.name)).toEqual(['001 V1.idax']);
+    expect(f.graph).toEqual(before);
+  });
+
+  it('取消确认或取消无本地副本时的额外确认均不删除共享文件', async () => {
+    for (const answers of [[false], [true, false]]) {
+      const f = fixture(false);
+      const prompts: string[] = [];
+      expect(await deleteEngineeringFile({
+        ...f, location: 'shared', getGraph: async () => f.graph,
+        confirm: message => { prompts.push(message); return answers[prompts.length - 1] ?? false; },
+      })).toBe(false);
+      expect(prompts).toHaveLength(answers.length);
+      if (answers.length === 2) expect(prompts[1]).toContain('本地目录没有该版本');
+      expect(f.sharedEntries.map(item => item.name)).toEqual(['001 V1.idax', '001 V2.idax']);
+    }
+  });
+
+  it('没有本地副本时，只有额外确认后才删除共享文件', async () => {
+    const f = fixture(false);
+    let prompts = 0;
+    expect(await deleteEngineeringFile({
+      ...f, location: 'shared', getGraph: async () => f.graph, confirm: () => { prompts++; return true; },
+    })).toBe(true);
+    expect(prompts).toBe(2);
+    expect(f.sharedEntries.map(item => item.name)).toEqual(['001 V2.idax']);
+  });
+
+  it('确认期间项目修订、目录或目标文件发生变化时拒绝删除', async () => {
+    for (const change of ['revision', 'root', 'file'] as const) {
+      const f = fixture();
+      let changed = false;
+      await expect(deleteEngineeringFile({
+        ...f, location: 'shared',
+        getGraph: async () => change === 'revision' && changed
+          ? { ...f.graph, project: { ...f.graph.project, revision: f.graph.project.revision + 1 } } : f.graph,
+        confirm: () => {
+          changed = true;
+          if (change === 'root') f.roots.set('shared', directory('replacement', []));
+          if (change === 'file') f.sharedEntries[0] = f.makeFile('changed');
+          return true;
+        },
+      })).rejects.toThrow('已变化');
+      expect(f.sharedEntries.map(item => item.name)).toContain('001 V1.idax');
+    }
+  });
+
+  it('另一侧副本在确认后消失时再次提示；取消后保留共享文件', async () => {
+    const f = fixture();
+    let scanCount = 0;
+    let promptCount = 0;
+    const scan = async () => {
+      if (++scanCount === 3) f.localEntries.splice(0);
+      return f.scan();
+    };
+    expect(await deleteEngineeringFile({
+      ...f, scan, location: 'shared', getGraph: async () => f.graph,
+      confirm: () => ++promptCount === 1,
+    })).toBe(false);
+    expect(promptCount).toBe(2);
+    expect(f.sharedEntries.map(item => item.name)).toContain('001 V1.idax');
+  });
+
+  it('共享根目录没有写权限或两侧指向同一目录时拒绝删除', async () => {
+    for (const failure of ['permission', 'same'] as const) {
+      const f = fixture();
+      if (failure === 'permission') {
+        const shared = f.roots.get('shared')!;
+        shared.queryPermission = async ({ mode }) => mode === 'readwrite' ? 'denied' : 'granted';
+      } else {
+        f.roots.set('shared', f.roots.get('local')!);
+      }
+      await expect(deleteEngineeringFile({
+        ...f, location: 'shared', getGraph: async () => f.graph, confirm: () => true,
+      })).rejects.toThrow(failure === 'permission' ? '读写授权' : '同一位置');
+      expect(f.sharedEntries.map(item => item.name)).toContain('001 V1.idax');
+    }
+  });
+
+  it('本地删除仍保护共享副本，并在共享副本缺失时要求额外确认', async () => {
+    const f = fixture();
+    f.sharedEntries.splice(0, 1);
+    let prompts = 0;
+    expect(await deleteEngineeringFile({
+      ...f, location: 'local', getGraph: async () => f.graph, confirm: () => { prompts++; return true; },
+    })).toBe(true);
+    expect(prompts).toBe(2);
+    expect(f.localEntries).toEqual([]);
+    expect(f.sharedEntries.map(item => item.name)).toEqual(['001 V2.idax']);
   });
 });
 
