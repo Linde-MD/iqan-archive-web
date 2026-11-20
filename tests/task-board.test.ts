@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../src/domain/model';
 import { deleteTask as removeTask, updateTask, updateTaskOptions, validateGraph } from '../src/domain/graph';
-import { compareTaskListIds, filterProjectTasks, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
+import { compareTaskListIds, filterProjectTasks, matchesTaskIdSearch, moveTaskInBoard, parseTaskIdSearch, projectRelatedVersions, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId } from '../src/domain/task-board';
 import { mergeSavedTaskDraft } from '../src/domain/task-draft';
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
@@ -20,6 +20,80 @@ function fixture() {
 }
 
 describe('任务看板顺序变换', () => {
+  it('递归包含子任务版本，切换范围时不改变图和原有关联', () => {
+    const graph = fixture();
+    const [child, parent, grandchild] = graph.tasks;
+    child!.parentTaskId = parent!.id;
+    grandchild!.parentTaskId = child!.id;
+    graph.nodes = [parent!, child!, grandchild!, graph.tasks[3]!].map((task, index) => ({
+      id: `v${index}`, projectId: graph.project.id, version: `V${index + 1}`, description: '',
+      taskId: task.id, releasedAt: null, testingAt: null,
+    }));
+    graph.edges = [0, 1, 2].map(index => ({
+      id: `e${index}`, projectId: graph.project.id, parentId: `v${index}`, childId: `v${index + 1}`,
+    }));
+    const original = structuredClone(graph);
+    const ids = (include: boolean, order: 'oldest' | 'newest') =>
+      projectRelatedVersions(graph, parent!.id, include, order).flatMap(group => group.nodes.map(node => node.id));
+    expect(ids(false, 'newest')).toEqual(['v0']);
+    expect(ids(true, 'newest')).toEqual(['v2', 'v1', 'v0']);
+    expect(ids(true, 'oldest')).toEqual(['v0', 'v1', 'v2']);
+    expect(graph).toEqual(original);
+  });
+
+  it('按真实分叉与合并分组，共同节点只出现一次，未关联中间节点不影响路径', () => {
+    const graph = fixture();
+    graph.nodes = [
+      ['root', 'V9', 'a'], ['gap', 'V2', null], ['left', 'V3', 'a'],
+      ['right', 'V4', 'a'], ['merge', 'V5', 'a'], ['isolated', 'V6', 'a'],
+    ].map(([id, version, taskId]) => ({
+      id: id!, projectId: graph.project.id, version: version!, taskId: taskId ?? null,
+      description: '', releasedAt: null, testingAt: null,
+    }));
+    graph.edges = [['root', 'gap'], ['gap', 'left'], ['gap', 'right'], ['left', 'merge'], ['right', 'merge']]
+      .map(([parentId, childId], index) => ({ id: `e${index}`, projectId: graph.project.id, parentId: parentId!, childId: childId! }));
+    graph.branches = [
+      { id: 'left-branch', projectId: graph.project.id, name: '左支', description: '', color: '#123456', headId: 'left' },
+      { id: 'right-branch', projectId: graph.project.id, name: '右支', description: '', color: '#654321', headId: 'right' },
+    ];
+    const original = structuredClone(graph);
+    const groups = projectRelatedVersions(graph, 'a', false, 'oldest');
+    expect(groups.map(group => [group.label, group.context, group.nodes.map(node => node.id)])).toEqual([
+      ['未命名分支', '游离版本', ['isolated']], ['左支、右支', '共同历史', ['root']],
+      ['左支', null, ['left']], ['右支', null, ['right']], ['未命名分支', '合并后路径', ['merge']],
+    ]);
+    expect(new Set(groups.flatMap(group => group.nodes.map(node => node.id))).size).toBe(5);
+    const newest = projectRelatedVersions(graph, 'a', false, 'newest');
+    expect(newest.find(group => group.nodes.some(node => node.id === 'merge'))!.label).toBe('未命名分支');
+    expect(newest.flatMap(group => group.nodes).findIndex(node => node.id === 'root'))
+      .toBeGreaterThan(newest.flatMap(group => group.nodes).findIndex(node => node.id === 'merge'));
+    expect(graph).toEqual(original);
+    graph.branches = [{ id: 'merged', projectId: graph.project.id, name: '主分支', description: '', color: '#123456', headId: 'merge' }];
+    const merged = projectRelatedVersions(graph, 'a', false, 'oldest');
+    expect(merged.map(group => [group.label, group.context]))
+      .toEqual([['未命名分支', '游离版本'], ['主分支', '共同历史'], ['主分支', null], ['主分支', null], ['主分支', '合并后路径']]);
+    graph.branches = [];
+    expect(projectRelatedVersions(graph, 'a', false, 'oldest').map(group => group.label))
+      .toEqual(['未命名分支', '未命名分支', '未命名分支', '未命名分支', '未命名分支']);
+  });
+
+  it('同一路径跨越未选分叉及冗余合并边时不人为拆组，排序仍以父子关系优先', () => {
+    const graph = fixture();
+    graph.nodes = [['a1', 'V9', 'a'], ['a2', 'V2', 'a'], ['a3', 'V1', 'a'], ['gap', 'V4', null]]
+      .map(([id, version, taskId]) => ({ id: id!, version: version!, taskId: taskId ?? null,
+        projectId: graph.project.id, description: '', releasedAt: null, testingAt: null }));
+    graph.edges = [['a1', 'a2'], ['a2', 'a3'], ['a1', 'a3'], ['a1', 'gap']]
+      .map(([parentId, childId], index) => ({ id: `e${index}`, projectId: graph.project.id, parentId: parentId!, childId: childId! }));
+    graph.branches = [
+      { id: 'one', projectId: graph.project.id, name: '主分支', description: '', color: '#123456', headId: 'a3' },
+      { id: 'two', projectId: graph.project.id, name: '测试分支', description: '', color: '#654321', headId: 'a3' },
+    ];
+    expect(projectRelatedVersions(graph, 'a', false, 'newest').map(group => group.nodes.map(node => node.id)))
+      .toEqual([['a3', 'a2', 'a1']]);
+    expect(projectRelatedVersions(graph, 'a', false, 'newest').map(group => group.label)).toEqual(['主分支、测试分支']);
+    expect(projectRelatedVersions(graph, 'b', true, 'newest')).toEqual([]);
+  });
+
   it('本人范围按账号 ID 匹配，可叠加搜索，不包含同名账号或未分配任务', () => {
     const graph = fixture();
     const [mine, colleague, anotherMine] = graph.tasks;

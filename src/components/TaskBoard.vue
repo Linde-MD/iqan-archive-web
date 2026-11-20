@@ -5,14 +5,16 @@ import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { accountAvatarTheme, accountInitials } from '../domain/account';
-import { filterProjectTasks, moveTaskInBoard, parseTaskIdSearch, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
+import { filterProjectTasks, moveTaskInBoard, parseTaskIdSearch, projectRelatedVersions, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
-import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskAttribution, type TaskComment, type TaskOption } from '../domain/model';
+import type { VersionOrder } from '../domain/version-order';
+import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskAttribution, type TaskComment, type TaskOption, type VersionNode } from '../domain/model';
 import type { ArchiveRepository } from '../storage/database';
 import { projectWriteBlockedReason } from '../storage/repository-sync';
 import { markdownMentionIds, renderMarkdown } from '../utils/markdown';
 import { mentionMarkdown } from '../utils/markdown-mentions';
 import { startTaskDragScroll } from '../utils/task-drag-scroll';
+import { placeContextMenu } from '../utils/viewport';
 import AppIcon from './AppIcon.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import TaskBoardLane from './TaskBoardLane.vue';
@@ -91,6 +93,12 @@ const commentList = ref<HTMLElement>();
 const commentEditor = ref<InstanceType<typeof MarkdownEditor>>();
 const detailSidebar = ref<'comments' | 'versions'>('comments');
 const detailSection = ref<'information' | 'children'>('information');
+const includeChildVersions = ref(true);
+const relatedVersionOrder = ref<VersionOrder>('newest');
+const relatedVersionHint = ref<HTMLDivElement>();
+const hintedRelatedVersion = shallowRef<VersionNode>();
+let relatedVersionHintTimer: ReturnType<typeof setTimeout> | undefined;
+let relatedVersionHintAnchor: HTMLElement | undefined;
 const taskDetailDialog = ref<HTMLDialogElement>();
 const taskDetailMainScroll = ref<HTMLDivElement>();
 const taskDetailView = ref<HTMLElement>();
@@ -234,6 +242,10 @@ const parentTaskCandidates = computed(() => {
 });
 const childTasks = computed(() => (graph.value?.tasks ?? [])
   .filter(task => taskDraft.value?.id && task.parentTaskId === taskDraft.value.id));
+const relatedVersionGroups = computed(() => graph.value && taskDraft.value?.id
+  ? projectRelatedVersions(graph.value, taskDraft.value.id, includeChildVersions.value, relatedVersionOrder.value) : []);
+const relatedVersionCount = computed(() => relatedVersionGroups.value.reduce((sum, group) => sum + group.nodes.length, 0));
+const relatedVersionTasks = computed(() => new Map((graph.value?.tasks ?? []).map(task => [task.id, task])));
 const optionDraftChanged = computed(() => {
   const current = graph.value?.project[optionKey.value] ?? [];
   return JSON.stringify(optionDraft.value) !== JSON.stringify(current);
@@ -807,11 +819,75 @@ function closeTaskDetails() {
   });
 }
 
+function keepRelatedVersionHint() {
+  clearTimeout(relatedVersionHintTimer);
+}
+
+function hideRelatedVersionHint() {
+  keepRelatedVersionHint();
+  relatedVersionHint.value?.hidePopover();
+  hintedRelatedVersion.value = undefined;
+  relatedVersionHintAnchor = undefined;
+}
+
+function scheduleRelatedVersionHintClose() {
+  keepRelatedVersionHint();
+  relatedVersionHintTimer = setTimeout(hideRelatedVersionHint, 150);
+}
+
+function positionRelatedVersionHint(anchor: HTMLElement, event?: MouseEvent) {
+  const hint = relatedVersionHint.value;
+  if (!hint?.matches(':popover-open')) return;
+  const rect = anchor.getBoundingClientRect();
+  const bounds = hint.getBoundingClientRect();
+  const position = event
+    ? placeContextMenu({ x: event.clientX, y: event.clientY }, bounds, { width: window.innerWidth, height: window.innerHeight }, 8, 8)
+    : {
+        x: Math.max(8, Math.min(rect.left, window.innerWidth - bounds.width - 8)),
+        y: rect.bottom + 8 + bounds.height <= window.innerHeight - 8
+          ? rect.bottom + 8 : Math.max(8, rect.top - bounds.height - 8),
+      };
+  hint.style.left = `${position.x}px`;
+  hint.style.top = `${position.y}px`;
+}
+
+async function showRelatedVersionHint(event: MouseEvent | FocusEvent, node: VersionNode) {
+  const anchor = event.currentTarget;
+  if (!(anchor instanceof HTMLElement)) return;
+  keepRelatedVersionHint();
+  hintedRelatedVersion.value = node;
+  relatedVersionHintAnchor = anchor;
+  await nextTick();
+  const hint = relatedVersionHint.value;
+  if (!hint || hintedRelatedVersion.value !== node || relatedVersionHintAnchor !== anchor || !anchor.isConnected) return;
+  hint.showPopover();
+  positionRelatedVersionHint(anchor, event instanceof MouseEvent ? event : undefined);
+}
+
+function onRelatedVersionHintScroll(event: Event) {
+  if (event.target instanceof Node && relatedVersionHint.value?.contains(event.target)) return;
+  if (relatedVersionHintAnchor?.isConnected && document.activeElement === relatedVersionHintAnchor) {
+    positionRelatedVersionHint(relatedVersionHintAnchor);
+    return;
+  }
+  hideRelatedVersionHint();
+}
+
+function dismissRelatedVersionHint(event: KeyboardEvent) {
+  if (!hintedRelatedVersion.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  hideRelatedVersionHint();
+}
+
 function openRelatedVersion(nodeId: string) {
   if (saving.value) return;
+  hideRelatedVersionHint();
   if (hasUnsavedTaskChanges.value && !window.confirm('当前任务或评论修改尚未保存。放弃修改并打开版本图吗？')) return;
   emit('graph', nodeId);
 }
+
+watch([detailSidebar, () => taskDraft.value?.id, relatedVersionOrder, includeChildVersions], hideRelatedVersionHint);
 
 watch([graph, () => props.detailTaskId], async ([current, detailId], [, previousDetailId]) => {
   if (!current) return;
@@ -1054,6 +1130,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  hideRelatedVersionHint();
   stopDragScroll?.();
   subscription?.unsubscribe();
   removeQuickRouteGuard?.();
@@ -1135,7 +1212,7 @@ onUnmounted(() => {
   </section>
 
   <Teleport to="body">
-    <dialog v-if="graph && taskDraft" ref="taskDetailDialog" class="task-detail-dialog" aria-labelledby="task-detail-page-title" @cancel.prevent="closeTaskDetails" @click.self="closeTaskDetails">
+    <dialog v-if="graph && taskDraft" ref="taskDetailDialog" class="task-detail-dialog" aria-labelledby="task-detail-page-title" @cancel.prevent="closeTaskDetails" @click.self="closeTaskDetails" @keydown.esc.capture="dismissRelatedVersionHint" @scroll.capture="onRelatedVersionHintScroll">
       <div class="task-detail-modal">
         <header class="task-detail-modal-header">
           <div class="task-detail-heading">
@@ -1247,18 +1324,36 @@ onUnmounted(() => {
           <aside v-if="taskDraft.id" class="task-detail-sidebar">
             <div class="task-sidebar-tabs" role="group" aria-label="任务侧栏">
               <button type="button" class="secondary" :aria-pressed="detailSidebar === 'comments'" @click="detailSidebar = 'comments'">评论（{{ taskDraft.comments.length }}）</button>
-              <button type="button" class="secondary" :aria-pressed="detailSidebar === 'versions'" @click="detailSidebar = 'versions'">关联软件版本（{{ graph.nodes.filter(node => node.taskId === taskDraft!.id).length }}）</button>
+              <button type="button" class="secondary" :aria-pressed="detailSidebar === 'versions'" @click="detailSidebar = 'versions'">关联软件版本（{{ relatedVersionCount }}）</button>
             </div>
             <section v-show="detailSidebar === 'versions'" class="task-related-versions" aria-labelledby="task-related-title">
-              <header><h4 id="task-related-title">关联版本</h4><span>{{ graph.nodes.filter(node => node.taskId === taskDraft!.id).length }}</span></header>
-              <ul v-if="graph.nodes.some(node => node.taskId === taskDraft!.id)">
-                <li v-for="node in graph.nodes.filter(item => item.taskId === taskDraft!.id)" :key="node.id">
-                  <button type="button" class="task-version-link" :disabled="saving" @click="openRelatedVersion(node.id)">
-                    <code>{{ node.version }}</code><span>{{ node.description || '（无改动说明）' }}</span><AppIcon name="arrow" />
-                  </button>
-                </li>
-              </ul>
-              <p v-else class="form-help">此任务尚未关联版本。</p>
+              <header><h4 id="task-related-title">关联版本</h4><span>{{ relatedVersionCount }}</span></header>
+              <div class="task-version-controls">
+                <label v-if="childTasks.length" class="task-version-children"><input v-model="includeChildVersions" type="checkbox" />包含子任务版本</label>
+                <label class="task-version-sort"><span>排序</span><select v-model="relatedVersionOrder" aria-label="关联版本排序"><option value="newest">新到旧</option><option value="oldest">旧到新</option></select></label>
+              </div>
+              <template v-if="relatedVersionCount">
+                <section v-for="group in relatedVersionGroups" :key="group.id" class="task-version-group">
+                  <h5><AppIcon name="branch" /><span class="task-version-group-name">{{ group.label }}</span><span v-if="group.context" class="task-version-context">{{ group.context }}</span><span class="task-version-group-count">{{ group.nodes.length }}</span></h5>
+                  <ul>
+                    <li v-for="node in group.nodes" :key="node.id">
+                      <button type="button" class="task-version-link" :disabled="saving"
+                        :aria-describedby="hintedRelatedVersion?.id === node.id ? 'task-version-info-hint' : undefined"
+                        @mouseenter="showRelatedVersionHint($event, node)" @mouseleave="scheduleRelatedVersionHintClose"
+                        @focus="showRelatedVersionHint($event, node)" @blur="scheduleRelatedVersionHintClose"
+                        @click="openRelatedVersion(node.id)">
+                        <span class="task-version-content">
+                          <code>{{ node.version }}</code>
+                          <span class="task-version-description">{{ node.description || '（无改动说明）' }}</span>
+                          <small v-if="node.taskId !== taskDraft.id && node.taskId">子任务</small>
+                        </span>
+                        <AppIcon name="chevron-right" />
+                      </button>
+                    </li>
+                  </ul>
+                </section>
+              </template>
+              <p v-else class="form-help">当前范围内暂无关联版本。</p>
             </section>
           <section v-show="detailSidebar === 'comments'" class="task-comments" aria-labelledby="task-comments-title">
             <h4 id="task-comments-title" class="visually-hidden">评论</h4>
@@ -1328,6 +1423,20 @@ onUnmounted(() => {
           </aside>
           <aside v-else class="task-comments-empty-note">保存任务后，可以在详情中继续添加评论和查看关联版本。</aside>
         </section>
+        <div ref="relatedVersionHint" id="task-version-info-hint" class="version-info-hint" popover="manual" role="tooltip" tabindex="0"
+          @mouseenter="keepRelatedVersionHint" @mouseleave="scheduleRelatedVersionHintClose"
+          @focusin="keepRelatedVersionHint" @focusout="scheduleRelatedVersionHintClose">
+          <template v-if="hintedRelatedVersion">
+            <div class="version-info-hint-heading">
+              <AppIcon :name="hintedRelatedVersion.releasedAt ? 'release' : hintedRelatedVersion.testingAt ? 'release-testing' : 'unrelease'" />
+              <strong>{{ hintedRelatedVersion.version }}</strong>
+              <span>{{ hintedRelatedVersion.releasedAt ? '已放行' : hintedRelatedVersion.testingAt ? '放行测试中' : '未放行' }}</span>
+            </div>
+            <p v-if="hintedRelatedVersion.taskId !== taskDraft.id && hintedRelatedVersion.taskId" class="task-version-hint-origin">子任务：{{ relatedVersionTasks.get(hintedRelatedVersion.taskId)?.name }}</p>
+            <div v-if="hintedRelatedVersion.description.trim()" class="markdown-content version-hint-description" v-html="renderMarkdown(hintedRelatedVersion.description)"></div>
+            <p v-else class="markdown-empty">（无改动说明）</p>
+          </template>
+        </div>
       </div>
     </dialog>
   </Teleport>
@@ -1519,13 +1628,27 @@ onUnmounted(() => {
 .task-related-versions > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .task-related-versions h4, .task-comments h4 { margin: 0; color: #eef4ff; font-size: 13px; }
 .task-related-versions > header > span { color: #afbdd2; font-size: 11px; }
-.task-related-versions ul, .task-comment-list { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
-.task-related-versions li, .task-comment { min-width: 0; padding: 8px; border: 1px solid #35445c; border-radius: 6px; background: #101a2a; }
-.task-version-link { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) 18px; justify-content: start; width: 100%; min-width: 0; min-height: 40px; padding: 4px; border: 0; background: transparent; text-align: left; }
-.task-version-link:hover { background: #17243a; }
-.task-version-link code { overflow: hidden; color: #b7d8ff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.task-version-link span { overflow: hidden; color: #c0cde0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.task-version-link .app-icon { width: 16px; height: 16px; }
+.task-version-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 12px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #35445c; }
+.task-version-controls label { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: flex-start; gap: 8px; min-height: 44px; margin: 0; color: #c0cde0; font-size: 12px; white-space: nowrap; }
+.task-version-controls input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; }
+.task-version-controls select { flex: 0 0 auto; width: auto; min-width: 88px; min-height: 44px; margin: 0; padding: 6px 8px; }
+.task-version-sort { margin-left: auto !important; }
+.task-version-group + .task-version-group { margin-top: 18px; }
+.task-version-group h5 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; color: #eef4ff; font-size: 12px; line-height: 1.5; }
+.task-version-group h5 .app-icon { flex: 0 0 15px; width: 15px; height: 15px; color: #afbdd2; }
+.task-version-group-name { min-width: 0; overflow-wrap: anywhere; }
+.task-version-context, .task-version-group-count { color: #afbdd2; font-weight: 400; }
+.task-version-group-count { margin-left: auto; }
+.task-related-versions ul, .task-comment-list { display: grid; list-style: none; margin: 0; padding: 0; }
+.task-related-versions li { min-width: 0; border-bottom: 1px solid #35445c; }
+.task-version-link { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; min-height: 44px; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: #eef4ff; text-align: left; }
+.task-version-link:hover { background: #1d2b42; }
+.task-version-content { display: flex; flex: 1; align-items: center; min-width: 0; gap: 8px; line-height: 1.45; }
+.task-version-content code { flex: 0 1 auto; max-width: 50%; min-width: 0; overflow: hidden; color: #b7d8ff; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.task-version-description { flex: 1; min-width: 0; overflow: hidden; color: #c0cde0; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.task-version-link .app-icon { flex: 0 0 16px; width: 16px; height: 16px; color: #afbdd2; }
+.task-version-link small { flex: 0 0 auto; color: #afbdd2; font-size: 11px; white-space: nowrap; }
+.task-version-hint-origin { margin: 10px 0 0; color: #c0cde0; }
 .task-comments { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .task-comment-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; align-content: start; padding: 12px; }
 .task-comments-empty { display: grid; flex: 1 1 auto; place-items: center; min-height: 120px; margin: 0; color: #8fa0b8; font-size: 12px; }

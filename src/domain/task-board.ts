@@ -1,8 +1,114 @@
 import { validateGraph } from './graph';
-import { normalizeExternalTaskId, requireCondition, type ProjectGraph, type Task } from './model';
+import { normalizeExternalTaskId, orderedBranches, requireCondition, type ProjectGraph, type Task, type VersionNode } from './model';
+import { orderedVersionNodes, type VersionOrder } from './version-order';
 
 export type TaskSearchMode = 'id' | 'keyword' | 'assignee';
 export type TaskScope = 'all' | 'mine';
+
+export interface RelatedVersionGroup {
+  id: string;
+  label: string;
+  context: string | null;
+  nodes: VersionNode[];
+}
+
+export function projectRelatedVersions(
+  graph: ProjectGraph, taskId: string, includeChildren: boolean, order: VersionOrder,
+): RelatedVersionGroup[] {
+  const taskIds = new Set([taskId]);
+  if (includeChildren) {
+    const children = new Map<string, string[]>();
+    for (const task of graph.tasks) {
+      if (!task.parentTaskId) continue;
+      const siblings = children.get(task.parentTaskId) ?? [];
+      siblings.push(task.id);
+      children.set(task.parentTaskId, siblings);
+    }
+    const pending = [taskId];
+    while (pending.length) {
+      for (const id of children.get(pending.pop()!) ?? []) {
+        if (taskIds.has(id)) continue;
+        taskIds.add(id);
+        pending.push(id);
+      }
+    }
+  }
+  const selected = new Set(graph.nodes.filter(node => node.taskId && taskIds.has(node.taskId)).map(node => node.id));
+  if (!selected.size) return [];
+
+  const oldest = orderedVersionNodes(graph, 'oldest');
+  const parents = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  const incident = new Set<string>();
+  for (const edge of graph.edges) {
+    parents.get(edge.childId)!.push(edge.parentId);
+    incident.add(edge.parentId);
+    incident.add(edge.childId);
+  }
+  const nearest = new Map<string, Set<string>>();
+  const previous = new Map<string, Set<string>>();
+  const next = new Map<string, Set<string>>();
+  const ancestorCache = new Map<string, Set<string>>();
+  const history = (id: string) => {
+    if (!ancestorCache.has(id)) {
+      const result = new Set<string>();
+      const pending = [id];
+      while (pending.length) {
+        const current = pending.pop()!;
+        if (result.has(current)) continue;
+        result.add(current);
+        pending.push(...(parents.get(current) ?? []));
+      }
+      ancestorCache.set(id, result);
+    }
+    return ancestorCache.get(id)!;
+  };
+  for (const node of oldest) {
+    const candidates = new Set((parents.get(node.id) ?? []).flatMap(id => [...(nearest.get(id) ?? [])]));
+    if (!selected.has(node.id)) {
+      nearest.set(node.id, candidates);
+      continue;
+    }
+    for (const id of candidates) {
+      if ([...candidates].some(other => other !== id && history(other).has(id))) candidates.delete(id);
+    }
+    previous.set(node.id, candidates);
+    for (const id of candidates) {
+      const successors = next.get(id) ?? new Set<string>();
+      successors.add(node.id);
+      next.set(id, successors);
+    }
+    nearest.set(node.id, new Set([node.id]));
+  }
+
+  const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+  const groups: RelatedVersionGroup[] = [];
+  for (const node of oldest) {
+    if (!selected.has(node.id)) continue;
+    const prior = [...(previous.get(node.id) ?? [])];
+    if (prior.length === 1 && (next.get(prior[0]!)?.size ?? 0) === 1) continue;
+    const nodes = [node];
+    let current = node.id;
+    while ((next.get(current)?.size ?? 0) === 1) {
+      const child = [...next.get(current)!][0]!;
+      if (previous.get(child)?.size !== 1) break;
+      nodes.push(nodeById.get(child)!);
+      current = child;
+    }
+    const matchingBranches = orderedBranches(graph.branches)
+      .filter(branch => nodes.every(item => history(branch.headId).has(item.id)));
+    const context = (next.get(current)?.size ?? 0) > 1 ? '共同历史'
+      : (previous.get(node.id)?.size ?? 0) > 1 ? '合并后路径'
+        : !incident.has(node.id) ? '游离版本' : null;
+    const label = matchingBranches.map(branch => branch.name).join('、') || '未命名分支';
+    groups.push({ id: node.id, label, context, nodes });
+  }
+  if (order === 'newest') {
+    const rank = new Map(orderedVersionNodes(graph, order).map((node, index) => [node.id, index]));
+    for (const group of groups) group.nodes.reverse();
+    groups.sort((a, b) => rank.get(a.nodes[0]!.id)! - rank.get(b.nodes[0]!.id)!);
+  }
+  return groups;
+}
 
 export type TaskIdSearch =
   | { kind: 'empty' }
