@@ -150,6 +150,8 @@ describe('后端设备发现', () => {
       fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ ...health, ...changed })));
       await expect(checkLocalBackend('pc-a', new AbortController().signal)).rejects.toThrow('不兼容');
     }
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ ...health, databaseVersion: 6 })));
+    await expect(checkLocalBackend('pc-a', new AbortController().signal)).resolves.toEqual({ initialized: true });
     fetcher.mockResolvedValueOnce(new Response('html'));
     await expect(checkLocalBackend('pc-a', new AbortController().signal)).rejects.toThrow('有效 JSON');
   });
