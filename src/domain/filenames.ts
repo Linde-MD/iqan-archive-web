@@ -41,8 +41,8 @@ export function parseEngineeringName(fileName: string): ParsedEngineering {
   requireCondition(match, 'EXTENSION', '不支持的工程扩展名，仅支持 .idax、.idsx、.idvx。');
   const body = match[1]!;
   requireCondition(!/\.(idax|idsx|idvx)[ \t]*$/i.test(body), 'EXTENSION', '不允许重复扩展名。');
-  const fields = /^([0-9]+)[ \t_]+([Vv][A-Za-z0-9 \t._-]*)$/.exec(body.trim());
-  requireCondition(fields && /[A-Za-z0-9]/.test(fields[2]!.slice(1)), 'FILENAME', '文件名须为数字零件号、空格/Tab或下划线分隔符和 V/v 开头的完整版本；版本仅允许字母、数字、空格/Tab、下划线、短横线和点。');
+  const fields = /^([0-9]+)[ \t_]+([A-Za-z][A-Za-z0-9 \t._-]*)$/.exec(body.trim());
+  requireCondition(fields && /[A-Za-z0-9]/.test(fields[2]!.slice(1)), 'FILENAME', '文件名须为数字零件号、空格/Tab或下划线分隔符和英文字母开头的完整版本；版本须包含后续字母或数字，且仅允许字母、数字、空格/Tab、下划线、短横线和点。');
   const extension = match[2]!.toLowerCase();
   requireCondition(extension === '.idax' || extension === '.idsx' || extension === '.idvx', 'EXTENSION', '不支持的工程扩展名。');
   return { partNumber: fields[1]!, version: normalizeVersion(fields[2]!), extension };

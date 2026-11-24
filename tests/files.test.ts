@@ -129,8 +129,35 @@ describe('文件名和版本身份', () => {
     expect(replaceRelativeFileName('nested/deeper/001 V1.idax', '001 V2.idax')).toBe('nested/deeper/001 V2.idax');
     expect(() => replaceRelativeFileName('nested/001 V1.idax', '../001 V2.idax')).toThrow();
   });
-  it.each(['001 V.idax', '001 v---.idax', '001_V___.idax', '001V1.idax', '001 R1.idax', 'abc V1.idax', '001 V1.idax.idsx', '001 V1.exe', '001 V中文.idax', '001 V1\n2026.idax'])('拒绝非法文件名：%s', name => {
+  it('所有大小写英文字母均可作为工程版本开头', () => {
+    for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') {
+      expect(parseEngineeringName(`001_${letter}1.IDAX`).version).toBe(`${letter}1`);
+    }
+    expect(parseEngineeringName('001\tR1.2  \t20261124.idsx').version).toBe('R1.2 20261124');
+    expect(parseEngineeringName('001 a1_beta.idvx').version).toBe('a1_beta');
+  });
+  it.each(['001 V.idax', '001 R.idax', '001 v---.idax', '001_V___.idax', '001V1.idax', '001 12.idax', 'abc V1.idax', '001 V1.idax.idsx', '001 V1.exe', '001 V中文.idax', '001 V1\n2026.idax'])('拒绝非法文件名：%s', name => {
     expect(() => parseEngineeringName(name)).toThrow();
+  });
+  it('扫描新首字母版本后自动匹配已有节点，并只登记选中的缺失版本', async () => {
+    const root = directory('engineering', [
+      file('001_R1.0 20261124.IDAX'), file('001 r1.0 20261124.idsx'),
+      file('001_R1.0 20261124.idvx'), file('002_A1.idax'), file('001_Z.idax'),
+    ]);
+    const candidates = await scanDirectory(root, 'engineering', new AbortController().signal, () => {});
+    const existing = registerCandidates(createProject('项目', '001'), [candidate('001 R1.0 20261124.idax')]);
+    const before = structuredClone(existing);
+    const scan = matchScannedFiles(existing, candidates);
+    expect(existing).toEqual(before);
+    expect(scan.matches.get(existing.nodes[0]!.id)).toHaveLength(2);
+    const byName = (name: string) => scan.rows.find(row => row.fileName === name)!;
+    expect(byName('001 r1.0 20261124.idsx')).toMatchObject({ version: 'r1.0 20261124', nodeId: null, reason: null });
+    expect(byName('002_A1.idax').reason).toContain('零件号不匹配');
+    expect(byName('001_Z.idax').reason).toContain('后续字母或数字');
+    const updated = registerCandidates(existing, [candidate('001 r1.0 20261124.idsx')]);
+    expect(updated.nodes.map(node => node.version)).toEqual(['R1.0 20261124', 'r1.0 20261124']);
+    expect(updated.edges).toEqual([]);
+    expect(updated.branches).toEqual([]);
   });
   it('扫描和登记按完整版本匹配下划线，不把分隔符计入版本', () => {
     const graph = registerCandidates(createProject('项目', '14813605200'), [
