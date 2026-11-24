@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, mergeDocumentCandidates, orderDocumentCandidates, parseEngineeringName, registerCandidates, replaceRelativeFileName, type FileCandidate } from '../src/domain/filenames';
 import { createProject, normalizeVersion, type VersionNode } from '../src/domain/model';
 import { serializeProjectSnapshot } from '../src/domain/project-snapshot';
@@ -402,6 +402,16 @@ describe('软件对比文档版本匹配', () => {
 });
 
 describe('只读目录扫描与定位', () => {
+  it('文档扫描只取项目摘要，不读取完整图', async () => {
+    const repository = repo();
+    const graph = await repository.create('项目 A', '001');
+    const root = directory('shared', [directory('项目 A_software_changes_docs', [file('说明.docx')])]);
+    vi.spyOn(repository, 'getArchiveRoot').mockResolvedValue(root);
+    const fullRead = vi.spyOn(repository, 'get').mockRejectedValue(new Error('不应读取完整图'));
+    const scan = await scanDocumentDirectory(repository, graph.project.id, 'shared', new AbortController().signal);
+    expect(scan.files).toHaveLength(1);
+    expect(fullRead).not.toHaveBeenCalled();
+  });
   it('扫描指定来源的项目文档子目录并保留根句柄和相对路径', async () => {
     const graph = createProject('项目 A', '001');
     const document = file('说明.docx');
@@ -409,8 +419,8 @@ describe('只读目录扫描与定位', () => {
     const root = directory('shared', [binding]);
     const repository = {
       async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? root : undefined; },
-      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
-    } as unknown as ArchiveRepository;
+      async getProjectInfo(projectId: string) { expect(projectId).toBe(graph.project.id); return graph.project; },
+    };
     const scan = await scanDocumentDirectory(repository, graph.project.id, 'shared', new AbortController().signal);
     expect(scan.location).toBe('shared');
     expect(scan.root).toBe(root);
@@ -424,8 +434,8 @@ describe('只读目录扫描与定位', () => {
     const root = directory('shared', [binding]);
     const repository = {
       async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? root : undefined; },
-      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
-    } as unknown as ArchiveRepository;
+      async getProjectInfo(projectId: string) { expect(projectId).toBe(graph.project.id); return graph.project; },
+    };
     const results = await scanDocumentDirectories(repository, graph.project.id, new AbortController().signal);
     expect(results.find(result => result.location === 'shared')).toMatchObject({ status: 'success', count: 1 });
     expect(results.find(result => result.location === 'local')).toMatchObject({ status: 'error', message: '本地根目录未设置。', count: 0 });
@@ -438,8 +448,8 @@ describe('只读目录扫描与定位', () => {
     const pendingShared = new Promise<DirectoryHandle | undefined>(resolve => { releaseShared = resolve; });
     const repository = {
       getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? pendingShared : Promise.resolve(local); },
-      async get() { return graph; },
-    } as unknown as ArchiveRepository;
+      async getProjectInfo() { return graph.project; },
+    };
     const controller = new AbortController();
     const shared = scanDocumentDirectory(repository, graph.project.id, 'shared', controller.signal);
     const localScan = await scanDocumentDirectory(repository, graph.project.id, 'local', controller.signal);
@@ -455,8 +465,8 @@ describe('只读目录扫描与定位', () => {
     const local = directory('local', []);
     const repository = {
       async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? shared : local; },
-      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
-    } as unknown as ArchiveRepository;
+      async getProjectInfo(projectId: string) { expect(projectId).toBe(graph.project.id); return graph.project; },
+    };
     const results = await scanDocumentDirectories(repository, graph.project.id, new AbortController().signal);
     expect(results.find(result => result.location === 'shared')).toMatchObject({ status: 'success', count: 1 });
     expect(results.find(result => result.location === 'local')).toMatchObject({ status: 'missing', scan: { missingDirectory: true, files: [] } });
@@ -471,8 +481,8 @@ describe('只读目录扫描与定位', () => {
     const localRoot = directory('local', [localBinding]);
     const repository = {
       async getArchiveRoot(location: 'shared' | 'local') { return location === 'shared' ? sharedRoot : localRoot; },
-      async get(projectId: string) { expect(projectId).toBe(graph.project.id); return graph; },
-    } as unknown as ArchiveRepository;
+      async getProjectInfo(projectId: string) { expect(projectId).toBe(graph.project.id); return graph.project; },
+    };
     const scan = await scanDocumentLocalDeletion(repository, graph.project.id, '说明.docx', new AbortController().signal);
     await deleteLocalDocumentCopy(scan, '说明.docx');
     expect(await scan.local.binding!.getFileHandle('说明.docx').then(() => true, () => false)).toBe(false);

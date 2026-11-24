@@ -5,7 +5,7 @@ import { BackendConnection, backendAddress, checkLocalBackend, parseBackendHosts
 import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
 
 const databases: ArchiveDatabase[] = [];
-const health = { product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true };
+const health = { product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 9, initialized: true };
 const response = () => new Response(JSON.stringify(health));
 const defaults = ['nb4cn25opxos', 'nb4cn35rxxr8', 'nb4cn25xl5pv', 'nb4cn25omeyo'];
 afterEach(async () => {
@@ -146,11 +146,11 @@ describe('后端设备发现', () => {
     expect(fetcher).toHaveBeenCalledWith('http://pc-a/health', expect.objectContaining({
       credentials: 'omit', cache: 'no-store', redirect: 'error', targetAddressSpace: 'local',
     }));
-    for (const changed of [{ product: 'other' }, { apiVersion: 1 }, { databaseVersion: 2 }, { databaseVersion: 5 }, { databaseVersion: 6 }, { databaseVersion: 7 }, { initialized: 'yes' }]) {
+    for (const changed of [{ product: 'other' }, { apiVersion: 1 }, { databaseVersion: 2 }, { databaseVersion: 5 }, { databaseVersion: 6 }, { databaseVersion: 7 }, { databaseVersion: 8 }, { initialized: 'yes' }]) {
       fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ ...health, ...changed })));
       await expect(checkLocalBackend('pc-a', new AbortController().signal)).rejects.toThrow('不兼容');
     }
-    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ ...health, databaseVersion: 8 })));
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ ...health, databaseVersion: 9 })));
     await expect(checkLocalBackend('pc-a', new AbortController().signal)).resolves.toEqual({ initialized: true });
     fetcher.mockResolvedValueOnce(new Response('html'));
     await expect(checkLocalBackend('pc-a', new AbortController().signal)).rejects.toThrow('有效 JSON');

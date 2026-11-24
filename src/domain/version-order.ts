@@ -1,4 +1,4 @@
-import type { ProjectGraph, VersionNode } from './model';
+import { requireCondition, type Edge, type ProjectGraph, type VersionNode } from './model';
 import { validateGraph } from './graph';
 
 export type VersionOrder = 'oldest' | 'newest';
@@ -69,24 +69,35 @@ export function compareVersions(a: string, b: string): number {
   return naturalCompare(a, b);
 }
 
-export function compareVersionNodes(a: VersionNode, b: VersionNode, order: VersionOrder): number {
+export function compareVersionNodes(a: Pick<VersionNode, 'id' | 'version'>, b: Pick<VersionNode, 'id' | 'version'>, order: VersionOrder): number {
   return (order === 'oldest' ? 1 : -1) * (compareVersions(a.version, b.version) || compareText(a.id, b.id));
 }
 
 /** Topology takes precedence; newest-first visits children before parents. */
-export function orderedVersionNodes(graph: ProjectGraph, order: VersionOrder): VersionNode[] {
-  validateGraph(graph);
+export function orderedVersionNodes<T extends Pick<VersionNode, 'id' | 'version'>>(
+  graph: { nodes: readonly T[]; edges: readonly Pick<Edge, 'id' | 'parentId' | 'childId'>[] }, order: VersionOrder,
+): T[] {
+  if (!('kind' in graph) && 'project' in graph && 'branches' in graph && 'tasks' in graph) validateGraph(graph as unknown as ProjectGraph);
   const indegree = new Map(graph.nodes.map(node => [node.id, 0]));
+  requireCondition(indegree.size === graph.nodes.length && graph.nodes.every(node => node.id.trim() && node.version.trim()),
+    'DUPLICATE_ID', '版本身份无效或重复。');
   const adjacent = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const edgeIds = new Set<string>(), pairs = new Set<string>();
   for (const edge of graph.edges) {
+    requireCondition(edge.id.trim() && !edgeIds.has(edge.id), 'DUPLICATE_ID', '关系 ID 为空或重复。');
+    edgeIds.add(edge.id);
+    requireCondition(byId.has(edge.parentId) && byId.has(edge.childId), 'NODE_REFERENCE', '父边引用了不存在的节点。');
+    const pair = JSON.stringify([edge.parentId, edge.childId]);
+    requireCondition(!pairs.has(pair), 'DUPLICATE_EDGE', '父边重复。');
+    pairs.add(pair);
     const from = order === 'oldest' ? edge.parentId : edge.childId;
     const to = order === 'oldest' ? edge.childId : edge.parentId;
     indegree.set(to, indegree.get(to)! + 1);
     adjacent.get(from)!.push(to);
   }
   const ready = graph.nodes.filter(node => indegree.get(node.id) === 0);
-  const result: VersionNode[] = [];
+  const result: T[] = [];
   while (ready.length) {
     ready.sort((a, b) => compareVersionNodes(a, b, order));
     const node = ready.shift()!;
@@ -96,5 +107,6 @@ export function orderedVersionNodes(graph: ProjectGraph, order: VersionOrder): V
       if (indegree.get(id) === 0) ready.push(byId.get(id)!);
     }
   }
+  requireCondition(result.length === graph.nodes.length, 'CYCLE', '版本关系不能成环。');
   return result;
 }

@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { ProjectGraph, TaskAssignee } from '../domain/model';
+import type { TaskAssignee } from '../domain/model';
+import type { ProjectBoardView, TaskSummary } from '../domain/project-views';
 import type { TaskListRow } from '../domain/task-board';
 import AppIcon from './AppIcon.vue';
 import TaskAssigneeAvatar from './TaskAssigneeAvatar.vue';
 import TaskStatusIcon from './TaskStatusIcon.vue';
 
 const props = defineProps<{
-  graph: ProjectGraph;
-  rows: TaskListRow[];
+  graph: ProjectBoardView;
+  rows: TaskListRow<TaskSummary>[];
   nested: boolean;
   selectedTaskId: string;
   assigneeById: ReadonlyMap<string, TaskAssignee>;

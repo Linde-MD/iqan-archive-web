@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onUnmounted, ref, watch } from 'vue';
-import type { ArchiveLocation, ProjectGraph, VersionNode } from '../domain/model';
+import type { ArchiveLocation, Project, VersionNode } from '../domain/model';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
 import { checkPermission, fileOperationErrorMessage, locateFile, resolveProjectDirectory, scanDirectory, type DirectoryHandle } from '../files/directories';
 import type { ArchiveRepository } from '../storage/database';
@@ -9,7 +9,7 @@ import { buildCompareUri, buildOpenUri } from '../domain/iqan-protocol';
 type Action = 'open' | 'compare';
 
 const props = defineProps<{
-  graph: ProjectGraph;
+  graph: { project: Project; nodes: VersionNode[] };
   repository: ArchiveRepository;
   projectId: string;
 }>();
@@ -48,7 +48,7 @@ watch(() => props.graph.project.revision, revision => {
   }
 });
 
-function validateSelection(graph: ProjectGraph, nodeIds: readonly string[], targetAction: Action): VersionNode[] {
+function validateSelection(graph: { project: Project; nodes: VersionNode[] }, nodeIds: readonly string[], targetAction: Action): VersionNode[] {
   const expectedCount = targetAction === 'open' ? 1 : 2;
   if (nodeIds.length !== expectedCount) {
     throw new Error(targetAction === 'open' ? '打开需要一个版本节点。' : '对比需要两个不同的版本节点。');
@@ -97,7 +97,7 @@ async function open(targetAction: Action, nodeIds: readonly string[], preferredL
   busy.value = true;
 
   try {
-    const graph = await props.repository.get(props.projectId);
+    const graph = await props.repository.getGraphView(props.projectId);
     if (props.graph.project.revision !== graph.project.revision) {
       throw new Error('项目版本图刚刚发生变化，请重新选择版本后再试。');
     }
@@ -134,7 +134,7 @@ async function open(targetAction: Action, nodeIds: readonly string[], preferredL
       binding = await getEngineeringBinding(graph.project.name, 'shared');
       candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
     }
-    const latestGraph = await props.repository.get(props.projectId);
+    const latestGraph = await props.repository.getGraphView(props.projectId);
     if (latestGraph.project.revision !== graph.project.revision) {
       throw new Error('扫描期间项目版本图已变化，请重新选择版本后再试。');
     }
@@ -192,7 +192,7 @@ async function prepareRequest(requestImmediately = false) {
   controller = operationController;
 
   try {
-    const current = await props.repository.get(props.projectId);
+    const current = await props.repository.getGraphView(props.projectId);
     if (current.project.revision !== snapshotRevision.value || current.project.partNumber !== snapshotPartNumber.value) {
       throw new Error('项目版本图或零件号已变化，预览已失效。请关闭并重新选择版本。');
     }
@@ -207,7 +207,7 @@ async function prepareRequest(requestImmediately = false) {
     const binding = await getEngineeringBinding(current.project.name, selectedLocation.value);
     if (binding.name !== directoryName.value) throw new Error('工程目录绑定已变化，旧预览已失效。请重新扫描。');
     const candidates = await scanEngineeringDirectory(binding.handle, operationController.signal);
-    const latestGraph = await props.repository.get(props.projectId);
+    const latestGraph = await props.repository.getGraphView(props.projectId);
     if (latestGraph.project.revision !== snapshotRevision.value || latestGraph.project.partNumber !== snapshotPartNumber.value) {
       throw new Error('扫描期间项目版本图已变化，预览已失效。请关闭并重新选择版本。');
     }
@@ -224,7 +224,7 @@ async function prepareRequest(requestImmediately = false) {
       await locateFile(binding.handle, path);
     }
 
-    const finalGraph = await props.repository.get(props.projectId);
+    const finalGraph = await props.repository.getGraphView(props.projectId);
     if (finalGraph.project.revision !== snapshotRevision.value || finalGraph.project.partNumber !== snapshotPartNumber.value) {
       throw new Error('文件检查期间项目已变化，请关闭并重新选择版本。');
     }

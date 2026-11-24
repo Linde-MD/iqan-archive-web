@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue';
 import { useSortable } from '@dnd-kit/vue/sortable';
-import type { Task, TaskAssignee, TaskOption } from '../domain/model';
+import type { TaskAssignee, TaskOption } from '../domain/model';
+import type { TaskSummary } from '../domain/project-views';
 import { placeContextMenu } from '../utils/viewport';
 import AppIcon from './AppIcon.vue';
 import TaskAssigneeAvatar from './TaskAssigneeAvatar.vue';
 
 const props = defineProps<{
-  task: Task;
+  task: TaskSummary;
   index: number;
   group: string;
   priorityName: string | null;

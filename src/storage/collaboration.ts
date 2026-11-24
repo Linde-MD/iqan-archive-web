@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { reactive, watch } from 'vue';
-import { ArchiveRepository, type SnapshotImportPlan } from './database';
+import { ArchiveRepository, projectPageFromGraph, type SnapshotImportPlan } from './database';
 import type { RepositorySync } from './repository-sync';
 import { BACKEND_RECHECK_INTERVAL_MS, backendAddress, backendRequestOptions, probeBackendHosts, type BackendProbe } from '../local-backend';
 import { DomainError, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAssignee } from '../domain/model';
@@ -8,6 +8,7 @@ import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/projec
 import { validateGraph, validateTransition } from '../domain/graph';
 import { assertOfflineChanges } from '../domain/collaboration';
 import { applyProjectDelta, diffProjectGraphs, hasProjectChanges, parseProjectDelta } from '../domain/project-changes';
+import { summarizeProject, type ProjectBoardView, type ProjectFilesView, type ProjectGraphView, type ProjectPage, type ProjectPageView, type ProjectSummary, type TaskDetail, type VersionDetail } from '../domain/project-views';
 
 export interface CollaborationUser {
   id: string; username: string; displayName: string; email: string;
@@ -29,6 +30,9 @@ interface RequestClient {
   binding?: { slot: number; generation: number; sequence: number };
 }
 interface CachedAssignee extends TaskAssignee { key: string; source: string }
+interface CatalogEntry { key: string; source: string; summary: ProjectSummary; version: number }
+interface CachedPage { key: string; source: string; view: ProjectPageView; version: number }
+interface CatalogState { source: string }
 
 export class CollaborationDatabase extends Dexie {
   contexts!: Table<Context, string>;
@@ -37,6 +41,9 @@ export class CollaborationDatabase extends Dexie {
   pending!: Table<Pending, string>;
   assignees!: Table<CachedAssignee, string>;
   clients!: Table<RequestClient, string>;
+  catalog!: Table<CatalogEntry, string>;
+  pages!: Table<CachedPage, string>;
+  catalogState!: Table<CatalogState, string>;
   constructor(name = 'iqan-archive-collaboration') {
     super(name);
     this.version(1).stores({ contexts: 'id', mirrors: 'key, source', drafts: 'key', pending: 'key' });
@@ -56,6 +63,13 @@ export class CollaborationDatabase extends Dexie {
       }
     });
     this.version(3).stores({ clients: 'key' });
+    this.version(4).stores({ catalog: 'key, source', pages: 'key, source', catalogState: 'source' }).upgrade(async transaction => {
+      const catalog = transaction.table<CatalogEntry>('catalog');
+      for (const mirror of await transaction.table<Mirror>('mirrors').toArray()) {
+        if (!mirror.deleted) await catalog.put({ key: mirror.key, source: mirror.source,
+          summary: summarizeProject(mirror.graph.project), version: mirror.version });
+      }
+    });
   }
 }
 
@@ -66,6 +80,14 @@ export class CollaborationError extends Error {
 function object(value: unknown): Record<string, unknown> {
   requireCondition(value && typeof value === 'object' && !Array.isArray(value), 'RESPONSE', '服务响应格式无效。');
   return Object.fromEntries(Object.entries(value));
+}
+
+function projectSummary(value: unknown): ProjectSummary {
+  const row = object(value);
+  requireCondition(typeof row.id === 'string' && !!row.id && typeof row.name === 'string' && !!row.name.trim()
+    && typeof row.partNumber === 'string' && !!row.partNumber.trim()
+    && Number.isSafeInteger(row.revision) && Number(row.revision) >= 0, 'RESPONSE', '项目摘要无效。');
+  return { id: row.id, name: row.name, partNumber: row.partNumber, revision: Number(row.revision) };
 }
 
 function user(value: unknown): CollaborationUser {
@@ -125,6 +147,7 @@ export class CollaborationRepository implements RepositorySync {
   private expiresAt = 0;
   private writing = false;
   private mutations = 0;
+  private catalogGeneration = 0;
   private activeRequests = 0;
   private background: AbortController | undefined;
   private backgroundResult: { generation: number; results: BackendProbe[]; error: string } | undefined;
@@ -342,7 +365,6 @@ export class CollaborationRepository implements RepositorySync {
     this.state.source = instance.databaseId;
     await this.persistContext();
     await this.refresh();
-    if (!await this.cache.pending.get(this.actorKey())) await this.registerClient(this.actorKey(), true);
   }
 
   async logout() {
@@ -433,24 +455,191 @@ export class CollaborationRepository implements RepositorySync {
     });
   }
 
-  async listProjects() {
+  async listProjects(): Promise<ProjectSummary[]> {
     const context = await this.context();
     if (!context?.source) return this.local.listProjects();
-    const mirrors = await this.cache.mirrors.where('source').equals(context.source).toArray();
-    const results: ProjectGraph['project'][] = [];
+    const catalog = await this.cache.catalog.where('source').equals(context.source).toArray();
+    const initialized = await this.cache.catalogState.get(context.source);
+    const draftKeys = new Set((await this.cache.drafts.toCollection().primaryKeys())
+      .filter(key => key.startsWith(`${context.source}:`)));
+    const mirrors = initialized
+      ? (await this.cache.mirrors.bulkGet([...draftKeys])).filter((mirror): mirror is Mirror => !!mirror)
+      : await this.cache.mirrors.where('source').equals(context.source).toArray();
+    const results = new Map(catalog.map(entry => [entry.summary.id, { ...entry.summary, revision: entry.version }]));
     for (const mirror of mirrors) {
-      if (!mirror.deleted || await this.cache.drafts.get(mirror.key)) {
-        results.push((await this.get(mirror.graph.project.id)).project);
-      }
+      if (draftKeys.has(mirror.key))
+        results.set(mirror.graph.project.id, { ...summarizeProject(mirror.graph.project), revision: mirror.version });
+      else if (!initialized && !mirror.deleted && !results.has(mirror.graph.project.id))
+        results.set(mirror.graph.project.id, { ...summarizeProject(mirror.graph.project), revision: mirror.version });
     }
-    return results;
+    return [...results.values()];
+  }
+
+  async getProjectInfo(id: string): Promise<ProjectSummary> {
+    const context = await this.context();
+    if (!context?.source) return this.local.getProjectInfo(id);
+    const entry = await this.cache.catalog.get(`${context.source}:${id}`);
+    const mirror = await this.cache.mirrors.get(`${context.source}:${id}`);
+    const draft = mirror && await this.cache.drafts.get(mirror.key);
+    if (draft && mirror) return { ...summarizeProject(mirror.graph.project), revision: mirror.version };
+    if (entry) return { ...entry.summary, revision: entry.version };
+    requireCondition(mirror && (!await this.cache.catalogState.get(context.source) || await this.cache.drafts.get(mirror.key))
+      && (!mirror.deleted || await this.cache.drafts.get(mirror.key)), 'PROJECT_NOT_FOUND', '本机没有该项目目录，请连接后刷新。');
+    return { ...summarizeProject(mirror.graph.project), revision: mirror.version };
+  }
+
+  private pageKey(source: string, id: string, page: ProjectPage) { return `${source}:${id}:${page}`; }
+
+  async loadPage(id: string, page: ProjectPage): Promise<void> {
+    const context = await this.context();
+    if (!context?.source) return;
+    const source = context.source, token = this.token, actor = this.state.user?.id;
+    const mirror = await this.cache.mirrors.get(`${source}:${id}`);
+    if (mirror && await this.cache.drafts.get(mirror.key)) return;
+    if (!this.state.connected || !this.state.authenticated) {
+      requireCondition(mirror || await this.cache.pages.get(this.pageKey(source, id, page)), 'PAGE_OFFLINE', '该页面尚未缓存在本机，请连接后首次加载。');
+      return;
+    }
+    const value = object(await this.request(`/projects/${encodeURIComponent(id)}/view/${page}`));
+    const summary = projectSummary(value.project);
+    requireCondition(value.kind === page && summary.id === id && Number.isSafeInteger(value.revision)
+      && value.revision === summary.revision && Array.isArray(value.nodes) && Array.isArray(value.edges)
+      && (page === 'files' || (Array.isArray(value.tasks) && Array.isArray(value.branches))),
+    'RESPONSE', '页面投影响应无效。');
+    requireCondition(this.state.source === source && this.token === token && this.state.user?.id === actor,
+      'SOURCE', '账号或数据源已改变，请重新加载页面。');
+    const view = value as unknown as ProjectPageView;
+    await this.cache.transaction('rw', [this.cache.contexts, this.cache.catalog, this.cache.pages, this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
+      const currentContext = await this.cache.contexts.get('active');
+      requireCondition(currentContext?.source === source && currentContext.actorId === actor
+        && this.state.source === source && this.token === token, 'SOURCE', '账号或数据源已改变，请重新加载页面。');
+      const key = `${source}:${id}`;
+      const entry = await this.cache.catalog.get(key);
+      const currentMirror = await this.cache.mirrors.get(key);
+      if (await this.cache.drafts.get(key) || (actor && await this.cache.pending.get(`${source}:${actor}`))) return;
+      if ((entry && entry.summary.revision > summary.revision) || (currentMirror && currentMirror.graph.project.revision > summary.revision)) return;
+      const priorRevision = entry?.summary.revision ?? currentMirror?.graph.project.revision;
+      const priorVersion = entry?.version ?? currentMirror?.version ?? 0;
+      const version = priorRevision === summary.revision ? priorVersion : priorVersion + 1;
+      await this.cache.catalog.put({ key, source, summary, version });
+      await this.cache.pages.put({ key: this.pageKey(source, id, page), source, view, version });
+    });
+  }
+
+  private async page(id: string, page: ProjectPage): Promise<ProjectPageView> {
+    const context = await this.context();
+    requireCondition(context?.source, 'SOURCE', '尚未连接共享数据库。');
+    const key = `${context.source}:${id}`;
+    const [cached, mirror, entry, draft] = await Promise.all([
+      this.cache.pages.get(this.pageKey(context.source, id, page)), this.cache.mirrors.get(key),
+      this.cache.catalog.get(key), this.cache.drafts.get(key),
+    ]);
+    if (mirror && (draft || !cached || mirror.graph.project.revision >= cached.view.revision)) {
+      const graph = this.overlay(mirror, draft);
+      if (entry && !draft && entry.summary.revision === mirror.graph.project.revision) graph.project.revision = entry.version;
+      if (page === 'files') return projectPageFromGraph(graph, 'files');
+      if (page === 'graph') return projectPageFromGraph(graph, 'graph');
+      return projectPageFromGraph(graph, 'tasks');
+    }
+    requireCondition(cached, 'PAGE_OFFLINE', '该页面尚未缓存在本机，请连接后首次加载。');
+    const view = structuredClone(cached.view);
+    requireCondition(view.kind === page && (view.kind === 'files' || Array.isArray(view.branches)),
+      'PAGE_CACHE', '本机页面缓存不完整，请连接后重新加载。');
+    const version = entry?.summary.revision === view.revision ? entry.version : cached.version;
+    view.project.revision = version;
+    return view;
+  }
+
+  async getFilesView(id: string): Promise<ProjectFilesView> {
+    if (!(await this.context())?.source) return this.local.getFilesView(id);
+    return await this.page(id, 'files') as ProjectFilesView;
+  }
+  async getGraphView(id: string): Promise<ProjectGraphView> {
+    if (!(await this.context())?.source) return this.local.getGraphView(id);
+    return await this.page(id, 'graph') as ProjectGraphView;
+  }
+  async getBoardView(id: string): Promise<ProjectBoardView> {
+    if (!(await this.context())?.source) return this.local.getBoardView(id);
+    return await this.page(id, 'tasks') as ProjectBoardView;
+  }
+  async getTaskDetail(id: string, taskId: string): Promise<TaskDetail> {
+    const context = await this.context();
+    if (!context?.source) return this.local.getTaskDetail(id, taskId);
+    const entry = await this.cache.catalog.get(`${context.source}:${id}`);
+    const mirror = await this.cache.mirrors.get(`${context.source}:${id}`);
+    if (mirror && (!entry || mirror.graph.project.revision === entry.summary.revision || await this.cache.drafts.get(mirror.key))) {
+      const task = this.overlay(mirror, await this.cache.drafts.get(mirror.key)).tasks.find(item => item.id === taskId);
+      requireCondition(task, 'TASK_REFERENCE', '任务不存在。');
+      return { revision: await this.cache.drafts.get(mirror.key) ? mirror.version : entry?.version ?? mirror.version, task };
+    }
+    this.assertOnline();
+    const source = context.source, actor = this.state.user?.id, token = this.token;
+    const result = object(await this.request(`/projects/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}`));
+    const task = object(result.task);
+    const latest = await this.cache.catalog.get(`${source}:${id}`);
+    requireCondition(this.state.source === source && this.state.user?.id === actor && this.token === token
+      && entry && latest?.version === entry.version && latest.summary.revision === entry.summary.revision
+      && result.revision === entry.summary.revision && task.id === taskId && task.projectId === id,
+    'STALE_REVISION', '任务详情或共享修订已变化，请刷新后重试。');
+    return { revision: entry.version, task: task as unknown as TaskDetail['task'] };
+  }
+  async getNodeDetail(id: string, nodeId: string): Promise<VersionDetail> {
+    const context = await this.context();
+    if (!context?.source) return this.local.getNodeDetail(id, nodeId);
+    const graphPage = await this.cache.pages.get(this.pageKey(context.source, id, 'graph'));
+    const entry = await this.cache.catalog.get(`${context.source}:${id}`);
+    const mirror = await this.cache.mirrors.get(`${context.source}:${id}`);
+    const draft = mirror && await this.cache.drafts.get(mirror.key);
+    if (!draft && graphPage && graphPage.view.kind === 'graph' && (!entry || entry.summary.revision === graphPage.view.revision)) {
+      const node = graphPage.view.nodes.find(item => item.id === nodeId);
+      requireCondition(node, 'NODE_REFERENCE', '版本不存在。');
+      return { revision: entry?.version ?? graphPage.view.project.revision, node };
+    }
+    if (mirror && (!entry || mirror.graph.project.revision === entry.summary.revision || draft)) {
+      const node = this.overlay(mirror, draft).nodes.find(item => item.id === nodeId);
+      requireCondition(node, 'NODE_REFERENCE', '版本不存在。');
+      return { revision: draft ? mirror.version : entry?.version ?? mirror.version, node };
+    }
+    this.assertOnline();
+    const source = context.source, actor = this.state.user?.id, token = this.token;
+    const result = object(await this.request(`/projects/${encodeURIComponent(id)}/nodes/${encodeURIComponent(nodeId)}`));
+    const node = object(result.node);
+    const latest = await this.cache.catalog.get(`${source}:${id}`);
+    requireCondition(this.state.source === source && this.state.user?.id === actor && this.token === token
+      && entry && latest?.version === entry.version && latest.summary.revision === entry.summary.revision
+      && result.revision === entry.summary.revision && node.id === nodeId && node.projectId === id,
+    'STALE_REVISION', '版本详情或共享修订已变化，请刷新后重试。');
+    return { revision: entry.version, node: node as unknown as VersionDetail['node'] };
   }
 
   async get(id: string): Promise<ProjectGraph> {
     const context = await this.context();
     if (!context?.source) return this.local.get(id);
-    const mirror = await this.cache.mirrors.get(`${context.source}:${id}`);
-    requireCondition(mirror, 'PROJECT_NOT_FOUND', '本机没有该共享项目的副本，请连接后刷新。');
+    let mirror = await this.cache.mirrors.get(`${context.source}:${id}`);
+    const entry = await this.cache.catalog.get(`${context.source}:${id}`);
+    if ((!mirror || (entry && mirror.graph.project.revision !== entry.summary.revision))
+      && this.state.connected && this.state.authenticated && !(mirror && await this.cache.drafts.get(mirror.key))) {
+      requireCondition(!this.state.pending, 'PENDING', '存在结果未确认的提交，请先处理。');
+      const source = context.source, actor = this.state.user?.id, token = this.token;
+      const graph = parseProjectSnapshot(await this.request(`/projects/${encodeURIComponent(id)}/graph`));
+      requireCondition(graph.project.id === id && (!entry || graph.project.revision === entry.summary.revision),
+        'STALE_REVISION', '共享项目修订已变化，请刷新后重试。');
+      await this.cache.transaction('rw', [this.cache.contexts, this.cache.mirrors, this.cache.catalog, this.cache.drafts, this.cache.pending], async () => {
+        const active = await this.cache.contexts.get('active');
+        requireCondition(this.state.source === source && this.state.user?.id === actor && this.token === token
+          && active?.source === source && active.actorId === actor
+          && !(actor && await this.cache.pending.get(`${source}:${actor}`)) && !await this.cache.drafts.get(`${source}:${id}`),
+        'STALE_REVISION', '读取期间账号、草稿或未确认请求已变化。');
+        const latest = await this.cache.catalog.get(`${source}:${id}`);
+        requireCondition(!latest || latest.summary.revision === graph.project.revision, 'STALE_REVISION', '共享项目修订已变化，请刷新后重试。');
+        const previous = await this.cache.mirrors.get(`${source}:${id}`);
+        const version = latest?.version ?? previous?.version ?? 1;
+        await this.cache.mirrors.put({ key: `${source}:${id}`, source, graph, version, updatedAt: Date.now(), deleted: false });
+      });
+      mirror = await this.cache.mirrors.get(`${source}:${id}`);
+    }
+    requireCondition(mirror && (!entry || mirror.graph.project.revision === entry.summary.revision || await this.cache.drafts.get(mirror.key)),
+      'PROJECT_OFFLINE', '本机没有当前修订的完整项目，请连接后加载；不会保存或导出不完整数据。');
     const draft = await this.cache.drafts.get(mirror.key);
     const graph = this.overlay(mirror, draft);
     if (draft) {
@@ -479,8 +668,9 @@ export class CollaborationRepository implements RepositorySync {
   async snapshot(id: string): Promise<ProjectSnapshot> {
     const context = await this.context();
     if (!context?.source) return this.local.snapshot(id);
+    await this.get(id);
     const mirror = await this.cache.mirrors.get(`${context.source}:${id}`);
-    requireCondition(mirror, 'PROJECT_NOT_FOUND', '本机没有可导出的项目副本。');
+    requireCondition(mirror, 'PROJECT_OFFLINE', '本机没有完整项目，不能导出。');
     const graph = this.overlay(mirror, await this.cache.drafts.get(mirror.key));
     validateGraph(graph);
     return collaborationSnapshot(graph);
@@ -535,9 +725,11 @@ export class CollaborationRepository implements RepositorySync {
   async updateCounts() {
     const context = await this.context();
     if (!context?.source) return;
-    const mirrors = await this.cache.mirrors.where('source').equals(context.source).toArray();
-    const drafts = await this.cache.drafts.bulkGet(mirrors.map(item => item.key));
-    this.state.updatedAt = mirrors.reduce((latest, item) => Math.max(latest, item.updatedAt), 0);
+    const allDrafts = (await this.cache.drafts.toArray()).filter(draft => draft.key.startsWith(`${context.source}:`));
+    const mirrors = (await this.cache.mirrors.bulkGet(allDrafts.map(item => item.key))).filter((mirror): mirror is Mirror => !!mirror);
+    const draftsByKey = new Map(allDrafts.map(item => [item.key, item]));
+    const drafts = mirrors.map(mirror => draftsByKey.get(mirror.key));
+    this.state.updatedAt = mirrors.reduce((latest, item) => Math.max(latest, item.updatedAt), this.state.updatedAt);
     this.state.draftCount = drafts.reduce((count, item) => count + (item?.nodes.length ?? 0), 0);
     this.state.draftNodeIds = Object.fromEntries(mirrors.map((mirror, index) =>
       [mirror.graph.project.id, drafts[index]?.nodes.map(node => node.id) ?? []]));
@@ -557,109 +749,108 @@ export class CollaborationRepository implements RepositorySync {
     this.state.pendingRecovery = pending?.recovery ?? (pending && !pending.requestId.startsWith('slot:') ? 'legacy' : '');
   }
 
-  async pollProject(id: string, canApply: () => boolean, signal: AbortSignal, mayReplace = () => true) {
+  async pollProject(id: string, canApply: () => boolean, signal: AbortSignal, mayReplace = () => true, page?: ProjectPage | 'documents') {
     const connection = this.local.db.backendConnection.state;
-    const { generation } = connection;
     const { source, user } = this.state;
-    const token = this.token;
+    const token = this.token, generation = connection.generation;
     const current = () => !signal.aborted && canApply() && this.permissions.sharedWritable
       && !this.state.busy && !this.writing && !this.mutations && this.token === token
       && this.state.source === source && this.state.user?.id === user?.id
       && !!connection.host && !connection.testing && connection.generation === generation;
     if (!user || !current()) return false;
-    await this.context();
-    if (!current()) return false;
-    const key = this.key(id);
-    const previous = await this.cache.mirrors.get(key);
-    if (!previous || previous.deleted || !current()) return false;
-
-    const path = `/projects/${encodeURIComponent(id)}`;
-    const read = (suffix: string) => this.request(suffix, 'GET', undefined, undefined, signal);
-    const readRevision = async () => {
-      try {
-        return object(await read(`${path}/revision`)).revision;
-      } catch (cause) {
-        if (!(cause instanceof CollaborationError) || cause.status !== 404 || cause.code !== 'NOT_FOUND' || !current()) throw cause;
-        const meta = object(await read(path));
-        requireCondition(meta.id === id, 'RESPONSE', '项目摘要身份不一致。');
-        return meta.revision;
+    const entry = await this.cache.catalog.get(`${source}:${id}`);
+    const mirror = await this.cache.mirrors.get(`${source}:${id}`);
+    const previousRevision = entry?.summary.revision ?? mirror?.graph.project.revision;
+    if (previousRevision === undefined || !current()) return false;
+    let summary: ProjectSummary;
+    try { summary = projectSummary(await this.request(`/projects/${encodeURIComponent(id)}`, 'GET', undefined, undefined, signal)); }
+    catch (cause) {
+      if (cause instanceof CollaborationError && cause.code === 'PROJECT_NOT_FOUND' && current() && mayReplace()) {
+        await this.refresh();
+        this.state.message = '项目已从共享库删除，本机草稿仍保留。';
+        return true;
       }
-    };
-    let revision: number | null;
-    try {
-      const value = await readRevision();
-      requireCondition(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
-        'RESPONSE', '项目修订号响应无效。');
-      revision = value;
-    } catch (cause) {
-      if (!(cause instanceof CollaborationError) || cause.status !== 404 || cause.code !== 'PROJECT_NOT_FOUND') throw cause;
-      revision = null;
+      throw cause;
     }
+    requireCondition(summary.id === id, 'RESPONSE', '项目摘要身份不一致。');
     if (!current()) return false;
-    if (revision === previous.graph.project.revision) return true;
-    if (!mayReplace()) {
-      this.state.message = '共享项目已有变化，请先保存或取消当前编辑，再同步最新数据。';
-      return true;
+    if (summary.revision === previousRevision) return true;
+    requireCondition(summary.revision > previousRevision, 'DATABASE_SOURCE', '共享修订倒退，请重新连接后核对。');
+    if (!mayReplace()) { this.state.message = '共享项目已有变化，请先保存或取消当前编辑。'; return true; }
+    if (page && page !== 'documents') {
+      const raw = object(await this.request(`/projects/${encodeURIComponent(id)}/view/${page}`, 'GET', undefined, undefined, signal));
+      const pageSummary = projectSummary(raw.project);
+      requireCondition(raw.kind === page && pageSummary.id === id && raw.revision === summary.revision
+        && pageSummary.revision === summary.revision && Array.isArray(raw.nodes) && Array.isArray(raw.edges)
+        && (page === 'files' || (Array.isArray(raw.tasks) && Array.isArray(raw.branches))), 'RESPONSE', '页面修订或结构无效。');
+      if (!current() || !mayReplace()) return false;
+      await this.cache.transaction('rw', [this.cache.catalog, this.cache.pages, this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
+        const key = `${source}:${id}`;
+        const latest = await this.cache.catalog.get(key);
+        const latestMirror = await this.cache.mirrors.get(key);
+        if (!current() || !mayReplace() || await this.cache.pending.get(`${source}:${user.id}`)
+          || await this.cache.drafts.get(key) || latestMirror?.version !== mirror?.version
+          || (latest?.summary.revision ?? mirror?.graph.project.revision) !== previousRevision) return;
+        await this.cache.catalog.put({ key, source, summary, version: (latest?.version ?? mirror?.version ?? 0) + 1 });
+        await this.cache.pages.put({ key: this.pageKey(source, id, page), source, view: raw as unknown as ProjectPageView,
+          version: (latest?.version ?? mirror?.version ?? 0) + 1 });
+      });
+    } else {
+      await this.cache.transaction('rw', [this.cache.catalog, this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
+        const key = `${source}:${id}`, latest = await this.cache.catalog.get(key);
+        const latestMirror = await this.cache.mirrors.get(key);
+        if (!current() || !mayReplace() || await this.cache.pending.get(`${source}:${user.id}`)
+          || await this.cache.drafts.get(key) || latestMirror?.version !== mirror?.version
+          || (latest?.summary.revision ?? mirror?.graph.project.revision) !== previousRevision) return;
+        await this.cache.catalog.put({ key, source, summary, version: (latest?.version ?? mirror?.version ?? 0) + 1 });
+      });
     }
-    const instance = object(await read('/instance'));
-    if (!current() || !mayReplace()) return true;
-    requireCondition(instance.databaseId === source && (revision === null || revision > previous.graph.project.revision),
-      'DATABASE_SOURCE', '后端数据库或修订基线已变化，请重新连接后核对。');
-
-    const graph = revision === null ? null : parseProjectSnapshot(await read(`${path}/graph`));
-    if (!current() || !mayReplace()) return true;
-    if (graph) requireCondition(graph.project.id === id && revision !== null && graph.project.revision >= revision,
-      'RESPONSE', '项目图与检查到的修订不一致。');
-    await this.context();
-    const updated = await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
-      const latest = await this.cache.mirrors.get(key);
-      const draft = graph ? undefined : await this.cache.drafts.get(key);
-      if (await this.cache.pending.get(`${source}:${user.id}`)) return false;
-      // Another tab or a write receipt may have updated the mirror while the request was in flight.
-      if (!current() || !mayReplace() || !latest || latest.deleted || latest.version !== previous.version) return false;
-      if (graph) {
-        await this.cache.mirrors.put({ ...latest, graph, version: latest.version + 1, updatedAt: Date.now() });
-      } else if (draft) {
-        await this.cache.mirrors.put({ ...latest, version: latest.version + 1, updatedAt: Date.now(), deleted: true });
-      } else {
-        await this.cache.mirrors.delete(key);
-      }
-      return true;
-    });
-    if (updated && current()) {
-      this.state.updatedAt = Date.now();
-      this.state.message = graph ? '当前项目已同步最新共享数据。' : '当前项目已从共享库删除；如有本机待同步草稿，将继续保留。';
-    }
+    if (current()) { this.state.updatedAt = Date.now(); this.state.message = '当前项目已同步最新共享数据。'; }
     return true;
   }
 
   async refresh() {
     this.assertOnline();
     requireCondition(!this.writing, 'BUSY', '提交进行中，请稍后刷新。');
-    const source = this.state.source;
-    const instance = object(await this.request('/instance'));
-    requireCondition(instance.databaseId === source, 'DATABASE_SOURCE', '连接的数据库已变化，请重新登录；旧库副本和草稿不会转移。');
+    const generation = ++this.catalogGeneration;
+    const source = this.state.source, actor = this.state.user?.id, token = this.token;
     const listing = object(await this.request('/projects'));
     requireCondition(Array.isArray(listing.projects), 'RESPONSE', '项目列表无效。');
-    const graphs: ProjectGraph[] = [];
-    for (const item of listing.projects) {
-      const project = object(item);
-      requireCondition(typeof project.id === 'string', 'RESPONSE', '项目身份无效。');
-      graphs.push(parseProjectSnapshot(await this.request(`/projects/${project.id}/graph`)));
-    }
-
-    requireCondition(this.state.source === source, 'SOURCE', '数据源已切换，请重新刷新。');
-    await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts], async () => {
-      const seen = new Set(graphs.map(graph => this.key(graph.project.id)));
-      for (const mirror of await this.cache.mirrors.where('source').equals(source).toArray()) {
-        if (seen.has(mirror.key)) continue;
-        if (await this.cache.drafts.get(mirror.key)) await this.cache.mirrors.put({ ...mirror, deleted: true });
-        else await this.cache.mirrors.delete(mirror.key);
+    const summaries = listing.projects.map(projectSummary);
+    requireCondition(new Set(summaries.map(item => item.id)).size === summaries.length, 'RESPONSE', '项目目录包含重复身份。');
+    requireCondition(generation === this.catalogGeneration && this.state.source === source && this.state.user?.id === actor && this.token === token,
+      'SOURCE', '账号或数据源已切换，请重新刷新。');
+    await this.cache.transaction('rw', [this.cache.catalog, this.cache.catalogState, this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
+      requireCondition(generation === this.catalogGeneration && this.state.source === source && this.state.user?.id === actor && this.token === token,
+        'SOURCE', '账号或数据源已切换，请重新刷新。');
+      const pending = actor && await this.cache.pending.get(`${source}:${actor}`);
+      const seen = new Set(summaries.map(item => `${source}:${item.id}`));
+      if (!pending) {
+        await this.cache.catalogState.put({ source });
+        const mirrorKeys = await this.cache.mirrors.where('source').equals(source).primaryKeys();
+        const removedKeys = mirrorKeys.filter(key => !seen.has(key));
+        for (const mirror of await this.cache.mirrors.bulkGet(removedKeys)) {
+          if (!mirror) continue;
+          if (!seen.has(mirror.key) && !mirror.deleted)
+            await this.cache.mirrors.put({ ...mirror, deleted: true });
+        }
       }
-      for (const graph of graphs) await this.putMirror(graph);
+      for (const old of await this.cache.catalog.where('source').equals(source).toArray()) {
+        if (!seen.has(old.key) && !pending && !await this.cache.drafts.get(old.key)) await this.cache.catalog.delete(old.key);
+      }
+      for (const summary of summaries) {
+        const key = `${source}:${summary.id}`;
+        const previous = await this.cache.catalog.get(key);
+        const mirror = previous ? undefined : await this.cache.mirrors.get(key);
+        if (pending || await this.cache.drafts.get(key)) continue;
+        if (previous && previous.summary.revision > summary.revision) continue;
+        const oldRevision = previous?.summary.revision ?? mirror?.graph.project.revision;
+        const version = (previous?.version ?? mirror?.version ?? 0) + (oldRevision === summary.revision ? 0 : 1);
+        await this.cache.catalog.put({ key, source, summary, version });
+      }
     });
     this.state.updatedAt = Date.now();
-    this.state.message = '共享数据已更新到本机副本。';
+    this.state.message = '共享项目目录已更新。';
     await this.updateCounts();
   }
 
@@ -671,40 +862,48 @@ export class CollaborationRepository implements RepositorySync {
         && this.token === token && !this.writing && !this.mutations && canApply();
       const signal = new AbortController().signal;
       const read = (path: string) => this.request(path, 'GET', undefined, undefined, signal);
-      const instance = object(await read('/instance'));
-      requireCondition(current() && instance.databaseId === source, 'DATABASE_SOURCE', '数据源或当前工作区已变化，请重试。');
-      let graph: ProjectGraph;
-      try { graph = parseProjectSnapshot(await read(`/projects/${encodeURIComponent(projectId)}/graph`)); }
-      catch (cause) {
-        if (cause instanceof CollaborationError && cause.code === 'PROJECT_NOT_FOUND')
-          throw new Error('原项目已删除，无法打开评论。');
-        throw cause;
-      }
-      requireCondition(graph.project.id === projectId, 'RESPONSE', '消息所属项目与返回项目不一致。');
-      await this.cache.transaction('rw', [this.cache.mirrors, this.cache.pending], async () => {
-        const previous = await this.cache.mirrors.get(this.key(projectId));
+      const base = `/projects/${encodeURIComponent(projectId)}`;
+      const page = object(await read(`${base}/view/tasks`));
+      const summary = projectSummary(page.project);
+      const detail = object(await read(`${base}/tasks/${encodeURIComponent(taskId)}`));
+      const task = object(detail.task);
+      requireCondition(page.kind === 'tasks' && summary.id === projectId && page.revision === summary.revision
+        && detail.revision === summary.revision && task.id === taskId && task.projectId === projectId
+        && Array.isArray(task.comments) && task.comments.some(comment => object(comment).id === commentId)
+        && Array.isArray(page.tasks) && Array.isArray(page.nodes) && Array.isArray(page.edges) && Array.isArray(page.branches),
+      'COMMENT_NOT_FOUND', '原任务或评论已删除，或项目已变化。');
+      await this.cache.transaction('rw', [this.cache.mirrors, this.cache.catalog, this.cache.pages, this.cache.drafts, this.cache.pending], async () => {
+        const key = this.key(projectId);
+        const previous = await this.cache.mirrors.get(key);
+        const entry = await this.cache.catalog.get(key);
         const pending = await this.cache.pending.get(this.actorKey());
-        requireCondition(current() && !pending && !previous?.deleted, 'BUSY', '当前工作区已变化，请关闭编辑或处理未确认提交后重试。');
-        const newest = previous && previous.graph.project.revision > graph.project.revision ? previous.graph : graph;
-        requireCondition(newest.tasks.some(task => task.id === taskId && task.comments.some(comment => comment.id === commentId)),
-          'COMMENT_NOT_FOUND', '原任务或评论已删除。');
-        if (newest === graph && previous?.graph.project.revision !== graph.project.revision) await this.putMirror(graph);
+        requireCondition(current() && !pending && !previous?.deleted && !await this.cache.drafts.get(key)
+          && (!entry || entry.summary.revision <= summary.revision), 'BUSY', '当前工作区已变化，请关闭编辑或处理未确认提交后重试。');
+        const oldRevision = entry?.summary.revision ?? previous?.graph.project.revision;
+        const version = (entry?.version ?? previous?.version ?? 0) + (oldRevision === summary.revision ? 0 : 1);
+        await this.cache.catalog.put({ key, source, summary, version });
+        await this.cache.pages.put({ key: this.pageKey(source, projectId, 'tasks'), source, view: page as unknown as ProjectPageView, version });
       });
   }
 
   private async putMirror(graph: ProjectGraph) {
     const key = this.key(graph.project.id);
     const previous = await this.cache.mirrors.get(key);
+    const entry = await this.cache.catalog.get(key);
+    const sameRevision = (entry?.summary.revision ?? previous?.graph.project.revision) === graph.project.revision;
+    const version = Math.max(entry?.version ?? 0, previous?.version ?? 0) + (sameRevision ? 0 : 1);
     await this.cache.mirrors.put({
       key, source: this.state.source, graph,
-      version: previous && JSON.stringify(previous.graph) === JSON.stringify(graph) ? previous.version : (previous?.version ?? 0) + 1,
+      version,
       updatedAt: Date.now(), deleted: false,
     });
+    await this.cache.catalog.put({ key, source: this.state.source, summary: summarizeProject(graph.project), version });
   }
 
   private async mirror(id: string, revision: number) {
     await this.context();
     requireCondition(this.state.source, 'LEGACY_READONLY', '历史单人数据目前只读，请登录后由管理员通过 JSON 恢复迁入共享库。');
+    await this.get(id);
     const mirror = await this.cache.mirrors.get(this.key(id));
     requireCondition(mirror && !mirror.deleted, 'PROJECT_NOT_FOUND', '共享项目不存在或已删除，草稿仍保留。');
     requireCondition(mirror.version === revision, 'STALE_REVISION', '本机副本已变化，请刷新并保留当前输入。');
@@ -866,12 +1065,15 @@ export class CollaborationRepository implements RepositorySync {
         }
       }
       requireCondition(pending.source === this.state.source && pending.owner === this.state.user?.id, 'SOURCE', '提交期间账号或来源改变，已保留原请求供原账号恢复。');
-      await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
+      await this.cache.transaction('rw', [this.cache.mirrors, this.cache.catalog, this.cache.drafts, this.cache.pending], async () => {
         const current = await this.cache.pending.get(pending.key);
         requireCondition(current?.requestId === pending.requestId, 'PENDING', '原请求已变化，不覆盖新提交。');
         if (current.phase === 'ack') return;
         if (graph) await this.putMirror(graph);
-        else await this.cache.mirrors.delete(this.key(String(result.projectId)));
+        else {
+          await this.cache.mirrors.delete(this.key(String(result.projectId)));
+          await this.cache.catalog.delete(this.key(String(result.projectId)));
+        }
         if (pending.clearDraft || result.deleted) await this.cache.drafts.delete(this.key(String(result.projectId)));
         await this.cache.pending.put({ ...current, projectId: String(result.projectId), phase: 'ack' });
       });
@@ -956,7 +1158,21 @@ export class CollaborationRepository implements RepositorySync {
 
   async previewDrafts(id: string) {
     this.assertOnline();
-    await this.refresh();
+    const originalDraft = await this.cache.drafts.get(this.key(id));
+    requireCondition(originalDraft && originalDraft.owner === this.state.user?.id, 'DRAFT_OWNER', '当前项目没有属于此账号的待同步草稿。');
+    const source = this.state.source, actor = this.state.user?.id, token = this.token;
+    const latest = parseProjectSnapshot(await this.request(`/projects/${encodeURIComponent(id)}/graph`));
+    requireCondition(latest.project.id === id, 'RESPONSE', '项目身份不一致。');
+    await this.cache.transaction('rw', [this.cache.mirrors, this.cache.catalog, this.cache.drafts, this.cache.pending], async () => {
+      requireCondition(this.state.source === source && this.state.user?.id === actor && this.token === token
+        && actor && !await this.cache.pending.get(`${source}:${actor}`), 'SOURCE', '账号或提交状态已变化，请重试。');
+      const mirror = await this.cache.mirrors.get(`${source}:${id}`);
+      const draft = await this.cache.drafts.get(`${source}:${id}`);
+      requireCondition(mirror && draft && draft.owner === actor && latest.project.revision >= mirror.graph.project.revision,
+        'STALE_REVISION', '草稿或共享修订已变化，请重新检查。');
+      if (latest.project.revision !== mirror.graph.project.revision) await this.putMirror(latest);
+    });
+    await this.updateCounts();
     const detail = await this.draftDetails(id);
     requireCondition(detail.owner === this.state.user?.id, 'DRAFT_OWNER', '当前项目没有属于此账号的待同步草稿。');
     validateGraph(detail.graph);
@@ -986,9 +1202,7 @@ export class CollaborationRepository implements RepositorySync {
     this.assertOnline(true);
     validateGraph(graph);
     await this.refresh();
-    const mirrors = await this.cache.mirrors.where('source').equals(this.state.source).toArray();
-    const activeIds = new Set(mirrors.filter(item => !item.deleted).map(item => item.graph.project.id));
-    const projects = (await this.listProjects()).filter(project => activeIds.has(project.id));
+    const projects = await this.listProjects();
     const partMatches = projects.filter(project => project.partNumber.trim() === graph.project.partNumber.trim());
     const nameMatches = projects.filter(project => project.name.trim() === graph.project.name.trim());
     let blockedReason = partMatches.length > 1 ? '多个共享项目零件号相同，不能确定恢复目标。' : '';
@@ -1006,6 +1220,7 @@ export class CollaborationRepository implements RepositorySync {
     const id = latest.target?.id ?? crypto.randomUUID();
     restored.project.id = id;
     for (const item of [...restored.nodes, ...restored.edges, ...restored.branches, ...restored.tasks]) item.projectId = id;
+    if (latest.target) await this.get(id);
     const mirror = latest.target ? await this.cache.mirrors.get(this.key(id)) : undefined;
     const result = await this.mutate('POST', `/projects/${id}/import`,
       { snapshot: collaborationSnapshot(restored), expectedRevision: mirror?.graph.project.revision ?? null }, id);

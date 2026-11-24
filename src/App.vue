@@ -3,7 +3,8 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useRoute, useRouter } from 'vue-router';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository, type SnapshotImportPlan } from './storage/database';
-import type { Project, ProjectGraph, TaskAssignee } from './domain/model';
+import type { ProjectGraph, TaskAssignee } from './domain/model';
+import type { ProjectSummary } from './domain/project-views';
 import type { CommentNotification } from './domain/comment-inbox';
 import { readProjectSnapshotFile, serializeProjectSnapshot } from './domain/project-snapshot';
 import type { VersionOrder } from './domain/version-order';
@@ -49,10 +50,10 @@ const inboxScope = computed(() => {
     ? `${collaboration.state.source}:${taskAccountId.value}:${connection.generation}` : '';
 });
 let lastRouteFullPath = route.fullPath;
-const projects = ref<Project[]>([]);
+const projects = ref<ProjectSummary[]>([]);
 const name = ref('');
 const partNumber = ref('');
-const editingProject = ref<Project | null>(null);
+const editingProject = ref<ProjectSummary | null>(null);
 const editedPartNumber = ref('');
 const editInput = ref<HTMLInputElement>();
 const deletion = ref<ProjectGraph | null>(null);
@@ -80,6 +81,8 @@ const taskRefreshBlocked = ref(false);
 const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
 const taskBoardTargetId = ref('');
 const taskBoardDetailId = ref('');
+const commentDirectoryActive = computed(() => !isAccountRoute.value && view.value === 'tasks'
+  && !!taskBoardDetailId.value && taskBoardDetailId.value !== 'new');
 const taskBoardOptionsOpen = ref(false);
 const focusNodeId = ref('');
 const graphPanelRoute = ref<string[]>([]);
@@ -145,12 +148,13 @@ watch(pollProjectId, id => { if (id) stopProjectPolling?.edited(); });
 async function checkActiveProject(signal: AbortSignal, reason: 'poll' | 'edit') {
   const id = !isAccountRoute.value && canWrite.value ? activeProjectId.value : '';
   const scope = inboxScope.value;
+  const page = view.value;
   if (!id) return false;
   const stillActive = () => !signal.aborted && activeProjectId.value === id && inboxScope.value === scope
-    && !isAccountRoute.value && canWrite.value;
+    && view.value === page && !isAccountRoute.value && canWrite.value;
   try {
     const checked = await collaboration.pollProject(id, stillActive, signal,
-      () => reason !== 'edit' && pollProjectId.value === id);
+      () => reason !== 'edit' && pollProjectId.value === id, page);
     if (stillActive()) pollError.value = undefined;
     return checked;
   } catch (cause) {
@@ -297,9 +301,12 @@ watch([() => route.fullPath, projects, loading], async ([fullPath]) => {
     editingProject.value = null;
     if (deletion.value?.project.id !== project.id) {
       try {
-        deletion.value = await repository.get(project.id);
+        const target = await repository.get(project.id);
+        if (route.fullPath !== fullPath || activeProjectId.value !== project.id) return;
+        deletion.value = target;
         confirmedProjectName.value = '';
       } catch (cause) {
+        if (route.fullPath !== fullPath || activeProjectId.value !== project.id) return;
         showError(cause);
         void router.replace(projectPath(project.id, location.view));
       }
@@ -357,7 +364,7 @@ async function addProject() {
   }
 }
 
-async function editPartNumber(project: Project) {
+async function editPartNumber(project: ProjectSummary) {
   void router.push(projectOverlayPath(project.id, view.value, 'edit'));
   error.value = ''; status.value = '';
   await nextTick();
@@ -408,7 +415,7 @@ async function savePartNumber() {
   }
 }
 
-async function exportProject(project: Project) {
+async function exportProject(project: ProjectSummary) {
   saving.value = true; error.value = ''; status.value = '';
   try {
     const draft = collaboration.state.draftCount;
@@ -706,7 +713,7 @@ onUnmounted(() => {
       <input id="manual-import-file" name="manualImportFile" ref="manualImportInput" type="file" accept=".json,application/json" hidden @change="readManualImport">
       <ArchiveRootPanel :repository="repository" :disabled="saving || documentsBusy || graphBusy" @roots="receiveArchiveRoots" @error="showError" />
       <BackendSettings :repository="repository" :disabled="saving || workspaceBusy || collaboration.state.busy || collaboration.state.restoring" @saved="collaboration.disconnect()" />
-      <CommentInbox ref="commentInbox" :client="collaboration" :scope="inboxScope" :directory-key="assigneeRefreshKey" :open-target="openCommentNotification"
+      <CommentInbox ref="commentInbox" :client="collaboration" :scope="inboxScope" :directory-key="assigneeRefreshKey" :directory-active="commentDirectoryActive" :open-target="openCommentNotification"
         @capability="commentsEnabled = $event" @directory="commentDirectory = $event" @status="commentsStatus = $event" />
       <CollaborationPanel :client="collaboration" :project-id="activeProjectId" :disabled="saving || workspaceBusy" />
     </div>
@@ -899,10 +906,10 @@ onUnmounted(() => {
       ><AppIcon name="chevron-right" /></button>
     </div>
 
-    <ProjectFiles v-if="activeProjectId && activeProject" v-show="view === 'files'" :key="`files-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
-    <VersionGraph v-if="activeProjectId && view === 'graph'" :key="`graph-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @refresh-blocked="graphRefreshBlocked = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
-    <ComparisonDocuments v-if="activeProjectId && activeProject" v-show="view === 'documents'" :key="`documents-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
-    <TaskBoard v-if="activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" :current-account-avatar="taskAccountId ? (collaboration.state.user?.avatar ?? null) : null"
+    <ProjectFiles v-if="!isAccountRoute && activeProjectId && activeProject && view === 'files'" :key="`files-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
+    <VersionGraph v-if="!isAccountRoute && activeProjectId && view === 'graph'" :key="`graph-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @refresh-blocked="graphRefreshBlocked = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
+    <ComparisonDocuments v-if="!isAccountRoute && activeProjectId && activeProject && view === 'documents'" :key="`documents-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
+    <TaskBoard v-if="!isAccountRoute && activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${collaboration.state.source}-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" :current-account-avatar="taskAccountId ? (collaboration.state.user?.avatar ?? null) : null"
       :current-account-admin="canImport" :comments-enabled="commentsEnabled" :comments-status="commentsStatus" :comment-directory="commentDirectory" :focus-comment-id="focusCommentId" @retry-comments="commentInbox?.retry()"
       @busy="taskBoardBusy = $event" @refresh-blocked="taskRefreshBlocked = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>

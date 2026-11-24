@@ -9,6 +9,7 @@ const props = defineProps<{
   client: CollaborationRepository;
   scope: string;
   directoryKey: number;
+  directoryActive: boolean;
   openTarget: (notice: CommentNotification) => Promise<void>;
 }>();
 const emit = defineEmits<{ capability: [supported: boolean]; directory: [users: TaskAssignee[]]; status: [message: string] }>();
@@ -64,7 +65,7 @@ async function check(signal?: AbortSignal, replace = false) {
       items.value = list.items;
       listRevision.value = state.revision;
     }
-    if (loadedDirectoryKey !== props.directoryKey) {
+    if (props.directoryActive && loadedDirectoryKey !== props.directoryKey) {
       const directoryKey = props.directoryKey;
       const result = await props.client.request('/comment-directory', 'GET', undefined, undefined, requestSignal) as { users?: TaskAssignee[] };
       if (!current()) return;
@@ -154,7 +155,9 @@ watch(() => props.scope, () => {
   emit('directory', []);
   if (stop) void check(undefined, true);
 });
-watch(() => props.directoryKey, () => { if (stop) void check(undefined, true); });
+watch([() => props.directoryKey, () => props.directoryActive], () => {
+  if (stop && props.directoryActive) void check(undefined, true);
+});
 onMounted(() => {
   document.addEventListener('visibilitychange', onVisibility);
   stop = startProjectPolling(document, signal => check(signal), 300_000);

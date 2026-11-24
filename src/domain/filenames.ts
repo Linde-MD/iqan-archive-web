@@ -1,4 +1,4 @@
-import { DomainError, normalizeVersion, requireCondition, type ArchiveLocation, type ProjectGraph } from './model';
+import { DomainError, normalizeVersion, requireCondition, type ArchiveLocation, type Project, type ProjectGraph, type VersionNode } from './model';
 import { validateGraph, validateTransition } from './graph';
 import { compareVersions, type VersionOrder } from './version-order';
 
@@ -85,7 +85,28 @@ export function mergeDocumentCandidates(
   });
 }
 
-export function candidateDetails(graph: ProjectGraph, candidate: FileCandidate) {
+export type FileIndex<T extends Pick<VersionNode, 'id' | 'version'> = Pick<VersionNode, 'id' | 'version'>> = {
+  project: Pick<Project, 'partNumber'>;
+  nodes: readonly T[];
+};
+
+function validateFileIndex(graph: FileIndex): void {
+  if (!('kind' in graph) && 'branches' in graph && 'tasks' in graph && 'edges' in graph) {
+    validateGraph(graph as ProjectGraph);
+    return;
+  }
+  requireCondition(graph.project.partNumber.trim(), 'PROJECT', '项目零件号不能为空。');
+  const ids = new Set<string>(), versions = new Set<string>();
+  for (const node of graph.nodes) {
+    requireCondition(node.id.trim() && !ids.has(node.id), 'DUPLICATE_ID', '版本 ID 为空或重复。');
+    requireCondition(node.version.trim() && node.version === node.version.trim(), 'VERSION', '版本号无效。');
+    const version = normalizeVersion(node.version);
+    requireCondition(!versions.has(version), 'DUPLICATE_VERSION', `版本号重复：${node.version}`);
+    ids.add(node.id); versions.add(version);
+  }
+}
+
+export function candidateDetails<T extends Pick<VersionNode, 'id' | 'version'>>(graph: FileIndex<T>, candidate: FileCandidate) {
   const parts = relativeParts(candidate.relativePath);
   requireCondition(parts.at(-1) === candidate.fileName, 'FILE_NAME', '文件名与相对路径不一致。');
   const parsed = parseEngineeringName(candidate.fileName);
@@ -108,8 +129,8 @@ export function registerCandidates(graph: ProjectGraph, candidates: readonly Fil
   return next;
 }
 
-export function matchScannedFiles(graph: ProjectGraph, candidates: readonly FileCandidate[]) {
-  validateGraph(graph);
+export function matchScannedFiles<T extends Pick<VersionNode, 'id' | 'version'>>(graph: FileIndex<T>, candidates: readonly FileCandidate[]) {
+  validateFileIndex(graph);
   const matches = new Map(graph.nodes.map(node => [node.id, [] as FileCandidate[]]));
   const rows = candidates.map(candidate => {
     try {
@@ -124,7 +145,7 @@ export function matchScannedFiles(graph: ProjectGraph, candidates: readonly File
   return { rows, matches, missing: graph.nodes.filter(node => matches.get(node.id)!.length === 0) };
 }
 
-export function matchComparisonDocuments(graph: ProjectGraph, candidates: readonly FileCandidate[]) {
+export function matchComparisonDocuments<T extends Pick<VersionNode, 'id' | 'version'>>(graph: FileIndex<T>, candidates: readonly FileCandidate[]) {
   const matches = new Map(graph.nodes.map(node => [node.id, [] as FileCandidate[]]));
   const nodes = [...graph.nodes].sort((left, right) => right.version.length - left.version.length);
   for (const candidate of candidates) {

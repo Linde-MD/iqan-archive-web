@@ -3,6 +3,8 @@ import type { FileCandidate } from '../domain/filenames';
 import type { ArchiveRepository } from '../storage/database';
 import { checkPermission, fileOperationErrorMessage, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle } from './directories';
 
+type DocumentRepository = Pick<ArchiveRepository, 'getArchiveRoot' | 'getProjectInfo'>;
+
 export interface DocumentDirectoryScan {
   location: ArchiveLocation;
   root: DirectoryHandle;
@@ -17,7 +19,7 @@ export interface AvailableDocumentDirectoryScan extends DocumentDirectoryScan {
 }
 
 export async function scanDocumentDirectory(
-  repository: ArchiveRepository,
+  repository: DocumentRepository,
   projectId: string,
   location: ArchiveLocation,
   signal: AbortSignal,
@@ -28,35 +30,35 @@ export async function scanDocumentDirectory(
   if (!root) throw new Error(`${locationName}根目录未设置。`);
   if (!await checkPermission(root)) throw new Error(`${locationName}根目录未授权，请重新授权。`);
 
-  const graphAtScan = await repository.get(projectId);
+  const projectAtScan = await repository.getProjectInfo(projectId);
   let binding: DirectoryHandle;
   try {
-    binding = await resolveProjectDirectory(root, graphAtScan.project.name, 'word');
+    binding = await resolveProjectDirectory(root, projectAtScan.name, 'word');
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'NotFoundError') {
-      const [latestRoot, latestGraph] = await Promise.all([
+      const [latestRoot, latestProject] = await Promise.all([
         repository.getArchiveRoot(location),
-        repository.get(projectId),
+        repository.getProjectInfo(projectId),
       ]);
-      if (!latestRoot || !(await sameDirectory(root, latestRoot)) || latestGraph.project.name !== graphAtScan.project.name)
+      if (!latestRoot || !(await sameDirectory(root, latestRoot)) || latestProject.name !== projectAtScan.name)
         throw new Error(`${locationName}文档目录在扫描期间发生变化，请重新扫描。`, { cause });
-      return { location, root, projectName: graphAtScan.project.name, files: [], missingDirectory: true };
+      return { location, root, projectName: projectAtScan.name, files: [], missingDirectory: true };
     }
     throw cause;
   }
   if (!await checkPermission(binding)) throw new Error(`${locationName}文档目录未授权，请重新授权。`);
 
   const files = await scanDirectory(binding, 'word', signal, progress);
-  const [latestRoot, latestGraph] = await Promise.all([
+  const [latestRoot, latestProject] = await Promise.all([
     repository.getArchiveRoot(location),
-    repository.get(projectId),
+    repository.getProjectInfo(projectId),
   ]);
   if (!latestRoot || !(await sameDirectory(root, latestRoot))
-    || latestGraph.project.name !== graphAtScan.project.name
-    || !(await sameDirectory(binding, await resolveProjectDirectory(latestRoot, latestGraph.project.name, 'word'))))
+    || latestProject.name !== projectAtScan.name
+    || !(await sameDirectory(binding, await resolveProjectDirectory(latestRoot, latestProject.name, 'word'))))
     throw new Error(`${locationName}文档目录在扫描期间发生变化，请重新扫描。`);
 
-  return { location, root, binding, projectName: graphAtScan.project.name, files, missingDirectory: false };
+  return { location, root, binding, projectName: projectAtScan.name, files, missingDirectory: false };
 }
 
 export type DocumentLocationScanResult =
@@ -65,7 +67,7 @@ export type DocumentLocationScanResult =
   | { location: ArchiveLocation; status: 'error'; message: string; count: number };
 
 export async function scanDocumentDirectories(
-  repository: ArchiveRepository,
+  repository: DocumentRepository,
   projectId: string,
   signal: AbortSignal,
   progress: (location: ArchiveLocation, count: number) => void = () => undefined,
@@ -92,7 +94,7 @@ export interface LocalDocumentDeletionScan {
 }
 
 export async function scanDocumentLocalDeletion(
-  repository: ArchiveRepository,
+  repository: DocumentRepository,
   projectId: string,
   relativePath: string,
   signal: AbortSignal,

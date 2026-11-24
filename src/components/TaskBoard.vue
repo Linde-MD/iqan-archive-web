@@ -5,11 +5,12 @@ import { liveQuery } from 'dexie';
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { accountAvatarTheme, accountInitials } from '../domain/account';
-import { filterProjectTasks, moveTaskInBoard, parseTaskIdSearch, projectRelatedVersions, projectTaskDrop, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
+import { filterProjectTasks, parseTaskIdSearch, projectBoardDrop, projectRelatedVersions, projectTaskList, suggestNextTaskId, tasksInLane, validateNewTaskId, type TaskScope, type TaskSearchMode } from '../domain/task-board';
 import { mergeSavedTaskDraft } from '../domain/task-draft';
 import type { VersionOrder } from '../domain/version-order';
 import { createPriorityOption, DomainError, legacyTaskTypeNames, type Project, type ProjectGraph, type Task, type TaskAssignee, type TaskAttribution, type TaskComment, type TaskOption, type VersionNode } from '../domain/model';
-import type { ArchiveRepository } from '../storage/database';
+import { projectPageFromGraph, type ArchiveRepository } from '../storage/database';
+import type { ProjectBoardView, TaskSummary, VersionSummary } from '../domain/project-views';
 import { projectWriteBlockedReason } from '../storage/repository-sync';
 import { markdownMentionIds, renderMarkdown } from '../utils/markdown';
 import { mentionMarkdown } from '../utils/markdown-mentions';
@@ -49,7 +50,10 @@ const emit = defineEmits<{
   navigateChild: [child: string[], action?: 'push' | 'replace' | 'back'];
 }>();
 
-const graph = shallowRef<ProjectGraph>();
+const graph = shallowRef<ProjectBoardView>();
+const searchGraph = shallowRef<ProjectGraph>();
+const searchLoading = ref(false);
+const searchUnavailable = ref(false);
 const assignees = shallowRef<TaskAssignee[]>([]);
 const assigneesLoading = ref(false);
 const assigneesError = ref('');
@@ -115,7 +119,7 @@ const quickConflict = ref(false);
 const quickStale = computed(() => !!quickTask.value && (quickConflict.value || graph.value?.project.revision !== quickTask.value.revision));
 let removeQuickRouteGuard: (() => void) | undefined;
 let subscription: { unsubscribe(): void } | undefined;
-const dragState = shallowRef<{ original: ProjectGraph; preview: ProjectGraph; taskId: string } | null>(null);
+const dragState = shallowRef<{ original: ProjectBoardView; preview: ProjectBoardView; taskId: string } | null>(null);
 const draggingTask = computed(() => dragState.value?.preview.tasks.find(task => task.id === dragState.value?.taskId));
 const draggingStatusName = computed(() => dragState.value?.preview.project.statusOptions
   .find(option => option.id === draggingTask.value?.statusOptionId)?.name ?? '未分组');
@@ -195,9 +199,32 @@ const taskIdSearch = computed(() => parseTaskIdSearch(query.value));
 const taskIdSearchError = computed(() => searchMode.value === 'id' && taskIdSearch.value.kind === 'invalid'
   ? taskIdSearch.value.message : '');
 const filterActive = computed(() => taskScope.value === 'mine' || !!query.value.trim());
-const taskMatches = computed(() => filterProjectTasks(
-  graph.value?.tasks ?? [], taskScope.value, props.currentAccountId, searchMode.value, query.value, assigneeSearchById.value,
-));
+const taskMatches = computed(() => {
+  const tasks = graph.value?.tasks ?? [];
+  if (searchMode.value === 'keyword' && query.value.trim()) {
+    if (!searchGraph.value || searchGraph.value.project.revision !== graph.value?.project.revision) return [];
+    const ids = new Set(filterProjectTasks(searchGraph.value.tasks, taskScope.value, props.currentAccountId, searchMode.value, query.value, assigneeSearchById.value).map(task => task.id));
+    return tasks.filter(task => ids.has(task.id));
+  }
+  return filterProjectTasks(tasks, taskScope.value, props.currentAccountId, searchMode.value, query.value, assigneeSearchById.value);
+});
+let searchGeneration = 0;
+watch([query, searchMode, () => graph.value?.project.revision], async ([text, mode, revision]) => {
+  const generation = ++searchGeneration;
+  searchGraph.value = undefined;
+  searchLoading.value = false;
+  searchUnavailable.value = false;
+  if (mode !== 'keyword' || !text.trim() || revision === undefined) return;
+  searchLoading.value = true;
+  try {
+    const full = await props.repository.get(props.projectId);
+    if (generation !== searchGeneration) return;
+    if (full.project.revision !== revision) throw new Error('项目已变化，请刷新后搜索。');
+    searchGraph.value = full;
+  } catch (cause) {
+    if (generation === searchGeneration) { searchUnavailable.value = true; reportError(cause); }
+  } finally { if (generation === searchGeneration) searchLoading.value = false; }
+});
 const listRows = computed(() => projectTaskList(
   graph.value?.tasks ?? [], new Set(taskMatches.value.map(task => task.id)), nestedTasks.value,
   expandedTaskIds.value, filterActive.value, collapsedSearchTaskIds.value,
@@ -291,9 +318,7 @@ function switchTask(taskId: string) {
   if (saving.value) return;
   if (hasUnsavedTaskChanges.value && selectedTaskId.value !== taskId
     && !window.confirm('当前任务修改尚未保存。放弃修改并切换任务吗？')) return;
-  const task = graph.value?.tasks.find(candidate => candidate.id === taskId);
-  if (task) {
-    setTaskDraft(task);
+  if (graph.value?.tasks.some(candidate => candidate.id === taskId)) {
     emit('navigateChild', ['detail', taskId]);
     void nextTick(() => document.getElementById('task-detail-page-title')?.focus({ preventScroll: true }));
   }
@@ -354,7 +379,8 @@ async function refreshQuickTask() {
   if (!quickTask.value || saving.value) return;
   saving.value = true;
   try {
-    const refreshed = await props.repository.get(props.projectId);
+    await props.repository.loadPage(props.projectId, 'tasks');
+    const refreshed = await props.repository.getBoardView(props.projectId);
     graph.value = refreshed;
     if (quickTask.value.statusId !== null && !refreshed.project.statusOptions.some(option => option.id === quickTask.value?.statusId)) {
       quickError.value = '该泳道已被删除，请复制任务名称后取消并选择其他泳道。';
@@ -392,7 +418,7 @@ async function submitQuickTask() {
     saving.value = true;
     quickError.value = '';
     const persisted = await props.repository.saveTask(props.projectId, draft.revision, task);
-    graph.value = persisted;
+    graph.value = projectPageFromGraph(persisted, 'tasks');
     quickTask.value = null;
     statusMessage.value = `任务“${task.name}”已创建。${taskMatches.value.some(candidate => candidate.id === task.id) ? '' : '当前筛选隐藏了新任务，请清除筛选查看。'}`;
   } catch (cause) {
@@ -442,7 +468,7 @@ async function saveTask(candidate: Task, successMessage: string, commitDescripti
     });
     const saved = persisted.tasks.find(task => task.id === taskId);
     if (!saved) throw new Error('保存后未找到任务，请重新读取项目。');
-    if (!graph.value || graph.value.project.revision <= persisted.project.revision) graph.value = persisted;
+    if (!graph.value || graph.value.project.revision <= persisted.project.revision) graph.value = projectPageFromGraph(persisted, 'tasks');
     if (!submitted.id) {
       setTaskDraft(saved);
     } else if (taskDraft.value?.id === taskId) {
@@ -516,14 +542,14 @@ async function submitTask() {
   }
 }
 
-async function deleteTask(task: Task) {
+async function deleteTask(task: Pick<Task, 'id' | 'name'>) {
   const current = graph.value;
   if (!current || !task.id || saving.value || !sharedWritable.value) return;
   const childCount = current.tasks.filter(candidate => candidate.parentTaskId === task.id).length;
   if (!window.confirm(`删除“${task.name}”及其评论，并解除所有版本关联吗？${childCount} 个直接子任务将解除父任务关联，不会被删除。版本图关系不会改变。`)) return;
   saving.value = true;
   try {
-    graph.value = await props.repository.deleteTask(props.projectId, current.project.revision, task.id);
+    graph.value = projectPageFromGraph(await props.repository.deleteTask(props.projectId, current.project.revision, task.id), 'tasks');
     if (taskDraft.value?.id === task.id) {
       taskDraft.value = null;
       taskDraftRevision.value = -1;
@@ -572,8 +598,10 @@ async function changeBoardTaskField(taskId: string, field: 'assigneeId' | 'typeO
   saving.value = true;
   error.value = '';
   try {
-    const persisted = await props.repository.saveTask(props.projectId, current.project.revision, { ...structuredClone(toRaw(task)), [field]: value });
-    if (!graph.value || graph.value.project.revision <= persisted.project.revision) graph.value = persisted;
+    const detail = await props.repository.getTaskDetail(props.projectId, task.id);
+    if (detail.revision !== current.project.revision) throw new Error('项目已变化，请刷新后重试。');
+    const persisted = await props.repository.saveTask(props.projectId, current.project.revision, { ...detail.task, [field]: value });
+    if (!graph.value || graph.value.project.revision <= persisted.project.revision) graph.value = projectPageFromGraph(persisted, 'tasks');
     statusMessage.value = field === 'assigneeId' ? '负责人已更新。' : '任务类型已更新。';
   } catch (cause) {
     reportError(cause);
@@ -587,11 +615,12 @@ async function persistMove(taskId: string, statusOptionId: string | null, before
   if (!current || saving.value || hasUnsavedTaskChanges.value) return false;
   saving.value = true;
   try {
-    graph.value = await props.repository.moveTask(
+    const persisted = await props.repository.moveTask(
       props.projectId, revision ?? current.project.revision, taskId, statusOptionId, beforeTaskId,
     );
+    graph.value = projectPageFromGraph(persisted, 'tasks');
     const savedDraft = taskDraft.value?.id
-      ? graph.value.tasks.find(task => task.id === taskDraft.value?.id)
+      ? persisted.tasks.find(task => task.id === taskDraft.value?.id)
       : undefined;
     if (savedDraft) setTaskDraft(savedDraft);
     error.value = '';
@@ -645,7 +674,7 @@ function onDragOver(event: DragOverEvent) {
   const targetTaskId = state.preview.tasks.some(task => task.id === targetId) ? targetId : null;
   const centerY = event.operation.shape?.current.center.y ?? event.operation.position.current.y;
   try {
-    const preview = projectTaskDrop(state.preview, state.taskId, statusOptionId, targetTaskId,
+    const preview = projectBoardDrop(state.preview, state.taskId, statusOptionId, targetTaskId,
       !!target.shape && centerY > target.shape.center.y);
     dragState.value = { ...state, preview };
   } catch (cause) {
@@ -756,9 +785,10 @@ async function saveOptions() {
     options[`${optionKind.value}Options` as OptionKey] = optionDraft.value.map(option => ({
       ...option, name: option.name.trim(),
     }));
-    graph.value = await props.repository.saveTaskOptions(props.projectId, current.project.revision, options);
+    const persisted = await props.repository.saveTaskOptions(props.projectId, current.project.revision, options);
+    graph.value = projectPageFromGraph(persisted, 'tasks');
     const savedDraft = taskDraft.value?.id
-      ? graph.value.tasks.find(task => task.id === taskDraft.value?.id)
+      ? persisted.tasks.find(task => task.id === taskDraft.value?.id)
       : undefined;
     if (savedDraft) setTaskDraft(savedDraft);
     optionDraftRevision.value = graph.value.project.revision;
@@ -895,15 +925,20 @@ function positionRelatedVersionHint(anchor: HTMLElement, event?: MouseEvent) {
   hint.style.top = `${position.y}px`;
 }
 
-async function showRelatedVersionHint(event: MouseEvent | FocusEvent, node: VersionNode) {
+async function showRelatedVersionHint(event: MouseEvent | FocusEvent, node: VersionSummary) {
   const anchor = event.currentTarget;
   if (!(anchor instanceof HTMLElement)) return;
   keepRelatedVersionHint();
-  hintedRelatedVersion.value = node;
   relatedVersionHintAnchor = anchor;
+  try {
+    const detail = await props.repository.getNodeDetail(props.projectId, node.id);
+    if (relatedVersionHintAnchor !== anchor || !anchor.isConnected) return;
+    if (detail.revision !== graph.value?.project.revision) throw new Error('项目已变化，请刷新后查看版本。');
+    hintedRelatedVersion.value = detail.node;
+  } catch (cause) { if (relatedVersionHintAnchor === anchor) reportError(cause); return; }
   await nextTick();
   const hint = relatedVersionHint.value;
-  if (!hint || hintedRelatedVersion.value !== node || relatedVersionHintAnchor !== anchor || !anchor.isConnected) return;
+  if (!hint || hintedRelatedVersion.value?.id !== node.id || relatedVersionHintAnchor !== anchor || !anchor.isConnected) return;
   hint.showPopover();
   positionRelatedVersionHint(anchor, event instanceof MouseEvent ? event : undefined);
 }
@@ -933,7 +968,9 @@ function openRelatedVersion(nodeId: string) {
 
 watch([detailSidebar, () => taskDraft.value?.id, relatedVersionOrder, includeChildVersions], hideRelatedVersionHint);
 
+let detailGeneration = 0;
 watch([graph, () => props.detailTaskId], async ([current, detailId], [, previousDetailId]) => {
+  const generation = ++detailGeneration;
   if (!current) return;
   if (saving.value && taskDraft.value && detailId !== (taskDraft.value.id || 'new')) {
     emit('navigateChild', taskDraft.value.id ? ['detail', taskDraft.value.id] : ['new'], 'replace');
@@ -960,12 +997,20 @@ watch([graph, () => props.detailTaskId], async ([current, detailId], [, previous
         emit('navigateChild', taskDraft.value?.id ? ['detail', taskDraft.value.id] : ['new'], 'replace');
         return;
       }
-      setTaskDraft(task);
+      try {
+        const detail = await props.repository.getTaskDetail(props.projectId, task.id);
+        if (generation !== detailGeneration || props.detailTaskId !== task.id) return;
+        if (detail.revision !== current.project.revision) throw new Error('项目已变化，请刷新后重新打开任务。');
+        setTaskDraft(detail.task);
+      } catch (cause) { if (generation === detailGeneration) reportError(cause); }
     } else if (taskDraft.value && !saving.value && !hasUnsavedTaskChanges.value && !commentEditorOpen.value
       && taskDraftRevision.value !== current.project.revision) {
-      Object.assign(taskDraft.value, structuredClone(task));
-      taskDraftRevision.value = current.project.revision;
-      taskDraftBaseline.value = JSON.stringify(task);
+      try {
+        const detail = await props.repository.getTaskDetail(props.projectId, task.id);
+        if (generation !== detailGeneration || props.detailTaskId !== task.id) return;
+        if (detail.revision !== current.project.revision) throw new Error('项目已变化，请刷新后重新打开任务。');
+        setTaskDraft(detail.task);
+      } catch (cause) { if (generation === detailGeneration) reportError(cause); }
     }
     return;
   }
@@ -1149,6 +1194,7 @@ watch(() => taskDraft.value?.id, taskId => {
   if (taskId) void loadAssignees();
 });
 
+let disposed = false;
 onMounted(() => {
   void loadAssignees();
   removeQuickRouteGuard = router.beforeEach(() => {
@@ -1158,22 +1204,25 @@ onMounted(() => {
     cancelQuickTask();
     return true;
   });
-  subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
-    next: value => {
-      graph.value = value;
-      loading.value = false;
-      if (selectedTaskId.value && !value.tasks.some(task => task.id === selectedTaskId.value)) {
-        if (taskDraft.value?.id !== selectedTaskId.value) selectedTaskId.value = '';
-      }
-    },
-    error: cause => {
-      loading.value = false;
-      reportError(cause);
-    },
-  });
+  void props.repository.loadPage(props.projectId, 'tasks').then(() => {
+    if (disposed) return;
+    subscription = liveQuery(() => props.repository.getBoardView(props.projectId)).subscribe({
+      next: value => {
+        graph.value = value;
+        loading.value = false;
+        if (selectedTaskId.value && !value.tasks.some(task => task.id === selectedTaskId.value)) {
+          if (taskDraft.value?.id !== selectedTaskId.value) selectedTaskId.value = '';
+        }
+      },
+      error: cause => { loading.value = false; reportError(cause); },
+    });
+  }).catch(cause => { if (!disposed) { loading.value = false; reportError(cause); } });
 });
 
 onUnmounted(() => {
+  disposed = true;
+  detailGeneration++;
+  searchGeneration++;
   hideRelatedVersionHint();
   stopDragScroll?.();
   subscription?.unsubscribe();
@@ -1224,6 +1273,8 @@ onUnmounted(() => {
     <p v-if="taskIdSearchError" class="task-board-message is-error" role="alert">{{ taskIdSearchError }}</p>
     <p v-if="loading" class="task-board-state" role="status">正在读取任务…</p>
     <p v-else-if="!graph?.tasks.length" class="task-board-state">还没有任务。新建任务后可按 Status 管理。</p>
+    <p v-else-if="searchLoading" class="task-board-state" role="status">正在加载任务全文以搜索…</p>
+    <p v-else-if="searchUnavailable" class="task-board-state">无法加载任务全文，未执行搜索。</p>
     <p v-else-if="!taskMatches.length" class="task-board-state">{{ taskScope === 'mine' ? (query.trim() ? '没有符合当前搜索条件的本人任务。' : '当前项目没有分配给你的任务。') : '没有匹配的任务。' }}</p>
     <div v-if="error && !taskDraft" class="task-board-message is-error" role="alert">{{ error }}</div>
     <div v-else-if="statusMessage && !taskDraft" class="task-board-message is-success" role="status">{{ statusMessage }}</div>
@@ -1396,7 +1447,7 @@ onUnmounted(() => {
                         @click="openRelatedVersion(node.id)">
                         <span class="task-version-content">
                           <code>{{ node.version }}</code>
-                          <span class="task-version-description">{{ node.description || '（无改动说明）' }}</span>
+                          <span class="task-version-description">悬停或聚焦查看改动说明</span>
                           <small v-if="node.taskId !== taskDraft.id && node.taskId">子任务</small>
                         </span>
                         <AppIcon name="chevron-right" />

@@ -7,6 +7,7 @@ import { buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUr
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
 import { deleteEngineeringFile } from '../files/engineering-deletion';
 import type { ArchiveRepository } from '../storage/database';
+import type { ProjectGraphView } from '../domain/project-views';
 import { projectWriteBlockedReason } from '../storage/repository-sync';
 import { layoutGitGraph, GIT_GRAPH, recommendedParentNodes, gitGraphEdgePath } from '../domain/git-graph';
 import { planDeletionMany, type MultiDeletionPlan } from '../domain/graph';
@@ -37,7 +38,7 @@ const emit = defineEmits<{
   navigatePanel: [panel: string[], action?: 'push' | 'replace' | 'back'];
 }>();
 
-const graph = shallowRef<ProjectGraph>();
+const graph = shallowRef<ProjectGraph | ProjectGraphView>();
 const error = ref('');
 const status = ref('');
 const saving = ref(false);
@@ -613,7 +614,7 @@ async function refreshComparisonDocuments() {
   const candidatesByLocation = new Map<ArchiveLocation, FileCandidate[]>();
   const failures: string[] = [];
   try {
-    const graphAtScan = await props.repository.get(props.projectId);
+    const graphAtScan = await props.repository.getGraphView(props.projectId);
     const publish = () => {
       const matchesByNode = new Map<string, ComparisonDocumentSource[]>();
       for (const [location, candidates] of candidatesByLocation) {
@@ -646,7 +647,7 @@ async function refreshComparisonDocuments() {
         const candidates = await scanDirectory(binding, 'word', controller.signal, () => undefined);
         const [latestRoot, latestGraph] = await Promise.all([
           props.repository.getArchiveRoot(location),
-          props.repository.get(props.projectId),
+          props.repository.getGraphView(props.projectId),
         ]);
         if (controller.signal.aborted) return;
         if (!latestRoot || !(await sameDirectory(root, latestRoot))
@@ -666,7 +667,7 @@ async function refreshComparisonDocuments() {
       }
     }
     if (controller.signal.aborted) return;
-    const latestGraph = await props.repository.get(props.projectId);
+    const latestGraph = await props.repository.getGraphView(props.projectId);
     if (latestGraph.project.name !== graphAtScan.project.name) return;
     publish();
   } catch (cause) {
@@ -701,7 +702,7 @@ function engineeringFilesForNode(nodeId: string): Record<ArchiveLocation, FileCa
   return engineeringFileCandidatesByNode.value.get(nodeId) ?? { local: [], shared: [] };
 }
 
-async function scanEngineeringSourcesForNode(current: ProjectGraph, nodeId: string): Promise<{
+async function scanEngineeringSourcesForNode(current: ProjectGraph | ProjectGraphView, nodeId: string): Promise<{
   files: Record<ArchiveLocation, FileCandidate[]>;
   roots: Map<ArchiveLocation, DirectoryHandle>;
   directories: Map<ArchiveLocation, DirectoryHandle>;
@@ -725,7 +726,7 @@ async function scanEngineeringSourcesForNode(current: ProjectGraph, nodeId: stri
     const candidates = await scanDirectory(binding, 'engineering', new AbortController().signal, () => undefined);
     const [latestRoot, latestGraph] = await Promise.all([
       props.repository.getArchiveRoot(location),
-      props.repository.get(props.projectId),
+      props.repository.getGraphView(props.projectId),
     ]);
     if (!latestRoot || !(await sameDirectory(root, latestRoot)))
       throw new Error(`${archiveLocationLabel(location)}根目录授权已变化，请重新打开图标菜单后再试。`);
@@ -737,7 +738,7 @@ async function scanEngineeringSourcesForNode(current: ProjectGraph, nodeId: stri
     directories.set(location, binding);
     files[location] = matchScannedFiles(current, candidates).matches.get(nodeId) ?? [];
   }
-  const latestGraph = await props.repository.get(props.projectId);
+  const latestGraph = await props.repository.getGraphView(props.projectId);
   if (latestGraph.project.revision !== current.project.revision || latestGraph.project.name !== current.project.name)
     throw new Error('版本图已变化，请重新读取后再操作工程文件。');
   return { files, roots, directories };
@@ -751,9 +752,9 @@ async function refreshEngineeringFileStates() {
   engineeringFileCandidatesByNode.value = new Map();
   engineeringScannedLocations.value = new Set();
   engineeringScanIssues.value = new Map();
-  let graphAtScan: ProjectGraph;
+  let graphAtScan: ProjectGraphView;
   try {
-    graphAtScan = await props.repository.get(props.projectId);
+    graphAtScan = await props.repository.getGraphView(props.projectId);
   } catch (cause) {
     if (controller.signal.aborted) return;
     const message = fileOperationErrorMessage(cause);
@@ -784,7 +785,7 @@ async function refreshEngineeringFileStates() {
         if (cause instanceof DOMException && cause.name === 'NotFoundError') {
           const [latestRoot, latestGraph] = await Promise.all([
             props.repository.getArchiveRoot(location),
-            props.repository.get(props.projectId),
+            props.repository.getGraphView(props.projectId),
           ]);
           if (!latestRoot || !(await sameDirectory(root, latestRoot))) {
             issues.set(location, '根目录授权已变化');
@@ -804,7 +805,7 @@ async function refreshEngineeringFileStates() {
       const candidates = await scanDirectory(binding, 'engineering', controller.signal, () => undefined);
       const [latestRoot, latestGraph] = await Promise.all([
         props.repository.getArchiveRoot(location),
-        props.repository.get(props.projectId),
+        props.repository.getGraphView(props.projectId),
       ]);
       if (controller.signal.aborted) return;
       if (!latestRoot || !(await sameDirectory(root, latestRoot))) {
@@ -842,9 +843,9 @@ async function refreshEngineeringFileStates() {
   }
 
   if (controller.signal.aborted) return;
-  let latestGraph: ProjectGraph;
+  let latestGraph: ProjectGraphView;
   try {
-    latestGraph = await props.repository.get(props.projectId);
+    latestGraph = await props.repository.getGraphView(props.projectId);
   } catch (cause) {
     if (controller.signal.aborted) return;
     const message = fileOperationErrorMessage(cause);
@@ -1026,17 +1027,24 @@ function showError(cause: unknown) {
   });
 }
 
-const subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
-  next: value => {
-    graph.value = value;
-  },
-  error: cause => showError(cause),
-});
+let subscription: { unsubscribe(): void } | undefined;
+let disposed = false;
+void props.repository.loadPage(props.projectId, 'graph').then(() => {
+  if (disposed) return;
+  subscription = liveQuery(() => props.repository.getGraphView(props.projectId)).subscribe({
+    next: value => { graph.value = value; },
+    error: cause => showError(cause),
+  });
+}).catch(showError);
 watch([() => props.projectId, () => graph.value?.project.revision], ([, revision]) => {
-  if (revision !== undefined) void refreshEngineeringFileStates();
+  if (revision !== undefined) {
+    void refreshEngineeringFileStates();
+    void refreshComparisonDocuments();
+  }
 });
 onUnmounted(() => {
-  subscription.unsubscribe();
+  disposed = true;
+  subscription?.unsubscribe();
   emit('refreshBlocked', false);
   engineeringScanController?.abort();
 });
@@ -1369,7 +1377,8 @@ async function operation(action: () => Promise<void>): Promise<boolean> {
 
 async function refresh() {
   await operation(async () => {
-    graph.value = await props.repository.get(props.projectId);
+    await props.repository.loadPage(props.projectId, 'graph');
+    graph.value = await props.repository.getGraphView(props.projectId);
     selectedNodeIds.value = [];
     activeBranchId.value = null;
     menu.value = null;
@@ -1482,8 +1491,6 @@ onMounted(() => {
   window.addEventListener('resize', constrainMenuToViewport);
   window.addEventListener('resize', updateSidebarHeight);
   window.addEventListener('scroll', updateSidebarHeight, { passive: true });
-  void refresh();
-  void refreshComparisonDocuments();
 });
 onUnmounted(() => {
   endBranchOrderDrag();
@@ -1674,7 +1681,7 @@ async function copyEngineeringFileForNode(
   error.value = '';
   status.value = '';
   try {
-    const current = await props.repository.get(props.projectId);
+    const current = await props.repository.getGraphView(props.projectId);
     const node = current.nodes.find(item => item.id === nodeId);
     if (!node) throw new Error('版本已不存在，请重新读取版本图。');
     const scan = await scanEngineeringSourcesForNode(current, nodeId);
@@ -1690,7 +1697,7 @@ async function copyEngineeringFileForNode(
     if (!await checkPermission(targetRoot, false, 'readwrite'))
       throw new Error(`${archiveLocationLabel(targetLocation)}根目录没有读写授权，请重新授权后再试。`);
     await locateFile(sourceDirectory, sourceFile.relativePath);
-    const latestGraph = await props.repository.get(props.projectId);
+    const latestGraph = await props.repository.getGraphView(props.projectId);
     const latestNode = latestGraph.nodes.find(item => item.id === nodeId);
     if (latestGraph.project.revision !== current.project.revision || latestNode?.version !== node.version)
       throw new Error('版本图已变化，请重新读取后再操作工程文件。');
@@ -1721,10 +1728,10 @@ async function deleteEngineeringFileForNode(nodeId: string, location: ArchiveLoc
   error.value = '';
   status.value = '';
   try {
-    const current = await props.repository.get(props.projectId);
+    const current = await props.repository.getGraphView(props.projectId);
     const deleted = await deleteEngineeringFile({
       graph: current, nodeId, location, selectedFile,
-      getGraph: () => props.repository.get(props.projectId),
+      getGraph: () => props.repository.getGraphView(props.projectId),
       scan: scanEngineeringSourcesForNode,
       confirm: message => window.confirm(message),
     });
@@ -1745,7 +1752,7 @@ async function refreshMenuOpenLocations(nodeId: string) {
   menuOpenLocationController = controller;
   menuOpenLocationBusy.value = true;
   try {
-    const current = await props.repository.get(props.projectId);
+    const current = await props.repository.getGraphView(props.projectId);
     const node = current.nodes.find(item => item.id === nodeId);
     if (!node) return;
     const locations: ArchiveLocation[] = [];
@@ -1980,7 +1987,9 @@ async function submitNode(): Promise<boolean> {
   let renameRequestAfterSave: { uri: string; count: number } | undefined;
   let savedNodeId = '';
   const saved = await operation(async () => {
-    const current = graph.value!;
+    const revision = graph.value!.project.revision;
+    const current = await props.repository.get(props.projectId);
+    if (current.project.revision !== revision) throw new Error('项目已变化，请刷新后重试。');
     if (actionPanel === 'node-add') {
       const node = createNode(current, nodeForm.value);
       const parent = nodeForm.value.parentIds.length === 1
@@ -2391,11 +2400,13 @@ async function toggleTestingSelectedNode() {
   });
 }
 
-function openRelationPreview(action: BatchRelationAction) {
+async function openRelationPreview(action: BatchRelationAction) {
   if (saving.value || !graph.value) return;
   closeMenu(false);
   try {
-    const current = graph.value;
+    const revision = graph.value.project.revision;
+    const current = await props.repository.get(props.projectId);
+    if (current.project.revision !== revision) throw new Error('项目已变化，请刷新后重试。');
     const nodeIds = [...selectedNodeIds.value];
     const next = changeVersionRelations(current, nodeIds, action);
     const oldEdges = new Set(current.edges.map(edge => edge.id));
@@ -2499,9 +2510,14 @@ async function loadDeletionEngineeringFiles(current: ProjectGraph, nodeIds: read
   }
 }
 
-function openDeletion() {
-  const current = graph.value;
-  if (!current || selectedNodeIds.value.length === 0) return;
+async function openDeletion() {
+  const revision = graph.value?.project.revision;
+  if (revision === undefined || selectedNodeIds.value.length === 0) return;
+  let current: ProjectGraph;
+  try {
+    current = await props.repository.get(props.projectId);
+    if (current.project.revision !== revision) throw new Error('项目已变化，请刷新后重试。');
+  } catch (cause) { showError(cause); return; }
   deletionPlan.value = planDeletionMany(current, selectedNodeIds.value);
   deletionRevision.value = current.project.revision;
   deletionEngineeringFiles.value = Object.fromEntries(deletionPlan.value.nodeIds.map(id => [id, { local: [], shared: [] }]));

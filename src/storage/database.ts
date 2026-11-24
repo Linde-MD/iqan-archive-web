@@ -7,6 +7,17 @@ import type { ArchiveRootBinding, DirectoryBinding, DirectoryRole, DirectoryHand
 import { changeVersionRelations, type BatchRelationAction } from '../domain/relations';
 import { BackendConnection, DEFAULT_BACKEND_HOSTS, parseBackendHostNotes, parseBackendHosts, type BackendHostSettings } from '../local-backend';
 import type { RepositorySync } from './repository-sync';
+import { summarizeProject, summarizeTask, summarizeVersion, type ProjectBoardView, type ProjectFilesView, type ProjectGraphView, type ProjectPage, type ProjectSummary, type TaskDetail, type VersionDetail } from '../domain/project-views';
+
+export function projectPageFromGraph(graph: ProjectGraph, page: 'files'): ProjectFilesView;
+export function projectPageFromGraph(graph: ProjectGraph, page: 'graph'): ProjectGraphView;
+export function projectPageFromGraph(graph: ProjectGraph, page: 'tasks'): ProjectBoardView;
+export function projectPageFromGraph(graph: ProjectGraph, page: ProjectPage): ProjectFilesView | ProjectGraphView | ProjectBoardView {
+  const { project, nodes, edges, branches, tasks } = graph;
+  if (page === 'files') return { kind: page, revision: project.revision, project: summarizeProject(project), nodes: nodes.map(summarizeVersion), edges };
+  if (page === 'graph') return { kind: page, revision: project.revision, project, nodes, edges, branches, tasks: tasks.map(summarizeTask) };
+  return { kind: page, revision: project.revision, project, nodes: nodes.map(summarizeVersion), edges, branches, tasks: tasks.map(summarizeTask) };
+}
 
 function configurationOnly(graph: ProjectGraph): ProjectGraph {
   return {
@@ -36,9 +47,9 @@ function configurationOnly(graph: ProjectGraph): ProjectGraph {
 }
 
 export interface SnapshotImportPlan {
-  target: Project | null;
-  partMatches: Project[];
-  nameMatches: Project[];
+  target: ProjectSummary | null;
+  partMatches: ProjectSummary[];
+  nameMatches: ProjectSummary[];
   blockedReason: string;
 }
 
@@ -247,9 +258,44 @@ export class ArchiveRepository {
     return this.db.backendConnection.test(hosts, signal);
   }
 
-  async listProjects(): Promise<Project[]> {
+  async listProjects(): Promise<ProjectSummary[]> {
     if (this.sync) return this.sync.listProjects();
     return this.db.projects.toArray();
+  }
+
+  async getProjectInfo(id: string): Promise<ProjectSummary> {
+    if (this.sync) return this.sync.getProjectInfo(id);
+    const project = await this.db.projects.get(id);
+    requireCondition(project, 'PROJECT_NOT_FOUND', '项目不存在。');
+    return summarizeProject(project);
+  }
+
+  async loadPage(id: string, page: ProjectPage): Promise<void> {
+    if (this.sync) await this.sync.loadPage(id, page);
+  }
+
+  async getFilesView(id: string): Promise<ProjectFilesView> {
+    return this.sync ? this.sync.getFilesView(id) : projectPageFromGraph(await this.get(id), 'files');
+  }
+  async getGraphView(id: string): Promise<ProjectGraphView> {
+    return this.sync ? this.sync.getGraphView(id) : projectPageFromGraph(await this.get(id), 'graph');
+  }
+  async getBoardView(id: string): Promise<ProjectBoardView> {
+    return this.sync ? this.sync.getBoardView(id) : projectPageFromGraph(await this.get(id), 'tasks');
+  }
+  async getTaskDetail(id: string, taskId: string): Promise<TaskDetail> {
+    if (this.sync) return this.sync.getTaskDetail(id, taskId);
+    const graph = await this.get(id);
+    const task = graph.tasks.find(item => item.id === taskId);
+    requireCondition(task, 'TASK_REFERENCE', '任务不存在。');
+    return { revision: graph.project.revision, task };
+  }
+  async getNodeDetail(id: string, nodeId: string): Promise<VersionDetail> {
+    if (this.sync) return this.sync.getNodeDetail(id, nodeId);
+    const graph = await this.get(id);
+    const node = graph.nodes.find(item => item.id === nodeId);
+    requireCondition(node, 'NODE_REFERENCE', '版本不存在。');
+    return { revision: graph.project.revision, node };
   }
 
   async listAssignees(): Promise<import('../domain/model').TaskAssignee[]> {

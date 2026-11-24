@@ -1,20 +1,22 @@
 import { validateGraph } from './graph';
 import { normalizeExternalTaskId, orderedBranches, requireCondition, type ProjectGraph, type Task, type VersionNode } from './model';
 import { orderedVersionNodes, type VersionOrder } from './version-order';
+import type { ProjectBoardView, TaskSummary, VersionSummary } from './project-views';
 
 export type TaskSearchMode = 'id' | 'keyword' | 'assignee';
 export type TaskScope = 'all' | 'mine';
 
-export interface RelatedVersionGroup {
+export interface RelatedVersionGroup<T extends VersionSummary = VersionNode> {
   id: string;
   label: string;
   context: string | null;
-  nodes: VersionNode[];
+  nodes: T[];
 }
 
-export function projectRelatedVersions(
-  graph: ProjectGraph, taskId: string, includeChildren: boolean, order: VersionOrder,
-): RelatedVersionGroup[] {
+export function projectRelatedVersions<T extends VersionSummary>(
+  graph: { nodes: T[]; edges: ProjectGraph['edges']; branches: ProjectGraph['branches']; tasks: readonly Pick<Task, 'id' | 'parentTaskId'>[] },
+  taskId: string, includeChildren: boolean, order: VersionOrder,
+): RelatedVersionGroup<T>[] {
   const taskIds = new Set([taskId]);
   if (includeChildren) {
     const children = new Map<string, string[]>();
@@ -81,7 +83,7 @@ export function projectRelatedVersions(
   }
 
   const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
-  const groups: RelatedVersionGroup[] = [];
+  const groups: RelatedVersionGroup<T>[] = [];
   for (const node of oldest) {
     if (!selected.has(node.id)) continue;
     const prior = [...(previous.get(node.id) ?? [])];
@@ -123,7 +125,7 @@ function compareNumericIds(left: string, right: string): number {
     || (normalizedLeft < normalizedRight ? -1 : normalizedLeft > normalizedRight ? 1 : 0);
 }
 
-export function suggestNextTaskId(tasks: readonly Task[]): string | null {
+export function suggestNextTaskId(tasks: readonly Pick<Task, 'externalTaskId'>[]): string | null {
   let maximum = '0';
   for (const task of tasks) {
     if (task.externalTaskId !== null && compareNumericIds(task.externalTaskId, maximum) > 0) {
@@ -134,7 +136,7 @@ export function suggestNextTaskId(tasks: readonly Task[]): string | null {
   return next.length <= 16 ? next : null;
 }
 
-export function validateNewTaskId(tasks: readonly Task[], value: string | null): string {
+export function validateNewTaskId(tasks: readonly Pick<Task, 'externalTaskId'>[], value: string | null): string {
   const normalized = normalizeExternalTaskId(value);
   requireCondition(normalized !== null, 'TASK_ID_REQUIRED', '新建任务必须填写 Task ID。');
   requireCondition(!tasks.some(task => task.externalTaskId === normalized), 'DUPLICATE_TASK_ID', `Task ID 已被其他任务使用：${normalized}`);
@@ -165,10 +167,10 @@ export function matchesTaskIdSearch(taskId: string | null, search: TaskIdSearch)
   return false;
 }
 
-export function filterProjectTasks(
-  tasks: readonly Task[], scope: TaskScope, accountId: string | null,
+export function filterProjectTasks<T extends Task | TaskSummary>(
+  tasks: readonly T[], scope: TaskScope, accountId: string | null,
   searchMode: TaskSearchMode, query: string, assigneeSearchById: ReadonlyMap<string, string>,
-): Task[] {
+): T[] {
   const search = query.trim().toLocaleLowerCase();
   const idSearch = searchMode === 'id' ? parseTaskIdSearch(query) : null;
   return tasks.filter(task => {
@@ -179,19 +181,20 @@ export function filterProjectTasks(
       const assignee = task.assigneeId ? assigneeSearchById.get(task.assigneeId) ?? '' : '';
       return assignee.toLocaleLowerCase().includes(search);
     }
+    requireCondition('description' in task, 'TASK_SEARCH_DETAIL', '全文搜索需要先加载完整项目。');
     return `${task.name} ${task.description}`.toLocaleLowerCase().includes(search);
   });
 }
 
-export interface TaskListRow {
-  task: Task;
+export interface TaskListRow<T extends Task | TaskSummary = Task> {
+  task: T;
   depth: number;
   hasChildren: boolean;
   expanded: boolean;
   matches: boolean;
 }
 
-export function compareTaskListIds(left: Task, right: Task): number {
+export function compareTaskListIds(left: Pick<Task, 'id' | 'name' | 'externalTaskId'>, right: Pick<Task, 'id' | 'name' | 'externalTaskId'>): number {
   if (left.externalTaskId === null && right.externalTaskId !== null) return 1;
   if (left.externalTaskId !== null && right.externalTaskId === null) return -1;
   const numeric = left.externalTaskId !== null && right.externalTaskId !== null
@@ -200,14 +203,14 @@ export function compareTaskListIds(left: Task, right: Task): number {
     || left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
 }
 
-export function projectTaskList(
-  tasks: readonly Task[],
+export function projectTaskList<T extends Task | TaskSummary>(
+  tasks: readonly T[],
   matchedIds: ReadonlySet<string>,
   nested: boolean,
   expandedIds: ReadonlySet<string>,
   filterActive: boolean,
   collapsedFilterIds: ReadonlySet<string>,
-): TaskListRow[] {
+): TaskListRow<T>[] {
   if (!nested) {
     return tasks.filter(task => matchedIds.has(task.id)).sort(compareTaskListIds)
       .map(task => ({ task, depth: 0, hasChildren: false, expanded: false, matches: true }));
@@ -227,7 +230,7 @@ export function projectTaskList(
       }
     }
   }
-  const children = new Map<string | null, Task[]>();
+  const children = new Map<string | null, T[]>();
   for (const task of tasks) {
     if (!included.has(task.id)) continue;
     const siblings = children.get(task.parentTaskId) ?? [];
@@ -235,7 +238,7 @@ export function projectTaskList(
     children.set(task.parentTaskId, siblings);
   }
   for (const siblings of children.values()) siblings.sort(compareTaskListIds);
-  const rows: TaskListRow[] = [];
+  const rows: TaskListRow<T>[] = [];
   const pending = (children.get(null) ?? []).map(task => ({ task, depth: 0 })).reverse();
   while (pending.length) {
     const { task, depth } = pending.pop()!;
@@ -253,12 +256,37 @@ export function projectTaskList(
   return rows;
 }
 
-export function tasksInLane(graph: ProjectGraph, statusOptionId: string | null): Task[] {
+export function tasksInLane<T extends Pick<Task, 'statusOptionId' | 'sortOrder' | 'name' | 'id'>>(graph: { tasks: T[] }, statusOptionId: string | null): T[] {
   return graph.tasks
     .filter(task => task.statusOptionId === statusOptionId)
     .sort((left, right) => left.sortOrder - right.sortOrder
       || left.name.localeCompare(right.name)
       || left.id.localeCompare(right.id));
+}
+
+export function projectBoardDrop(
+  graph: ProjectBoardView, taskId: string, targetStatusOptionId: string | null,
+  targetTaskId: string | null, afterTarget: boolean,
+): ProjectBoardView {
+  const next = structuredClone(graph);
+  const source = next.tasks.find(task => task.id === taskId);
+  requireCondition(source, 'TASK_REFERENCE', '要移动的任务不存在。');
+  requireCondition(targetStatusOptionId === null || next.project.statusOptions.some(option => option.id === targetStatusOptionId),
+    'TASK_STATUS_REFERENCE', '目标 Status 不存在。');
+  if (targetTaskId === taskId) return next;
+  const lane = tasksInLane(next, targetStatusOptionId);
+  const targetIndex = targetTaskId === null ? lane.length : lane.findIndex(task => task.id === targetTaskId);
+  requireCondition(targetIndex >= 0, 'TASK_ORDER_TARGET', '任务排序目标无效或已移动。');
+  const insertAfter = targetTaskId !== null && (source.statusOptionId === targetStatusOptionId
+    ? lane.findIndex(task => task.id === taskId) < targetIndex : afterTarget);
+  const destination = lane.filter(task => task.id !== taskId);
+  const insertion = targetTaskId === null ? destination.length : destination.findIndex(task => task.id === targetTaskId) + (insertAfter ? 1 : 0);
+  const oldStatus = source.statusOptionId;
+  source.statusOptionId = targetStatusOptionId;
+  destination.splice(insertion, 0, source);
+  destination.forEach((task, index) => { task.sortOrder = index; });
+  if (oldStatus !== targetStatusOptionId) tasksInLane(next, oldStatus).forEach((task, index) => { task.sortOrder = index; });
+  return next;
 }
 
 export function moveTaskInBoard(

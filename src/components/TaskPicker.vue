@@ -4,7 +4,7 @@ import type { Task } from '../domain/model';
 import { sortTasksByExternalId } from '../domain/task-view';
 
 const props = defineProps<{
-  tasks: readonly Task[];
+  tasks: readonly Pick<Task, 'id' | 'externalTaskId' | 'name'>[];
   disabled: boolean;
 }>();
 const selectedId = defineModel<string>({ default: '' });

@@ -1,5 +1,5 @@
 import type { FileCandidate } from '../domain/filenames';
-import type { ArchiveLocation, ProjectGraph } from '../domain/model';
+import type { ArchiveLocation, Project, VersionNode } from '../domain/model';
 import { checkPermission, locateFile, removeArchiveFile, sameDirectory, type DirectoryHandle, type FileHandle } from './directories';
 
 export interface EngineeringFileScan {
@@ -8,13 +8,16 @@ export interface EngineeringFileScan {
   directories: Map<ArchiveLocation, DirectoryHandle>;
 }
 
-export async function deleteEngineeringFile(options: {
-  graph: ProjectGraph;
+export async function deleteEngineeringFile<T extends {
+  project: Pick<Project, 'name' | 'revision'>;
+  nodes: readonly Pick<VersionNode, 'id' | 'version'>[];
+}>(options: {
+  graph: T;
   nodeId: string;
   location: ArchiveLocation;
   selectedFile: FileCandidate;
-  getGraph: () => Promise<ProjectGraph>;
-  scan: (graph: ProjectGraph, nodeId: string) => Promise<EngineeringFileScan>;
+  getGraph: () => Promise<T>;
+  scan: (graph: T, nodeId: string) => Promise<EngineeringFileScan>;
   confirm: (message: string) => boolean;
 }): Promise<boolean> {
   const { graph, nodeId, location, selectedFile, getGraph, scan, confirm } = options;

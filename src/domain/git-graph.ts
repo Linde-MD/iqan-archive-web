@@ -1,4 +1,4 @@
-import { orderedBranches, type Branch, type Edge, type ProjectGraph, type VersionNode } from './model';
+import { orderedBranches, type Branch, type Edge, type VersionNode } from './model';
 import { compareVersionNodes, compareVersions, type VersionOrder } from './version-order';
 
 export const GIT_GRAPH = {
@@ -111,7 +111,9 @@ function shareLinearTrack(
   return true;
 }
 
-function orderedNodes(graph: ProjectGraph, order: VersionOrder): VersionNode[] {
+type GraphTopology = { nodes: VersionNode[]; edges: Edge[]; branches: Branch[] };
+
+function orderedNodes(graph: GraphTopology, order: VersionOrder): VersionNode[] {
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   const adjacent = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
   const degree = new Map(graph.nodes.map(node => [node.id, 0]));
@@ -136,7 +138,7 @@ function orderedNodes(graph: ProjectGraph, order: VersionOrder): VersionNode[] {
 }
 
 export function layoutGitGraph(
-  graph: ProjectGraph,
+  graph: GraphTopology,
   order: VersionOrder,
   branchIds: readonly string[] | null = null,
   hideIsolated = false,
@@ -408,7 +410,7 @@ export function layoutGitGraph(
 }
 
 export function recommendedParentNodes(
-  graph: ProjectGraph,
+  graph: Pick<GraphTopology, 'nodes' | 'edges'>,
   version: string,
   excludedNodeId: string | null,
 ): VersionNode[] {

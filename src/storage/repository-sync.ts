@@ -1,9 +1,17 @@
 import type { Project, ProjectGraph, ProjectSnapshot, TaskAssignee } from '../domain/model';
 import type { SnapshotImportPlan } from './database';
+import type { ProjectBoardView, ProjectFilesView, ProjectGraphView, ProjectPage, ProjectSummary, TaskDetail, VersionDetail } from '../domain/project-views';
 
 export interface RepositorySync {
   readonly permissions: { sharedWritable: boolean; sharedWriteBlockedReason: string; newVersionWritable: boolean; draftNodeIds: Readonly<Record<string, readonly string[]>>; draftProjectIds: readonly string[] };
-  listProjects(): Promise<Project[]>;
+  listProjects(): Promise<ProjectSummary[]>;
+  getProjectInfo(id: string): Promise<ProjectSummary>;
+  loadPage(id: string, page: ProjectPage): Promise<void>;
+  getFilesView(id: string): Promise<ProjectFilesView>;
+  getGraphView(id: string): Promise<ProjectGraphView>;
+  getBoardView(id: string): Promise<ProjectBoardView>;
+  getTaskDetail(id: string, taskId: string): Promise<TaskDetail>;
+  getNodeDetail(id: string, nodeId: string): Promise<VersionDetail>;
   listAssignees(): Promise<TaskAssignee[]>;
   get(id: string): Promise<ProjectGraph>;
   snapshot(id: string): Promise<ProjectSnapshot>;

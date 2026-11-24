@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computed, reactive } from 'vue';
-import { ArchiveDatabase, ArchiveRepository } from '../src/storage/database';
+import { ArchiveDatabase, ArchiveRepository, projectPageFromGraph } from '../src/storage/database';
 import { CollaborationDatabase, CollaborationRepository, collaborationSnapshot } from '../src/storage/collaboration';
 import { createProject, type ProjectGraph, type Task, type VersionNode } from '../src/domain/model';
 import { parseProjectSnapshot } from '../src/domain/project-snapshot';
@@ -106,7 +106,7 @@ function setup() {
     const body: unknown = init.body ? JSON.parse(String(init.body)) : undefined;
     const headers = new Headers(init.headers);
     const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
-    if (path === '/health') return response({ product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true });
+    if (path === '/health') return response({ product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 9, initialized: true });
     if (path === '/requests/client') return response({ slot: 0, generation: 1, sequence: 0 });
     if (path === '/requests/ack') return response({ acknowledged: true });
     if (path === '/auth/login') return response({ token: 'test-token', expiresAt: Date.now() + 100_000, user: admin });
@@ -121,6 +121,8 @@ function setup() {
     if (path === `/projects/${graph.project.id}` && init.method === 'GET') return response(graph.project);
     if (path === `/projects/${graph.project.id}/revision` && init.method === 'GET')
       return response({ revision: graph.project.revision });
+    if (path === `/projects/${graph.project.id}/view/files` && init.method === 'GET')
+      return response(projectPageFromGraph(graph, 'files'));
     if (path === `/projects/${graph.project.id}/graph` && init.method === 'GET') {
       graphReads++;
       if (failRead) throw new TypeError('read failed');
@@ -191,6 +193,7 @@ describe('共享副本与离线草稿', () => {
   it('v2→v3 preserves legacy pending, mirrors and drafts without replaying old UUIDs', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
+    await s.repository.get(s.graph().project.id);
     const key = `${s.source}:${s.admin.id}`;
     const pending = {
       key, source: s.source, owner: s.admin.id, requestId: crypto.randomUUID(),
@@ -524,7 +527,7 @@ describe('共享副本与离线草稿', () => {
     s.setGraph(remote);
     s.fetcher.mockClear();
     expect(await s.client.pollProject(id, () => true, new AbortController().signal, () => false)).toBe(true);
-    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([`/projects/${id}/revision`]);
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([`/projects/${id}`]);
     expect(await s.repository.get(id)).toEqual(before);
     expect(s.client.state.message).toContain('请先保存或取消');
     await s.client.pollProject(id, () => true, new AbortController().signal);
@@ -541,28 +544,25 @@ describe('共享副本与离线草稿', () => {
     const paths = () => s.fetcher.mock.calls.map(([url, init]) => [new URL(url).pathname, init.method]);
     s.fetcher.mockClear();
     await poll();
-    expect(paths()).toEqual([[`/projects/${id}/revision`, 'GET']]);
+    expect(paths()).toEqual([[`/projects/${id}`, 'GET']]);
     expect(await s.repository.get(id)).toEqual(before);
     remote.project.revision++;
     remote.project.partNumber = '456';
     s.setGraph(remote);
     s.fetcher.mockClear();
     await poll();
-    expect(paths()).toEqual([[`/projects/${id}/revision`, 'GET'], ['/instance', 'GET'], [`/projects/${id}/graph`, 'GET']]);
+    expect(paths()).toEqual([[`/projects/${id}`, 'GET']]);
     expect((await s.repository.get(id)).project).toMatchObject({ partNumber: '456', revision: before.project.revision + 1 });
     expect(await s.cache.pending.count()).toBe(0);
   });
 
-  it('旧后端缺少修订号接口时回退摘要，不读取未变化的项目图', async () => {
+  it('自动检查只读取摘要，不读取未变化的项目图', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
     const path = `/projects/${s.graph().project.id}`;
     s.fetcher.mockClear();
-    s.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({
-      error: { code: 'NOT_FOUND', message: '接口不存在' },
-    }), { status: 404 }));
     await s.client.pollProject(s.graph().project.id, () => true, new AbortController().signal);
-    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([`${path}/revision`, path]);
+    expect(s.fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([path]);
   });
 
   it.each(['editing', 'newer-mirror'] as const)('在途自动刷新不覆盖 %s', async mode => {
@@ -576,13 +576,13 @@ describe('共享副本与离线草稿', () => {
     s.setGraph(remote);
     let active = true;
     let release!: () => void;
-    const getGraph = new Promise<Response>(resolve => {
-      release = () => resolve(new Response(JSON.stringify(collaborationSnapshot(remote))));
+    const getPage = new Promise<Response>(resolve => {
+      release = () => resolve(new Response(JSON.stringify(projectPageFromGraph(remote, 'files'))));
     });
     const fetch = s.fetcher.getMockImplementation()!;
-    s.fetcher.mockImplementation((url, init) => url.endsWith('/graph') ? getGraph : fetch(url, init));
-    const poll = s.client.pollProject(id, () => true, new AbortController().signal, () => active);
-    await vi.waitFor(() => expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/graph'))).toHaveLength(2));
+    s.fetcher.mockImplementation((url, init) => url.endsWith('/view/files') ? getPage : fetch(url, init));
+    const poll = s.client.pollProject(id, () => true, new AbortController().signal, () => active, 'files');
+    await vi.waitFor(() => expect(s.fetcher.mock.calls.filter(([url]) => url.endsWith('/view/files'))).toHaveLength(1));
     if (mode === 'editing') active = false;
     else {
       const key = `${s.source}:${id}`;
@@ -594,7 +594,7 @@ describe('共享副本与离线草稿', () => {
     }
     release();
     await poll;
-    expect((await s.repository.get(id)).project.partNumber).toBe(mode === 'editing' ? before.project.partNumber : '789');
+    expect((await s.cache.mirrors.get(`${s.source}:${id}`))?.graph.project.partNumber).toBe(mode === 'editing' ? before.project.partNumber : '789');
   });
 
   it('自动检查网络失败时保留副本和登录状态，后续检查可继续更新', async () => {
@@ -658,6 +658,7 @@ describe('共享副本与离线草稿', () => {
   it('刷新发现多个主机时保留副本且不向任何主机发送会话令牌', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
+    await s.repository.get(s.graph().project.id);
     s.db.backendConnection.reset();
     vi.mocked(s.local.getBackendHosts).mockResolvedValue(['test-device', 'other-device']);
     s.fetcher.mockClear();
@@ -682,7 +683,7 @@ describe('共享副本与离线草稿', () => {
     s.fetcher.mockImplementation(async (url, init) => {
       if (new URL(url).pathname === '/health') return new Promise<Response>(resolve => {
         probes.push(() => resolve(new Response(JSON.stringify({
-          product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true,
+          product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 9, initialized: true,
         }))));
       });
       if (new URL(url).pathname === '/users/member1') return new Response(JSON.stringify({
@@ -720,7 +721,7 @@ describe('共享副本与离线草稿', () => {
     s.fetcher.mockImplementation(async (url, init) => {
       const target = new URL(url);
       if (target.pathname === '/health') return new Response(JSON.stringify({
-        product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true,
+        product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 9, initialized: true,
       }), { status: mode === 'multiple' || (mode === 'changed' && target.hostname === 'other-device') ? 200 : 503 });
       const result = await original(url, init);
       if (target.pathname === '/projects' && init.method === 'POST') await gate;
@@ -977,7 +978,7 @@ describe('共享副本与离线草稿', () => {
     const readsBeforeSave = s.graphReads();
     const saved = await s.repository.setPartNumber(current.id, current.revision, '456');
     expect(saved.project.partNumber).toBe('456');
-    expect(s.graphReads()).toBe(readsBeforeSave);
+    expect(s.graphReads()).toBe(readsBeforeSave + 1);
     expect(s.graph().project.partNumber).toBe('456');
     expect((await s.local.get(legacy.project.id)).project.partNumber).toBe('old');
     s.client.state.user!.role = 'member';
@@ -1009,6 +1010,7 @@ describe('共享副本与离线草稿', () => {
   it('相依离线版本和编辑跨重开保留，既有内容只读，重连不自动上传，确认后一次同步', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
+    await s.repository.get(s.graph().project.id);
     s.network(false);
     await expect(s.client.reconnect()).rejects.toThrow('没有可连接');
     expect(s.client.permissions.sharedWriteBlockedReason).toContain('未连接本机后端');
@@ -1106,6 +1108,7 @@ describe('共享副本与离线草稿', () => {
   it('退出保留副本草稿但禁止继续编辑；不记住登录不持久保存会话', async () => {
     const s = setup();
     await s.client.login('admin', 'test', false);
+    await s.repository.get(s.graph().project.id);
     expect((await s.cache.contexts.get('active'))?.token).toBe('');
     s.network(false);
     await expect(s.client.reconnect()).rejects.toThrow();
@@ -1125,6 +1128,7 @@ describe('共享副本与离线草稿', () => {
     const parent = createNode(shared, { version: 'V1', description: '' });
     shared.nodes.push(parent); s.setGraph(shared);
     await s.client.login('admin', 'test', true);
+    await s.repository.get(shared.project.id);
     s.network(false);
     await expect(s.client.reconnect()).rejects.toThrow();
     let graph = await s.repository.get(shared.project.id);
@@ -1176,6 +1180,7 @@ describe('共享副本与离线草稿', () => {
   it('其他标签页退出后撤销当前页面写入身份，但保留副本和原账号草稿', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
+    await s.repository.get(s.graph().project.id);
     const secondTab = new CollaborationRepository(s.local, s.cache);
     await secondTab.initialize();
     s.network(false);
@@ -1197,6 +1202,7 @@ describe('共享副本与离线草稿', () => {
   it('切换数据库不串入旧草稿，同一库的其他账号不能编辑或同步原账号草稿', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
+    await s.repository.get(s.graph().project.id);
     s.network(false); await expect(s.client.reconnect()).rejects.toThrow();
     const graph = await s.repository.get(s.graph().project.id);
     const pending = createNode(graph, { version: 'V1', description: '' });

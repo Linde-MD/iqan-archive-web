@@ -1,10 +1,11 @@
-import type { Branch, ProjectGraph, Task } from './model';
+import type { Branch, Task } from './model';
+import type { TaskSummary } from './project-views';
 import { GIT_GRAPH, type GitGraphEdge, type GitGraphLayout, type GitGraphRow } from './git-graph';
 import { compareTaskListIds } from './task-board';
 
 export interface TaskRun {
   id: string;
-  task: Task;
+  task: Task | TaskSummary;
   branch: Branch;
   nodeIds: string[];
   releasedCount: number;
@@ -27,11 +28,11 @@ export interface TaskViewLayout extends Omit<GitGraphLayout, 'rows' | 'edges' | 
   height: number;
 }
 
-export function sortTasksByExternalId(tasks: readonly Task[]): Task[] {
+export function sortTasksByExternalId<T extends Pick<Task, 'id' | 'externalTaskId' | 'name'>>(tasks: readonly T[]): T[] {
   return [...tasks].sort(compareTaskListIds);
 }
 
-export function taskViewRuns(graph: ProjectGraph, layout: GitGraphLayout): TaskRun[] {
+export function taskViewRuns(graph: { tasks: readonly (Task | TaskSummary)[] }, layout: GitGraphLayout): TaskRun[] {
   const taskById = new Map(graph.tasks.map(task => [task.id, task]));
   const runs: PendingTaskRun[] = [];
   let current: PendingTaskRun | undefined;

@@ -34,6 +34,8 @@ Map these roles to the semantic CSS variables in `src/style.css`. Keep normal te
 
 ## Layout and components
 
+- Mount only the active workspace page. Show explicit page/detail loading, retry and offline-cache errors without replacing the graph with fake empty data. Catalog and file/board indexes are read-only projections; task bodies/comments and complete write/export snapshots load only when needed. Keep full-text search semantics explicit, and never present a description excerpt as the complete editable text.
+
 - Business edits have no undo/redo history or toolbar action. Do not intercept Ctrl/Cmd+Z/Y outside editors; retain native text-editing history, explicit release revocation, draft protection and revision-conflict errors.
 - Task management offers a board and a compact work-item table, using the same dark surfaces. Size the ID column for at least six digits or the longest project ID, keep columns stable when expanding tasks, preserve unbroken IDs and dates, and allow local horizontal scrolling when needed. Use labeled, keyboard-operable expand buttons for hierarchy; retain full task names and text status cues.
 - In project task management, group “全部任务 / 我负责的任务”, view selection and search into a compact responsive toolbar. Show the selected scope with a visible underline and pressed semantics; keep controls at least 44px tall and allow wrapping on small screens. Preserve the selected board/list layout and search when changing scope.

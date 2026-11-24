@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import { liveQuery } from 'dexie';
-import type { ArchiveLocation, ProjectGraph } from '../domain/model';
+import type { ArchiveLocation } from '../domain/model';
+import type { ProjectFilesView } from '../domain/project-views';
 import { orderedVersionNodes, type VersionOrder } from '../domain/version-order';
 import type { ArchiveRepository } from '../storage/database';
 import { matchScannedFiles, type FileCandidate } from '../domain/filenames';
@@ -13,7 +14,7 @@ import AppIcon from './AppIcon.vue';
 const props = defineProps<{ repository: ArchiveRepository; projectId: string; projectName: string; archiveRoots: ArchiveRoots }>();
 const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newest' });
 const emit = defineEmits<{ busy: [value: boolean] }>();
-const graph = shallowRef<ProjectGraph>();
+const graph = shallowRef<ProjectFilesView>();
 const engineering = ref<InstanceType<typeof DirectoryPanel>>();
 const candidates = shallowRef<FileCandidate[]>([]);
 const comparisonDocuments = shallowRef<FileCandidate[]>([]);
@@ -27,6 +28,8 @@ const saving = ref(false);
 const error = ref('');
 const status = ref('');
 const errorHeading = ref<HTMLElement>();
+const loading = ref(true);
+let disposed = false;
 let subscription: { unsubscribe(): void } | undefined;
 const busy = computed(() => saving.value || busyRoles.value.size > 0);
 const association = computed(() => graph.value ? matchScannedFiles(graph.value, candidates.value) : undefined);
@@ -66,16 +69,27 @@ async function operation(action: () => Promise<void>) {
 function invalidate() {
   candidates.value = []; selected.value = []; scanned.value = false;
 }
-function receiveGraph(next: ProjectGraph) {
+function receiveGraph(next: ProjectFilesView) {
   if (graph.value && graph.value.project.partNumber !== next.project.partNumber) {
     invalidate();
     status.value = '零件号已修改，请重新扫描工程目录。';
   }
   graph.value = next;
+  loading.value = false;
+}
+function subscribe() {
+  if (disposed || subscription) return;
+  subscription = liveQuery(() => props.repository.getFilesView(props.projectId)).subscribe({
+    next: receiveGraph,
+    error: cause => { loading.value = false; showError(cause); },
+  });
 }
 async function refresh() {
   await operation(async () => {
-    receiveGraph(await props.repository.get(props.projectId));
+    await props.repository.loadPage(props.projectId, 'files');
+    if (disposed) return;
+    receiveGraph(await props.repository.getFilesView(props.projectId));
+    subscribe();
     invalidate(); comparisonDocuments.value = []; comparisonDocumentsScanned.value = false;
   });
 }
@@ -83,7 +97,9 @@ async function register() {
   await operation(async () => {
     if (!graph.value) throw new Error('请先读取项目。');
     if (!selectedRows.value.length) throw new Error('请至少选择一个尚无对应版本的合法文件。');
-    graph.value = await props.repository.register(props.projectId, graph.value.project.revision, selectedRows.value);
+    await props.repository.register(props.projectId, graph.value.project.revision, selectedRows.value);
+    if (disposed) return;
+    receiveGraph(await props.repository.getFilesView(props.projectId));
     selected.value = []; status.value = '缺失版本已创建并自动关联；未保存本地文件信息，未推断父边或推进分支头。';
   });
 }
@@ -106,22 +122,24 @@ function receiveComparisonDocuments(location: ArchiveLocation, files: FileCandid
   comparisonDocumentsScanned.value = true;
 }
 onMounted(() => {
-  subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
-    next: receiveGraph,
-    error: showError,
+  void props.repository.loadPage(props.projectId, 'files').then(() => {
+    subscribe();
+  }).catch(cause => {
+    if (!disposed) { loading.value = false; showError(cause); }
   });
 });
-onUnmounted(() => subscription?.unsubscribe());
+onUnmounted(() => { disposed = true; subscription?.unsubscribe(); });
 </script>
 
 <template>
-  <section class="panel file-workspace" aria-labelledby="file-title" :aria-busy="busy">
+  <section class="panel file-workspace" aria-labelledby="file-title" :aria-busy="busy || loading">
     <div class="section-heading">
       <div><p class="eyebrow">PROJECT FILES</p><h2 id="file-title">项目文件工作区</h2></div>
       <button class="secondary icon-button" :disabled="busy" aria-label="重新读取项目" title="重新读取项目" @click="refresh"><AppIcon name="refresh" /></button>
     </div>
     <div v-if="error" role="alert" class="error"><h3 ref="errorHeading" tabindex="-1">文件操作未完成</h3><p>{{ error }}</p><p>失败不会部分提交。扫描失败请重扫；若提示修订冲突，请重新读取项目并重扫。</p></div>
     <p role="status">{{ status }}</p>
+    <p v-if="loading" role="status">正在读取当前项目的版本索引…</p>
     <template v-if="graph">
       <div class="workspace-meta"><strong>{{ graph.project.name }}</strong><span>零件号 <code>{{ graph.project.partNumber }}</code></span><span class="count">{{ graph.nodes.length }} 个版本 · {{ scanned ? rows.filter(row => row.nodeId !== null).length : '尚未扫描' }}{{ scanned ? ' 个关联文件' : '' }}</span></div>
       <div class="directory-grid">

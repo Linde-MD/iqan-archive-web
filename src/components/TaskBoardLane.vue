@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { useDroppable } from '@dnd-kit/vue';
-import type { Task, TaskAssignee, TaskOption } from '../domain/model';
+import type { TaskAssignee, TaskOption } from '../domain/model';
+import type { TaskSummary } from '../domain/project-views';
 import TaskBoardCard from './TaskBoardCard.vue';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{
   status: TaskOption | null;
-  tasks: Task[];
+  tasks: TaskSummary[];
   selectedTaskId: string;
   priorityOptionById: ReadonlyMap<string, TaskOption>;
   assigneeById: ReadonlyMap<string, TaskAssignee>;
