@@ -24,6 +24,8 @@ const menuOpen = ref(false);
 const busy = ref(false);
 const error = ref('');
 const message = ref('');
+const recoveryRequestId = ref('');
+const recoveryChecked = ref(false);
 const username = ref('');
 const password = ref('');
 const remember = ref(true);
@@ -168,6 +170,23 @@ async function run(action: () => Promise<unknown>) {
     await nextTick(); errorHeading.value?.focus();
   } finally { busy.value = false; state.busy = false; }
 }
+async function exportPending() {
+  await run(async () => {
+    const text = await props.client.exportPending();
+    const request = JSON.parse(text) as { requestId: string };
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    try {
+      const link = document.createElement('a');
+      link.href = url; link.download = 'iqan-pending-recovery.json'; link.click();
+    } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    recoveryRequestId.value = request.requestId;
+    recoveryChecked.value = false;
+    message.value = '已请求导出原始提交。请确认文件已保存，并核对共享项目的实际结果。';
+  });
+}
+watch(() => [state.source, state.user?.id, state.pending], () => {
+  recoveryRequestId.value = ''; recoveryChecked.value = false;
+});
 async function login() {
   await run(async () => {
     await props.client.login(username.value, password.value, remember.value);
@@ -551,6 +570,16 @@ async function saveDraft() {
       </div>
       <p v-if="state.pending" role="status">存在结果未确认的提交。内容已锁定，请用原请求重试，勿重复创建或恢复。</p>
       <button v-if="state.pending" type="button" :disabled="busy || !state.connected || !state.authenticated" @click="run(() => client.retryPending())">重试未确认提交</button>
+      <section v-if="state.pending && state.pendingRecovery" aria-label="过期提交恢复">
+        <h3>原请求需要人工核对</h3>
+        <p role="alert">旧版或已过期的请求不会重新执行，原账号、数据库和内容均保留。请先导出备份，再刷新并核对共享项目；放弃只解除本机锁定，不撤销已提交的共享修改。</p>
+        <button type="button" class="secondary" :disabled="busy" @click="exportPending">导出原始提交</button>
+        <template v-if="recoveryRequestId">
+          <label><input v-model="recoveryChecked" type="checkbox" :disabled="busy">我已保存导出文件、核对共享结果，并确认放弃此原请求（不自动重做）</label>
+          <button type="button" class="danger" :disabled="busy || !recoveryChecked"
+            @click="run(async () => { await client.discardPending(recoveryRequestId, recoveryChecked); message = state.message; })">确认放弃原请求</button>
+        </template>
+      </section>
     </section>
       </section>
     </div>

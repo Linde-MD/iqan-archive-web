@@ -76,7 +76,7 @@ describe('批量父子关联', () => {
     expect(() => changeVersionRelations(other, ['n2', 'n1'], 'linear')).toThrow();
   });
 
-  it('事务持久化、修订冲突回滚及撤销/重做恢复', async () => {
+  it('事务持久化与修订冲突回滚', async () => {
     const db = new ArchiveDatabase(`relations-${crypto.randomUUID()}`);
     const repo = new ArchiveRepository(db);
     try {
@@ -89,11 +89,7 @@ describe('批量父子关联', () => {
       expect(edgeRelations((await repo.get(graph.project.id)).edges)).toEqual(edgeRelations(linked.edges));
       const cleared = await repo.changeRelations(graph.project.id, linked.project.revision, ['n2', 'n1'], 'clear');
       expect(cleared.edges).toEqual([]);
-      const undone = await repo.restoreUndo(graph.project.id, cleared.project.revision, linked);
-      expect(undone.edges).toEqual(linked.edges);
-      const redone = await repo.restoreUndo(graph.project.id, undone.project.revision, cleared);
-      expect(redone.edges).toEqual([]);
-      const locked = await repo.release(graph.project.id, redone.project.revision, 'n1');
+      const locked = await repo.release(graph.project.id, cleared.project.revision, 'n1');
       await expect(repo.changeRelations(graph.project.id, locked.project.revision, ['n2', 'n1'], 'linear')).rejects.toThrow();
       expect(await repo.get(graph.project.id)).toEqual(locked);
     } finally {

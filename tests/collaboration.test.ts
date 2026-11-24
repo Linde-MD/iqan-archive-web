@@ -106,7 +106,9 @@ function setup() {
     const body: unknown = init.body ? JSON.parse(String(init.body)) : undefined;
     const headers = new Headers(init.headers);
     const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
-    if (path === '/health') return response({ product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: true });
+    if (path === '/health') return response({ product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true });
+    if (path === '/requests/client') return response({ slot: 0, generation: 1, sequence: 0 });
+    if (path === '/requests/ack') return response({ acknowledged: true });
     if (path === '/auth/login') return response({ token: 'test-token', expiresAt: Date.now() + 100_000, user: admin });
     if (path === '/auth/me') return response({ user: admin });
     if (path === '/instance') return response({ databaseId: source });
@@ -160,7 +162,7 @@ function setup() {
       projectId: graph.project.id, revision: graph.project.revision, deleted: false,
       ...(useLegacyReceipt ? {} : { delta: createProjectDelta(previous, graph) }),
     };
-    receipts.set(id, result);
+    receipts.set(id, { projectId: result.projectId, revision: result.revision, deleted: result.deleted });
     if (loseResponse) { loseResponse = false; throw new TypeError('lost after commit'); }
     return response(result);
   });
@@ -186,6 +188,169 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('v2→v3 preserves legacy pending, mirrors and drafts without replaying old UUIDs', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const key = `${s.source}:${s.admin.id}`;
+    const pending = {
+      key, source: s.source, owner: s.admin.id, requestId: crypto.randomUUID(),
+      method: 'POST', path: '/projects', body: { name: '未知旧提交', partNumber: '123' }, projectId: null, clearDraft: false,
+    };
+    const name = `collab-v2-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(2).stores({ contexts: 'id', mirrors: 'key, source', drafts: 'key', pending: 'key', assignees: 'key, source' });
+    await old.table('pending').put(pending);
+    const mirrors = await s.cache.mirrors.toArray();
+    await old.table('mirrors').bulkPut(mirrors);
+    await old.table('drafts').put({ key: mirrors[0]!.key, owner: s.admin.id, nodes: [], edges: [] });
+    old.close();
+    const upgraded = new CollaborationDatabase(name);
+    databases.push(upgraded);
+    await upgraded.open();
+    expect(await upgraded.pending.get(key)).toEqual(pending);
+    expect(await upgraded.mirrors.toArray()).toEqual(mirrors);
+    expect(await upgraded.drafts.count()).toBe(1);
+    expect(await upgraded.clients.count()).toBe(0);
+    await s.cache.pending.put(pending);
+    const before = s.fetcher.mock.calls.length;
+    await expect(s.client.retryPending()).rejects.toMatchObject({ code: 'REQUEST_RETIRED' });
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(JSON.parse(await s.client.exportPending())).toMatchObject(pending);
+    await expect(s.client.discardPending(pending.requestId, false)).rejects.toThrow();
+    expect(await s.cache.pending.count()).toBe(1);
+    await s.client.discardPending(pending.requestId, true);
+    expect(await s.cache.pending.count()).toBe(0);
+  });
+
+  it('persists UUID before registration and reuses it after a lost registration response', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    await s.cache.clients.clear();
+    const original = s.fetcher.getMockImplementation()!;
+    let lost = true;
+    const ids: string[] = [];
+    s.fetcher.mockImplementation(async (url, init) => {
+      if (url.endsWith('/requests/client')) {
+        const clientId = JSON.parse(String(init.body)).clientId;
+        ids.push(clientId);
+        expect((await s.cache.clients.get(`${s.source}:${s.admin.id}`))?.clientId).toBe(clientId);
+        expect(new Headers(init.headers).get('X-Archive-Database')).toBe(s.source);
+        expect(new Headers(init.headers).get('Authorization')).toBe('Bearer test-token');
+        if (lost) { lost = false; await original(url, init); throw new TypeError('lost registration'); }
+      }
+      return original(url, init);
+    });
+    await expect(s.client.create('首次', '123')).rejects.toThrow();
+    expect(await s.cache.pending.count()).toBe(0);
+    await s.client.reconnect();
+    await s.client.create('重试', '123');
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(s.requests[0]?.id).toBe('slot:0:1:1');
+  });
+
+  it('allocates counter and immutable pending atomically across tabs', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const tabCache = new CollaborationDatabase(s.cache.name);
+    databases.push(tabCache);
+    const tab = new CollaborationRepository(s.local, tabCache);
+    await tab.initialize();
+    const results = await Promise.allSettled([s.client.create('甲', '123'), tab.create('乙', '123')]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(s.requests).toHaveLength(1);
+    expect(s.requests[0]?.id).toBe('slot:0:1:1');
+    expect((await s.cache.clients.get(`${s.source}:${s.admin.id}`))?.binding?.sequence).toBe(1);
+    await tab.create('丙', '123');
+    expect(s.requests[1]?.id).toBe('slot:0:1:2');
+  });
+
+  it('uses the registered generation and server sequence after reconnect', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const original = s.fetcher.getMockImplementation()!;
+    s.fetcher.mockImplementation(async (url, init) => url.endsWith('/requests/client')
+      ? new Response(JSON.stringify({ slot: 7, generation: 4, sequence: 12 }))
+      : original(url, init));
+    await s.client.reconnect();
+    await s.client.create('新绑定', '123');
+    expect(s.requests[0]?.id).toBe('slot:7:4:13');
+  });
+
+  it('rolls back sequence allocation when saving pending fails', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const add = vi.spyOn(s.cache.pending, 'add').mockRejectedValueOnce(new Error('quota'));
+    await expect(s.client.create('写入失败', '123')).rejects.toThrow('quota');
+    expect(await s.cache.pending.count()).toBe(0);
+    expect((await s.cache.clients.get(`${s.source}:${s.admin.id}`))?.binding?.sequence).toBe(0);
+    expect(s.requests).toHaveLength(0);
+    add.mockRestore();
+    await s.client.create('重试保存', '123');
+    expect(s.requests[0]?.id).toBe('slot:0:1:1');
+  });
+
+  it.each(['lost', 'retired'] as const)('durably saves mirror and ack phase before ACK; %s ACK never replays mutation', async mode => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const original = s.fetcher.getMockImplementation()!;
+    let fail = true;
+    s.fetcher.mockImplementation(async (url, init) => {
+      if (url.endsWith('/requests/ack')) {
+        const pending = (await s.cache.pending.toArray())[0]!;
+        expect(pending.phase).toBe('ack');
+        expect(await s.cache.mirrors.get(`${s.source}:${pending.projectId}`)).toBeDefined();
+        expect(new Headers(init.headers).get('X-Archive-Database')).toBe(s.source);
+        if (fail) { fail = false; throw new TypeError('lost ACK'); }
+        if (mode === 'retired') return new Response(JSON.stringify({ error: { code: 'REQUEST_RETIRED', message: 'expired' } }), { status: 410 });
+      }
+      return original(url, init);
+    });
+    await expect(s.client.create('确认恢复', '123')).rejects.toThrow();
+    const before = s.requests.length;
+    const reopened = new CollaborationRepository(s.local, s.cache);
+    await reopened.initialize();
+    await reopened.retryPending();
+    expect(s.requests).toHaveLength(before);
+    expect(await s.cache.pending.count()).toBe(0);
+    expect(await s.cache.clients.count()).toBe(mode === 'retired' ? 0 : 1);
+    if (mode === 'retired') expect(reopened.state.message).toContain('槽位已过期');
+  });
+
+  it('retired mutation preserves original source, account and payload until explicit recovery', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const original = s.fetcher.getMockImplementation()!;
+    s.fetcher.mockImplementation(async (url, init) => url.endsWith('/projects') && init.method === 'POST'
+      ? new Response(JSON.stringify({ error: { code: 'REQUEST_RETIRED', message: '过期' } }), { status: 410 })
+      : original(url, init));
+    await expect(s.client.create('过期原文', '123')).rejects.toMatchObject({ code: 'REQUEST_RETIRED' });
+    const pending = (await s.cache.pending.toArray())[0]!;
+    expect(pending).toMatchObject({ source: s.source, owner: s.admin.id, body: { name: '过期原文', partNumber: '123' }, recovery: 'retired' });
+    expect(s.client.state.pendingRecovery).toBe('retired');
+    await expect(s.client.create('不能覆盖', '123')).rejects.toThrow();
+    await expect(s.client.discardPending('wrong-id', true)).rejects.toThrow();
+    expect((await s.cache.pending.toArray())[0]).toEqual(pending);
+    await s.client.discardPending(pending.requestId, true);
+    expect(await s.cache.clients.count()).toBe(0);
+  });
+
+  it('a stale ACK cannot remove a newer pending request', async () => {
+    const s = setup();
+    await s.client.login('admin', 'test', true);
+    const original = s.fetcher.getMockImplementation()!;
+    s.fetcher.mockImplementation(async (url, init) => {
+      if (url.endsWith('/requests/ack')) {
+        const pending = (await s.cache.pending.toArray())[0]!;
+        await s.cache.pending.put({ ...pending, requestId: 'slot:0:1:2', phase: 'mutation' });
+      }
+      return original(url, init);
+    });
+    await s.client.create('旧请求', '123');
+    expect((await s.cache.pending.toArray())[0]?.requestId).toBe('slot:0:1:2');
+    expect(s.client.state.pending).toBe(true);
+  });
+
   it('协作版本编辑一次提交字段及父关系，响应式输入可安全保存', async () => {
     const s = setup();
     const initial = s.graph();
@@ -517,7 +682,7 @@ describe('共享副本与离线草稿', () => {
     s.fetcher.mockImplementation(async (url, init) => {
       if (new URL(url).pathname === '/health') return new Promise<Response>(resolve => {
         probes.push(() => resolve(new Response(JSON.stringify({
-          product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: true,
+          product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true,
         }))));
       });
       if (new URL(url).pathname === '/users/member1') return new Response(JSON.stringify({
@@ -555,7 +720,7 @@ describe('共享副本与离线草稿', () => {
     s.fetcher.mockImplementation(async (url, init) => {
       const target = new URL(url);
       if (target.pathname === '/health') return new Response(JSON.stringify({
-        product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 5, initialized: true,
+        product: 'iqan-archive-server', apiVersion: 2, databaseVersion: 8, initialized: true,
       }), { status: mode === 'multiple' || (mode === 'changed' && target.hostname === 'other-device') ? 200 : 503 });
       const result = await original(url, init);
       if (target.pathname === '/projects' && init.method === 'POST') await gate;

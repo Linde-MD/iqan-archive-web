@@ -76,7 +76,7 @@ describe('放行测试状态', () => {
     expect(() => validateGraph(graph)).toThrow('测试时间无效');
   });
 
-  it('事务持久化、快照往返、revision 冲突及撤销重做恢复测试状态', async () => {
+  it('事务持久化、快照往返及 revision 冲突保留测试状态', async () => {
     const db = new ArchiveDatabase(`testing-${crypto.randomUUID()}`);
     try {
       const repo = new ArchiveRepository(db);
@@ -92,9 +92,6 @@ describe('放行测试状态', () => {
       const imported = await repo.importSnapshot(parsed);
       expect(imported.copied).toBe(true);
       expect((await repo.get(imported.graph.project.id)).nodes[0]!.testingAt).toBe(tested.nodes[0]!.testingAt);
-      const undone = await repo.restoreUndo(original.project.id, tested.project.revision, added);
-      const redone = await repo.restoreUndo(original.project.id, undone.project.revision, tested);
-      expect(redone.nodes[0]!.testingAt).toBe(tested.nodes[0]!.testingAt);
       db.close();
       await db.open();
       expect((await repo.get(original.project.id)).nodes[0]!.testingAt).toBe(tested.nodes[0]!.testingAt);

@@ -21,6 +21,12 @@ interface Draft { key: string; owner: string; nodes: ProjectGraph['nodes']; edge
 interface Pending {
   key: string; source: string; owner: string; requestId: string; method: string; path: string;
   body: unknown; projectId: string | null; clearDraft: boolean;
+  phase?: 'mutation' | 'ack';
+  recovery?: 'retired' | 'legacy';
+}
+interface RequestClient {
+  key: string; clientId: string;
+  binding?: { slot: number; generation: number; sequence: number };
 }
 interface CachedAssignee extends TaskAssignee { key: string; source: string }
 
@@ -30,6 +36,7 @@ export class CollaborationDatabase extends Dexie {
   drafts!: Table<Draft, string>;
   pending!: Table<Pending, string>;
   assignees!: Table<CachedAssignee, string>;
+  clients!: Table<RequestClient, string>;
   constructor(name = 'iqan-archive-collaboration') {
     super(name);
     this.version(1).stores({ contexts: 'id', mirrors: 'key, source', drafts: 'key', pending: 'key' });
@@ -48,6 +55,7 @@ export class CollaborationDatabase extends Dexie {
         await mirrors.put({ ...mirror, graph });
       }
     });
+    this.version(3).stores({ clients: 'key' });
   }
 }
 
@@ -107,7 +115,7 @@ export function collaborationSnapshot(graph: ProjectGraph): ProjectSnapshot {
 export class CollaborationRepository implements RepositorySync {
   readonly state = reactive({
     source: '', user: null as CollaborationUser | null, connected: false, authenticated: false,
-    busy: false, restoring: false, message: '', draftCount: 0, pending: false, updatedAt: 0,
+    busy: false, restoring: false, message: '', draftCount: 0, pending: false, pendingRecovery: '', updatedAt: 0,
     draftNodeIds: {} as Record<string, string[]>,
     draftProjectIds: [] as string[],
     deletedProjectIds: [] as string[], conflictMessage: '',
@@ -228,7 +236,7 @@ export class CollaborationRepository implements RepositorySync {
     if (token) headers.Authorization = `Bearer ${token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (requestId) headers['Idempotency-Key'] = requestId;
-    if (this.state.source && (requestId || path.startsWith('/inbox/') || path === '/comment-directory'))
+    if (this.state.source && (requestId || path.startsWith('/requests/') || path.startsWith('/inbox/') || path === '/comment-directory'))
       headers['X-Archive-Database'] = this.state.source;
     let response: Response;
     try {
@@ -334,6 +342,7 @@ export class CollaborationRepository implements RepositorySync {
     this.state.source = instance.databaseId;
     await this.persistContext();
     await this.refresh();
+    if (!await this.cache.pending.get(this.actorKey())) await this.registerClient(this.actorKey(), true);
   }
 
   async logout() {
@@ -543,7 +552,9 @@ export class CollaborationRepository implements RepositorySync {
       }
     }
     this.state.conflictMessage = conflicts.join('；');
-    this.state.pending = this.state.user ? Boolean(await this.cache.pending.get(this.actorKey())) : false;
+    const pending = this.state.user ? await this.cache.pending.get(this.actorKey()) : undefined;
+    this.state.pending = Boolean(pending);
+    this.state.pendingRecovery = pending?.recovery ?? (pending && !pending.requestId.startsWith('slot:') ? 'legacy' : '');
   }
 
   async pollProject(id: string, canApply: () => boolean, signal: AbortSignal, mayReplace = () => true) {
@@ -701,17 +712,105 @@ export class CollaborationRepository implements RepositorySync {
   }
 
   private async mutate(method: string, path: string, body: unknown, projectId: string | null, clearDraft = false): Promise<ProjectGraph | null> {
-    await this.context();
-    this.assertOnline();
+    return this.mutation(async () => {
+      await this.context();
+      this.assertOnline();
+      const key = this.actorKey();
+      requireCondition(!await this.cache.pending.get(key), 'PENDING', '存在结果未确认的提交，请先重试原提交。');
+      const source = this.state.source, owner = this.state.user!.id;
+      await this.registerClient(key);
+      const pending = await this.cache.transaction('rw', [this.cache.clients, this.cache.pending, this.cache.contexts], async () => {
+        const context = await this.cache.contexts.get('active');
+        requireCondition(context?.source === source && context.actorId === owner, 'SOURCE', '账号或数据源已改变，请重新登录。');
+        requireCondition(!await this.cache.pending.get(key), 'PENDING', '存在结果未确认的提交，请先处理原提交。');
+        const client = await this.cache.clients.get(key);
+        requireCondition(client?.binding && client.binding.sequence < Number.MAX_SAFE_INTEGER, 'REQUEST_CLIENT', '客户端绑定无效，请重新连接后恢复。');
+        client.binding.sequence++;
+        const { slot, generation, sequence } = client.binding;
+        const pending: Pending = {
+          key, source, owner, requestId: `slot:${slot}:${generation}:${sequence}`, phase: 'mutation',
+          method, path, body: structuredClone(body), projectId, clearDraft,
+        };
+        await this.cache.clients.put(client);
+        await this.cache.pending.add(pending);
+        return pending;
+      });
+      this.state.pending = true;
+      return this.finish(pending);
+    });
+  }
+
+  private async registerClient(key: string, refresh = false) {
+    const client = await this.cache.transaction('rw', this.cache.clients, async () => {
+      const current = await this.cache.clients.get(key);
+      if (current) return current;
+      const created: RequestClient = { key, clientId: crypto.randomUUID() };
+      await this.cache.clients.add(created);
+      return created;
+    });
+    if (client.binding && !refresh) return;
+    requireCondition(key === this.actorKey(), 'SOURCE', '注册前账号或来源已改变，请使用原账号恢复。');
+    const result = object(await this.request('/requests/client', 'POST', { clientId: client.clientId }));
+    requireCondition(Number.isSafeInteger(result.slot) && Number(result.slot) >= 0 && Number(result.slot) < 8
+      && Number.isSafeInteger(result.generation) && Number(result.generation) > 0
+      && Number.isSafeInteger(result.sequence) && Number(result.sequence) >= 0,
+    'RESPONSE', '客户端槽位响应无效，已保留客户端标识，请重试。');
+    requireCondition(key === this.actorKey(), 'SOURCE', '注册期间账号或来源改变，请使用原账号恢复。');
+    await this.cache.transaction('rw', [this.cache.clients, this.cache.pending], async () => {
+      const current = await this.cache.clients.get(key);
+      requireCondition(current?.clientId === client.clientId, 'REQUEST_CLIENT', '客户端标识已改变，请重新连接。');
+      if (await this.cache.pending.get(key)) return;
+      const binding = { slot: Number(result.slot), generation: Number(result.generation), sequence: Number(result.sequence) };
+      if (current.binding?.slot === binding.slot && current.binding.generation === binding.generation)
+        binding.sequence = Math.max(binding.sequence, current.binding.sequence);
+      current.binding = binding;
+      await this.cache.clients.put(current);
+    });
+  }
+
+  async exportPending(): Promise<string> {
+    const pending = await this.cache.pending.get(this.actorKey());
+    requireCondition(pending, 'PENDING', '没有待恢复提交。');
+    return JSON.stringify(pending, null, 2);
+  }
+
+  async discardPending(requestId: string, confirmed: boolean) {
     const key = this.actorKey();
-    requireCondition(!await this.cache.pending.get(key), 'PENDING', '存在结果未确认的提交，请先重试原提交。');
-    const pending: Pending = {
-      key, source: this.state.source, owner: this.state.user!.id, requestId: crypto.randomUUID(),
-      method, path, body: structuredClone(body), projectId, clearDraft,
-    };
-    await this.cache.pending.add(pending);
-    this.state.pending = true;
-    return this.finish(pending);
+    await this.cache.transaction('rw', [this.cache.pending, this.cache.clients], async () => {
+      const pending = await this.cache.pending.get(key);
+      requireCondition(confirmed && pending?.requestId === requestId && pending.phase !== 'ack'
+        && (pending.recovery === 'retired' || pending.recovery === 'legacy' || !pending.requestId.startsWith('slot:')),
+      'PENDING_RECOVERY', '请先导出原请求、核对共享结果，并明确确认放弃此过期请求。');
+      await this.cache.pending.delete(key);
+      await this.cache.clients.delete(key);
+    });
+    await this.updateCounts();
+    this.state.message = '已按确认放弃原请求；未重新执行业务修改。请刷新共享数据并核对后再操作。';
+  }
+
+  private async removePending(pending: Pending, invalidate = false) {
+    await this.cache.transaction('rw', [this.cache.pending, this.cache.clients], async () => {
+      if ((await this.cache.pending.get(pending.key))?.requestId !== pending.requestId) return;
+      await this.cache.pending.delete(pending.key);
+      if (invalidate) await this.cache.clients.delete(pending.key);
+    });
+    await this.updateCounts();
+  }
+
+  private async acknowledge(pending: Pending) {
+    requireCondition(pending.source === this.state.source && pending.owner === this.state.user?.id, 'SOURCE', '请使用原数据库和账号确认提交。');
+    let retired = false;
+    try {
+      const result = object(await this.request('/requests/ack', 'POST', { requestId: pending.requestId }));
+      requireCondition(result.acknowledged === true, 'RESPONSE', '确认回执无效；本机已保存提交结果，请重试确认。');
+    } catch (cause) {
+      if (!(cause instanceof CollaborationError) || cause.status !== 410 || cause.code !== 'REQUEST_RETIRED') throw cause;
+      retired = true;
+    }
+    await this.removePending(pending, retired);
+    this.state.message = retired
+      ? '共享提交及本机副本已保存；确认时槽位已过期，已安全清理确认记录并重置客户端绑定。未重复业务提交。'
+      : '共享提交、本机副本及回执确认已完成。';
   }
 
   async retryPending() {
@@ -727,6 +826,19 @@ export class CollaborationRepository implements RepositorySync {
     this.writing = true;
     let committed = false;
     try {
+      const current = await this.cache.pending.get(pending.key);
+      requireCondition(current?.requestId === pending.requestId, 'PENDING', '原请求已由其他标签页处理，请刷新。');
+      pending = current;
+      if (pending.phase === 'ack') {
+        await this.acknowledge(pending);
+        const mirror = pending.projectId ? await this.cache.mirrors.get(`${pending.source}:${pending.projectId}`) : undefined;
+        return mirror && !mirror.deleted ? this.get(mirror.graph.project.id) : null;
+      }
+      if (!/^slot:[0-7]:[1-9]\d*:[1-9]\d*$/.test(pending.requestId)) {
+        await this.cache.pending.update(pending.key, { recovery: 'legacy' });
+        await this.updateCounts();
+        throw new CollaborationError('旧版未确认请求已保留，不会重新执行。请导出原请求并核对共享结果后明确放弃。', 410, 'REQUEST_RETIRED');
+      }
       const result = object(await this.request(pending.path, pending.method, pending.body, pending.requestId));
       committed = true;
       requireCondition(typeof result.projectId === 'string' && /^[0-9a-f-]{36}$/.test(result.projectId)
@@ -755,19 +867,27 @@ export class CollaborationRepository implements RepositorySync {
       }
       requireCondition(pending.source === this.state.source && pending.owner === this.state.user?.id, 'SOURCE', '提交期间账号或来源改变，已保留原请求供原账号恢复。');
       await this.cache.transaction('rw', [this.cache.mirrors, this.cache.drafts, this.cache.pending], async () => {
+        const current = await this.cache.pending.get(pending.key);
+        requireCondition(current?.requestId === pending.requestId, 'PENDING', '原请求已变化，不覆盖新提交。');
+        if (current.phase === 'ack') return;
         if (graph) await this.putMirror(graph);
         else await this.cache.mirrors.delete(this.key(String(result.projectId)));
         if (pending.clearDraft || result.deleted) await this.cache.drafts.delete(this.key(String(result.projectId)));
-        await this.cache.pending.delete(pending.key);
+        await this.cache.pending.put({ ...current, projectId: String(result.projectId), phase: 'ack' });
       });
-      this.state.message = '共享提交及本机副本更新已完成。';
-      await this.updateCounts();
+      await this.acknowledge({ ...pending, projectId: String(result.projectId), phase: 'ack' });
       return graph ? this.get(graph.project.id) : null;
     } catch (cause) {
-      if (!committed && cause instanceof CollaborationError && cause.status >= 400 && cause.status < 500
+      if (cause instanceof CollaborationError && cause.code === 'REQUEST_RETIRED') {
+        await this.cache.transaction('rw', this.cache.pending, async () => {
+          const current = await this.cache.pending.get(pending.key);
+          if (current?.requestId === pending.requestId && current.phase !== 'ack')
+            await this.cache.pending.put({ ...current, recovery: current.recovery ?? 'retired' });
+        });
+        await this.updateCounts();
+      } else if (!committed && pending.phase !== 'ack' && cause instanceof CollaborationError && cause.status >= 400 && cause.status < 500
         && cause.status !== 401 && cause.status !== 403 && cause.code !== 'DATABASE_SOURCE') {
-        await this.cache.pending.delete(pending.key);
-        this.state.pending = false;
+        await this.removePending(pending);
       }
       if (committed) throw new CollaborationError(`共享已提交，但本机副本更新未完成。请重试未确认提交，勿重复操作。${cause instanceof Error ? cause.message : ''}`);
       throw cause;
@@ -860,15 +980,6 @@ export class CollaborationRepository implements RepositorySync {
     const mirror = await this.mirror(id, revision);
     requireCondition(!await this.cache.drafts.get(mirror.key), 'DRAFTS', '请先同步待同步版本，不能静默删除草稿。');
     await this.mutate('DELETE', `/projects/${id}`, { revision: mirror.graph.project.revision, confirmedName }, id);
-  }
-
-  async restoreUndo(id: string, revision: number, graph: ProjectGraph): Promise<ProjectGraph> {
-    const mirror = await this.mirror(id, revision);
-    requireCondition(!await this.cache.drafts.get(mirror.key), 'DRAFTS', '存在离线草稿时请在版本编辑中修改草稿；共享撤销不会丢弃草稿。');
-    const result = await this.mutate('POST', `/projects/${id}/undo`,
-      { revision: mirror.graph.project.revision, snapshot: collaborationSnapshot(graph) }, id);
-    requireCondition(result, 'RESPONSE', '撤销响应无效。');
-    return result;
   }
 
   async previewSnapshotRestore(graph: ProjectGraph, currentId: string): Promise<SnapshotImportPlan> {

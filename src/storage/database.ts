@@ -333,20 +333,6 @@ export class ArchiveRepository {
     });
   }
 
-  async restoreUndo(projectId: string, revision: number, previous: ProjectGraph): Promise<ProjectGraph> {
-    if (this.sync) return this.sync.restoreUndo(projectId, revision, previous);
-    return this.db.transaction('rw', this.tables, async () => {
-      const current = await this.read(projectId);
-      requireCondition(current.project.revision === revision, 'STALE_REVISION', '其他标签页已更新项目，撤销已取消，请重新读取版本图。');
-      requireCondition(previous.project.id === projectId, 'PROJECT_ID', '撤销记录不属于当前项目。');
-      const restored = configurationOnly(previous);
-      validateGraph(restored);
-      restored.project.revision = current.project.revision + 1;
-      await this.write(restored);
-      return restored;
-    });
-  }
-
   async saveTask(projectId: string, revision: number, task: Task): Promise<ProjectGraph> {
     return this.change(projectId, revision, graph => updateTask(graph, task));
   }

@@ -10,7 +10,6 @@ export interface RepositorySync {
   create(name: string, partNumber: string): Promise<ProjectGraph>;
   change(id: string, revision: number, transform: (graph: ProjectGraph) => ProjectGraph, deletion: boolean, operation?: unknown): Promise<ProjectGraph>;
   deleteProject(id: string, revision: number, confirmedName: string): Promise<void>;
-  restoreUndo(id: string, revision: number, graph: ProjectGraph): Promise<ProjectGraph>;
   restoreSnapshot(graph: ProjectGraph, currentId: string, preview: SnapshotImportPlan): Promise<ProjectGraph>;
   previewSnapshotRestore(graph: ProjectGraph, currentId: string): Promise<SnapshotImportPlan>;
 }

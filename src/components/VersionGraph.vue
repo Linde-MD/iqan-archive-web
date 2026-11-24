@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
 import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type VersionNode } from '../domain/model';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
@@ -404,7 +404,7 @@ async function moveBranchToIndex(branchId: string, targetIndex: number, revision
   const next = [...branches];
   const [moved] = next.splice(index, 1);
   next.splice(targetIndex, 0, moved!);
-  return operation(`调整分支顺序：${branches[index]!.name}`, async () => {
+  return operation(async () => {
     graph.value = await props.repository.saveBranchOrder(
       props.projectId,
       revision,
@@ -984,7 +984,7 @@ function dropBranch(event: DragEvent, targetId: string) {
 async function confirmBranchMove() {
   const move = pendingBranchMove.value;
   if (!move || saving.value) return;
-  await operation(`移动分支 ${move.name}`, async () => {
+  await operation(async () => {
     graph.value = await props.repository.saveBranch(props.projectId, move.revision, move.branchId, { headId: move.targetId });
     status.value = `分支“${move.name}”指针已更新。`;
   });
@@ -1016,29 +1016,6 @@ function onSidebarFocusOut(event: FocusEvent) {
     && event.relatedTarget instanceof Node && !editorSidebar.value?.contains(event.relatedTarget)) closeEditor();
 }
 
-interface UndoEntry {
-  before: ProjectGraph;
-  afterRevision: number;
-  label: string;
-}
-
-const undoHistory = ref<UndoEntry[]>([]);
-const redoHistory = ref<UndoEntry[]>([]);
-const undoAvailable = computed(() => {
-  const last = undoHistory.value.at(-1);
-  return !!last && sharedWritable.value && !saving.value && graph.value?.project.revision === last.afterRevision;
-});
-const undoLabel = computed(() => undoHistory.value.at(-1)?.label ?? '');
-const redoAvailable = computed(() => {
-  const last = redoHistory.value.at(-1);
-  return !!last && sharedWritable.value && !saving.value && graph.value?.project.revision === last.afterRevision;
-});
-
-function clearHistory() {
-  undoHistory.value = [];
-  redoHistory.value = [];
-}
-
 function showError(cause: unknown) {
   fullscreenSidebarVisible.value = true;
   error.value = cause instanceof Error ? cause.message : '图操作失败，请重试。';
@@ -1051,13 +1028,6 @@ function showError(cause: unknown) {
 
 const subscription = liveQuery(() => props.repository.get(props.projectId)).subscribe({
   next: value => {
-    const previousRevision = graph.value?.project.revision;
-    if (previousRevision !== undefined && value.project.revision !== previousRevision
-      && !saving.value && (undoHistory.value.length || redoHistory.value.length)
-      && value.project.revision !== (undoHistory.value.at(-1) ?? redoHistory.value.at(-1))?.afterRevision) {
-      clearHistory();
-      status.value = '版本图已在其他页面或由其他成员更新，撤销和重做记录已清除。';
-    }
     graph.value = value;
   },
   error: cause => showError(cause),
@@ -1377,28 +1347,16 @@ watch(() => props.projectId, () => {
   hideIsolated.value = false;
   branchQuery.value = '';
   if (branchFilterDetails.value) branchFilterDetails.value.open = false;
-  clearHistory();
   void refresh();
 });
 
-async function operation(label: string, action: () => Promise<void>, recordUndo = true): Promise<boolean> {
-  const before = graph.value ? structuredClone(graph.value) : null;
+async function operation(action: () => Promise<void>): Promise<boolean> {
   saving.value = true;
   emit('busy', true);
   error.value = '';
   status.value = '';
   try {
     await action();
-    const after = graph.value;
-    if (before && after && after.project.revision > before.project.revision) {
-      if (recordUndo) {
-        redoHistory.value = [];
-        undoHistory.value.push({ before, afterRevision: after.project.revision, label });
-        if (undoHistory.value.length > 50) undoHistory.value.shift();
-      } else {
-        clearHistory();
-      }
-    }
     return true;
   } catch (cause) {
     showError(cause);
@@ -1406,64 +1364,18 @@ async function operation(label: string, action: () => Promise<void>, recordUndo 
   } finally {
     saving.value = false;
     emit('busy', false);
-    const last = undoHistory.value.at(-1) ?? redoHistory.value.at(-1);
-    if (last && graph.value && graph.value.project.revision !== last.afterRevision) {
-      clearHistory();
-      status.value = '版本图已在其他标签页更新，撤销和重做记录已清除。请确认最新状态后继续。';
-    }
   }
 }
 
 async function refresh() {
-  await operation('', async () => {
+  await operation(async () => {
     graph.value = await props.repository.get(props.projectId);
     selectedNodeIds.value = [];
     activeBranchId.value = null;
     menu.value = null;
     panel.value = null;
     branchDeleteTarget.value = null;
-  }, false);
-}
-
-async function undo() {
-  await restoreHistory(false);
-}
-
-async function restoreHistory(redo: boolean) {
-  const source = redo ? redoHistory.value : undoHistory.value;
-  const destination = redo ? undoHistory.value : redoHistory.value;
-  const label = redo ? '重做' : '撤销';
-  const entry = source.at(-1);
-  const current = graph.value;
-  if (!entry || !current || saving.value) return;
-  if (current.project.revision !== entry.afterRevision) {
-    clearHistory();
-    showError(new Error(`其他标签页已更新项目，${label}已取消；请重新读取版本图后重试。`));
-    return;
-  }
-  saving.value = true;
-  emit('busy', true);
-  error.value = '';
-  status.value = '';
-  try {
-    const before = structuredClone(current);
-    graph.value = await props.repository.restoreUndo(props.projectId, current.project.revision, structuredClone(toRaw(entry.before)));
-    source.pop();
-    destination.push({ before, afterRevision: graph.value.project.revision, label: entry.label });
-    for (const history of [source, destination]) {
-      const previous = history.at(-1);
-      if (previous) previous.afterRevision = graph.value.project.revision;
-    }
-    selectedNodeIds.value = [];
-    activeBranchId.value = null;
-    status.value = `已${label}：${entry.label}`;
-  } catch (cause) {
-    clearHistory();
-    showError(cause);
-  } finally {
-    saving.value = false;
-    emit('busy', false);
-  }
+  });
 }
 
 function onGlobalKeyDown(event: KeyboardEvent) {
@@ -1472,14 +1384,6 @@ function onGlobalKeyDown(event: KeyboardEvent) {
     event.preventDefault();
     documentChoice.value = undefined;
     return;
-  }
-  const key = event.key.toLowerCase();
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (key === 'z' || key === 'y')) {
-    const target = event.target;
-    if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return;
-    if (key === 'z' ? !undoAvailable.value : !redoAvailable.value) return;
-    event.preventDefault();
-    void restoreHistory(key === 'y');
   }
   if (event.key === 'Escape') {
     if (menu.value) {
@@ -2075,7 +1979,7 @@ async function submitNode(): Promise<boolean> {
   let childCopyAfterSave: { nodeId: string; parentId: string; parentVersion: string; targetVersion: string } | undefined;
   let renameRequestAfterSave: { uri: string; count: number } | undefined;
   let savedNodeId = '';
-  const saved = await operation(actionPanel === 'node-edit' ? '编辑版本' : actionPanel === 'merge' ? '合并版本' : '新增版本', async () => {
+  const saved = await operation(async () => {
     const current = graph.value!;
     if (actionPanel === 'node-add') {
       const node = createNode(current, nodeForm.value);
@@ -2357,7 +2261,7 @@ async function submitParentEdit(): Promise<boolean> {
   if (!selectedNode.value) return false;
   const wasReleased = selectedNode.value.releasedAt !== null;
   const wasTesting = !wasReleased && selectedNode.value.testingAt !== null;
-  return operation('设置父版本', async () => {
+  return operation(async () => {
     const current = graph.value!;
     graph.value = await props.repository.saveNodeParents(
       props.projectId, current.project.revision, selectedNode.value!.id, nodeForm.value.parentIds,
@@ -2389,7 +2293,7 @@ function openBranchEdit(branchId?: string) {
 }
 
 async function submitBranch() {
-  return operation(panel.value === 'branch-add' ? '创建分支' : '编辑分支', async () => {
+  return operation(async () => {
     const current = graph.value!;
     if (panel.value === 'branch-add') {
       const branch: Branch = {
@@ -2422,7 +2326,7 @@ async function submitBranch() {
 async function releaseBranch() {
   const branch = selectedBranch.value;
   if (!branch) return;
-  await operation(`放行分支 ${branch.name}`, async () => {
+  await operation(async () => {
     const current = graph.value!;
     graph.value = await props.repository.release(props.projectId, current.project.revision, branch.headId);
     status.value = `分支“${branch.name}”的头节点及全部祖先已放行。`;
@@ -2455,7 +2359,7 @@ async function releaseSelectedNode() {
       : '后代当前均未放行或正在测试。';
     if (!window.confirm(`版本“${node.version}”有 ${childIdsOf.value.get(node.id)!.length} 个直接子节点、${descendants.size} 个后代。\n确认将本版本及全部后代恢复为未放行（包括测试中）吗？\n${detail}\n祖先版本和分支头不会改变。`)) return;
   }
-  await operation(node.releasedAt ? '撤销版本放行' : '放行版本', async () => {
+  await operation(async () => {
     const current = await props.repository.get(props.projectId);
     if (current.project.revision !== expectedRevision) throw new Error('版本图已变化，未执行撤销；请检查最新放行状态后重试。');
     graph.value = node.releasedAt
@@ -2473,7 +2377,7 @@ async function toggleTestingSelectedNode() {
   const expectedRevision = graph.value!.project.revision;
   const descendants = descendantNodeIds(node.id);
   if (node.testingAt && descendants.size && !window.confirm(`取消“${node.version}”的放行测试，并将其测试中的后代一并恢复为未放行？祖先不会改变；存在已放行后代时无法取消。`)) return;
-  await operation(node.testingAt ? '取消放行测试' : '设置放行测试中', async () => {
+  await operation(async () => {
     const current = await props.repository.get(props.projectId);
     if (current.project.revision !== expectedRevision) throw new Error('版本图已变化，请检查最新状态后重试。');
     graph.value = node.testingAt
@@ -2510,7 +2414,7 @@ function openRelationPreview(action: BatchRelationAction) {
 async function confirmRelations() {
   const preview = relationPreview.value;
   if (!preview || saving.value) return;
-  await operation(preview.action === 'clear' ? '清除父子关联' : '构建线性关联', async () => {
+  await operation(async () => {
     graph.value = await props.repository.changeRelations(props.projectId, preview.revision, preview.nodeIds, preview.action);
     status.value = `已${preview.action === 'clear' ? '清除' : '构建'} ${preview.edges.length} 条父子关联，版本及分支指针保持不变。`;
     panel.value = null;
@@ -2634,7 +2538,7 @@ async function confirmDeletion() {
     deletionEngineeringSelections.value[nodeId]?.[location]
       ? (deletionEngineeringFiles.value[nodeId]?.[location] ?? []).map(file => ({ nodeId, location, file }))
       : []));
-  await operation(plan.nodeIds.length > 1 ? '删除多个版本' : '删除版本', async () => {
+  await operation(async () => {
     const current = await props.repository.get(props.projectId);
     if (current.project.revision !== deletionRevision.value)
       throw new Error('版本图已变化，请取消并重新打开删除预览。');
@@ -2685,13 +2589,13 @@ async function confirmDeletion() {
     selectedNodeIds.value = [];
     deletionEngineeringSelections.value = {};
     void refreshEngineeringFileStates();
-  }, selectedFiles.length === 0);
+  });
 }
 
 async function confirmBranchDelete() {
   const branch = graph.value?.branches.find(item => item.id === branchDeleteTarget.value);
   if (!branch) return;
-  await operation(`删除分支 ${branch.name}`, async () => {
+  await operation(async () => {
     const current = graph.value!;
     graph.value = await props.repository.deleteBranch(props.projectId, current.project.revision, branch.id);
     activeBranchId.value = null;
@@ -2801,9 +2705,6 @@ function onIqanDialogClosed() {
         </div>
         <button class="tool-button" :disabled="saving" :aria-label="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}`" :title="`切换版本排序，当前${versionOrder === 'oldest' ? '旧到新' : '新到旧'}；父子关系优先`" @click="versionOrder = versionOrder === 'oldest' ? 'newest' : 'oldest'">
           <AppIcon name="sort" /><span class="tool-caption">{{ versionOrder === 'oldest' ? '旧 → 新' : '新 → 旧' }}</span>
-        </button>
-        <button class="tool-button" :disabled="!undoAvailable" aria-label="撤销上一步" aria-keyshortcuts="Control+z Meta+z" :title="undoLabel ? `撤销：${undoLabel}（Ctrl/Cmd+Z）` : '撤销上一步（Ctrl/Cmd+Z）'" @click="undo">
-          <AppIcon name="undo" /><span class="tool-caption">撤销</span>
         </button>
         <button class="tool-button tool-button-accent" :disabled="saving || !newVersionWritable" aria-label="新增未关联版本" title="新增版本，默认放入未关联版本列" @click="openNodeAdd()"><AppIcon name="plus" /><span class="tool-caption">新增版本</span></button>
         <button class="tool-button" :disabled="saving || editorOpen" aria-label="打开任务看板" title="进入项目任务看板" @click="openTaskBoard"><AppIcon name="tasks" /><span class="tool-caption">任务看板</span></button>
@@ -3326,7 +3227,7 @@ function onIqanDialogClosed() {
     <div v-if="panel === 'relations' && relationPreview" class="graph-form" role="dialog" aria-modal="false" aria-label="批量父子关联确认">
       <h3 tabindex="-1">{{ relationPreview.action === 'clear' ? '清除父子关联' : '构建线性关联' }}</h3>
       <p>已选 {{ relationPreview.nodeIds.length }} 个版本，将{{ relationPreview.action === 'clear' ? '清除' : '新增' }} {{ relationPreview.edges.length }} 条关系。</p>
-      <p class="form-help">{{ relationPreview.action === 'clear' ? '包括所选版本与未选版本之间的直接父子边，不自动重连。' : '按版本号从旧到新关联，左侧为父版本，右侧为子版本；与点击顺序、当前显示排序无关。测试中的子版本会使未放行的新祖先进入测试中。' }}版本、任务及分支指针保持不变；可撤销。</p>
+      <p class="form-help">{{ relationPreview.action === 'clear' ? '包括所选版本与未选版本之间的直接父子边，不自动重连。' : '按版本号从旧到新关联，左侧为父版本，右侧为子版本；与点击顺序、当前显示排序无关。测试中的子版本会使未放行的新祖先进入测试中。' }}版本、任务及分支指针保持不变；提交后不支持撤销。</p>
       <ul class="selected-parent-list" aria-label="父子关联预览">
         <li v-for="edge in relationPreview.edges" :key="edge.id"><span>{{ nodeById.get(edge.parentId)?.version }} → {{ nodeById.get(edge.childId)?.version }}</span></li>
       </ul>

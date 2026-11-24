@@ -204,7 +204,7 @@ describe('Dexie 原子持久化', () => {
     return repo.get(graph.project.id);
   }
 
-  it('版本和父关系共同保存、撤销，非法关系和过期修订不产生部分写入', async () => {
+  it('版本和父关系共同保存，非法关系和过期修订不产生部分写入', async () => {
     const repo = repository();
     const before = await seed(repo);
     const update = { version: 'D2', description: '新说明', taskId: null };
@@ -220,12 +220,9 @@ describe('Dexie 原子持久化', () => {
     expect(stored.nodes).toEqual(result.nodes);
     expect(stored.edges).toEqual(expect.arrayContaining(result.edges));
     expect(stored.edges).toHaveLength(result.edges.length);
-    const restored = await repo.restoreUndo(before.project.id, result.project.revision, before);
-    expect(restored.nodes).toEqual(before.nodes);
-    expect(restored.edges).toEqual(before.edges);
   });
 
-  it('任务删除原子解除所有版本关联，放行/父边/分支保留，修订保护及撤销可恢复', async () => {
+  it('任务删除原子解除所有版本关联，放行/父边/分支保留并受修订保护', async () => {
     const repo = repository();
     let graph = await seed(repo);
     graph = await repo.saveTask(graph.project.id, graph.project.revision, task(graph, 'delete-task', '1479'));
@@ -241,34 +238,24 @@ describe('Dexie 原子持久化', () => {
     expect(deleted.edges).toEqual(before.edges);
     expect(deleted.branches).toEqual(before.branches);
     await expect(repo.deleteTask(graph.project.id, graph.project.revision, 'delete-task')).rejects.toThrow('其他标签页');
-    const restored = await repo.restoreUndo(graph.project.id, deleted.project.revision, before);
-    expect(restored.tasks).toEqual(before.tasks);
-    expect(restored.nodes).toEqual(before.nodes);
   });
 
-  it('批量删除、分支删除和修订保护的撤销恢复保持图快照一致', async () => {
+  it('批量删除、分支删除和修订保护保持图快照一致', async () => {
     const repo = repository();
     let graph = await seed(repo);
     graph = await repo.addBranch(graph.project.id, graph.project.revision, {
       id: 'undo-main', projectId: graph.project.id, name: '主线', description: '', color: '#2563eb', headId: 'M',
     });
-    const previous = structuredClone(graph);
     const plan = planDeletionMany(graph, ['M']);
     plan.branchHeads['undo-main'] = 'B';
     const deleted = await repo.deleteNodes(graph.project.id, graph.project.revision, plan, {});
     expect(deleted.nodes.some(node => node.id === 'M')).toBe(false);
     expect(deleted.branches[0]!.headId).toBe('B');
 
-    const restored = await repo.restoreUndo(graph.project.id, deleted.project.revision, previous);
-    expect(restored.nodes.map(node => node.id)).toEqual(previous.nodes.map(node => node.id));
-    expect(restored.edges.map(edge => [edge.parentId, edge.childId])).toEqual(previous.edges.map(edge => [edge.parentId, edge.childId]));
-    expect(restored.branches).toEqual(previous.branches);
-    expect(restored.project.revision).toBe(deleted.project.revision + 1);
-    await expect(repo.restoreUndo(graph.project.id, deleted.project.revision, previous)).rejects.toThrow('撤销已取消');
-
-    const branchDeleted = await repo.deleteBranch(restored.project.id, restored.project.revision, 'undo-main');
+    await expect(repo.deleteBranch(graph.project.id, graph.project.revision, 'undo-main')).rejects.toThrow('其他标签页');
+    const branchDeleted = await repo.deleteBranch(deleted.project.id, deleted.project.revision, 'undo-main');
     expect(branchDeleted.branches).toEqual([]);
-    expect(branchDeleted.nodes).toEqual(restored.nodes);
+    expect(branchDeleted.nodes).toEqual(deleted.nodes);
     repo.db.close();
   });
 
@@ -287,7 +274,7 @@ describe('Dexie 原子持久化', () => {
     );
   });
 
-  it('分支指针持久化、拒绝无效目标及陈旧修订并可恢复快照', async () => {
+  it('分支指针持久化并拒绝无效目标及陈旧修订', async () => {
     const repo = repository();
     let graph = await seed(repo);
     graph = await repo.addBranch(graph.project.id, graph.project.revision, {
@@ -302,8 +289,6 @@ describe('Dexie 原子持久化', () => {
     await expect(repo.saveBranch(graph.project.id, moved.project.revision, 'move-head', { headId: 'missing' }))
       .rejects.toThrow('头节点不存在');
     expect(await repo.get(graph.project.id)).toEqual(moved);
-    const restored = await repo.restoreUndo(graph.project.id, moved.project.revision, graph);
-    expect(restored.branches).toEqual(graph.branches);
     repo.db.close();
   });
 
@@ -330,7 +315,7 @@ describe('Dexie 原子持久化', () => {
     expect((await repo.get(graph.project.id)).branches.map(branch => branch.id)).toEqual(['branch-feature', 'branch-main']);
   });
 
-  it('分支置顶、置底可作为独立命令撤销，且不改变版本关系与分支头', async () => {
+  it('分支置顶、置底受修订保护，且不改变版本关系与分支头', async () => {
     const repo = repository();
     let graph = await seed(repo);
     for (const [id, headId] of [['one', 'A'], ['two', 'B'], ['three', 'M']] as const) {
@@ -343,11 +328,9 @@ describe('Dexie 原子持久化', () => {
     expect(bottom.nodes).toEqual(graph.nodes);
     expect(bottom.edges).toEqual(graph.edges);
     expect(bottom.branches.map(({ id, headId }) => [id, headId])).toEqual([['one', 'A'], ['two', 'B'], ['three', 'M']]);
-    const undo = await repo.restoreUndo(graph.project.id, bottom.project.revision, top);
-    expect(undo.branches.map(branch => branch.id)).toEqual(['three', 'one', 'two']);
     await expect(repo.saveBranchOrder(graph.project.id, top.project.revision, ['one', 'two', 'three']))
       .rejects.toThrow('其他标签页已更新项目');
-    expect((await repo.get(graph.project.id)).branches).toEqual(undo.branches);
+    expect((await repo.get(graph.project.id)).branches).toEqual(bottom.branches);
   });
 
   it('删除项目需名称确认和最新修订，原子删除所有所属数据及绑定，不影响其他项目', async () => {
