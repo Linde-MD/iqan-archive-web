@@ -1,5 +1,5 @@
 import {
-  DomainError, normalizeExternalTaskId, normalizeVersion, requireCondition,
+  DomainError, isVersionAuthor, normalizeExternalTaskId, normalizeVersion, requireCondition,
   orderedBranches, type ProjectGraph, type Task, type TaskOption, type VersionNode,
 } from './model';
 
@@ -98,6 +98,7 @@ export function validateGraph(graph: ProjectGraph): void {
     for (const id of path) visitedTasks.add(id);
   }
   for (const node of nodes) {
+    requireCondition(node.author === undefined || isVersionAuthor(node.author), 'VERSION_AUTHOR', '版本作者必须为空或有效的账号用户名。');
     requireCondition(node.version.trim() && node.version === node.version.trim(), 'VERSION', '版本号不能为空或含首尾空白。');
     const versionKey = normalizeVersion(node.version);
     requireCondition(!versions.has(versionKey), 'DUPLICATE_VERSION', `版本号重复：${node.version}`);
@@ -658,6 +659,7 @@ export function setNodeParents(graph: ProjectGraph, childId: string, parentIds: 
 export interface NodeUpdate {
   version?: string;
   description?: string;
+  author?: string;
   taskId?: string | null;
 }
 
@@ -673,6 +675,7 @@ export function updateNode(graph: ProjectGraph, nodeId: string, update: NodeUpda
     target.version = normalizeVersion(update.version);
   }
   if (update.description !== undefined) target.description = update.description.trim();
+  if (update.author !== undefined) target.author = update.author;
   if (update.taskId !== undefined) {
     requireCondition(
       update.taskId === null || graph.tasks.some(task => task.id === update.taskId),

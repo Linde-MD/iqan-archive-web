@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { liveQuery } from 'dexie';
-import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type VersionNode } from '../domain/model';
+import { normalizeVersion, orderedBranches, type ArchiveLocation, type Branch, type ProjectGraph, type TaskAssignee, type VersionNode } from '../domain/model';
 import { engineeringFileAvailability, matchComparisonDocuments, matchScannedFiles, parseEngineeringName, replaceRelativeFileName, type FileCandidate } from '../domain/filenames';
 import { buildDocumentOpenUri, buildEngineeringCopyUri, buildEngineeringRenameUri } from '../domain/iqan-protocol';
 import { checkPermission, fileOperationErrorMessage, locateFile, projectDirectoryName, removeArchiveFile, resolveProjectDirectory, sameDirectory, scanDirectory, type DirectoryHandle, type DirectoryRole } from '../files/directories';
@@ -22,7 +22,10 @@ import MarkdownEditor from './MarkdownEditor.vue';
 import { renderMarkdown } from '../utils/markdown';
 import { placeContextMenu } from '../utils/viewport';
 
-const props = defineProps<{ repository: ArchiveRepository; projectId: string; focusNodeId?: string | null; panelRoute?: string[] }>();
+const props = defineProps<{
+  repository: ArchiveRepository; projectId: string; focusNodeId?: string | null; panelRoute?: string[];
+  currentAccount?: TaskAssignee | null; authorAccounts?: TaskAssignee[]; authorDirectoryStatus?: string;
+}>();
 const sharedWriteBlockedReason = computed(() => projectWriteBlockedReason(props.repository.permissions, props.projectId));
 const sharedWritable = computed(() => !sharedWriteBlockedReason.value);
 const newVersionWritable = computed(() => props.repository.permissions?.newVersionWritable ?? true);
@@ -33,6 +36,7 @@ const versionOrder = defineModel<VersionOrder>('versionOrder', { default: 'newes
 const emit = defineEmits<{
   busy: [value: boolean];
   refreshBlocked: [value: boolean];
+  authorDirectoryNeeded: [value: boolean];
   documents: [];
   taskBoard: [taskId: string];
   navigatePanel: [panel: string[], action?: 'push' | 'replace' | 'back'];
@@ -536,7 +540,14 @@ const deletionEngineeringCanDelete = ref<Record<ArchiveLocation, boolean>>({ loc
 const deletionEngineeringWarnings = ref<string[]>([]);
 const deletionEngineeringScanning = ref(false);
 const deletionRevision = ref<number | null>(null);
-const nodeForm = ref({ version: '', description: '', parentIds: [] as string[], targetBranchId: '' });
+const nodeForm = ref({ version: '', description: '', author: '', parentIds: [] as string[], targetBranchId: '' });
+const authorAccounts = computed(() => {
+  const accounts = [...(props.authorAccounts ?? [])];
+  if (props.currentAccount && !accounts.some(account => account.id === props.currentAccount?.id)) accounts.unshift(props.currentAccount);
+  return accounts;
+});
+const authorDisplay = (username?: string) =>
+  username ? authorAccounts.value.find(account => account.username === username)?.displayName || username : '未填写';
 watch(sharedWritable, allowed => {
   if (!allowed && panel.value === 'node-add') nodeForm.value.targetBranchId = '';
 });
@@ -1046,6 +1057,7 @@ onUnmounted(() => {
   disposed = true;
   subscription?.unsubscribe();
   emit('refreshBlocked', false);
+  emit('authorDirectoryNeeded', false);
   engineeringScanController?.abort();
 });
 
@@ -1072,6 +1084,8 @@ const selectedNodes = computed(() => {
   return selectedNodeIds.value.flatMap(id => nodes.has(id) ? [nodes.get(id)!] : []);
 });
 const selectedNode = computed(() => selectedNodes.value.length === 1 ? selectedNodes.value[0] : undefined);
+watch(() => !!selectedNode.value?.author || panel.value === 'node-add' || panel.value === 'node-edit' || panel.value === 'merge',
+  value => emit('authorDirectoryNeeded', value), { immediate: true });
 watch(selectedNode, node => {
   if (node) nodeSwitchTargetId.value = node.id;
 }, { flush: 'sync' });
@@ -1818,7 +1832,7 @@ function openBranchMenu(event: MouseEvent, branchId: string) {
 
 function openNodeAdd(parentIds: readonly string[] = []) {
   nodeTaskId.value = '';
-  nodeForm.value = { version: '', description: '', parentIds: [...parentIds], targetBranchId: '' };
+  nodeForm.value = { version: '', description: '', author: props.currentAccount?.username ?? '', parentIds: [...parentIds], targetBranchId: '' };
   nodeDraftBaseline.value = nodeDraftValue();
   panel.value = 'node-add';
   closeMenu(false);
@@ -1830,6 +1844,7 @@ function openNodeEdit() {
   nodeForm.value = {
     version: selectedNode.value.version,
     description: selectedNode.value.description,
+    author: selectedNode.value.author ?? '',
     parentIds: [...(parentIdsOf.value.get(selectedNode.value.id) ?? [])],
     targetBranchId: '',
   };
@@ -1854,7 +1869,7 @@ function openNodeEditFor(nodeId: string) {
   activeBranchId.value = null;
   closeMenu(false);
   nodeTaskId.value = node.taskId ?? '';
-  nodeForm.value = { version: node.version, description: node.description, parentIds: [...(parentIdsOf.value.get(node.id) ?? [])], targetBranchId: '' };
+  nodeForm.value = { version: node.version, description: node.description, author: node.author ?? '', parentIds: [...(parentIdsOf.value.get(node.id) ?? [])], targetBranchId: '' };
   nodeDraftBaseline.value = nodeDraftValue();
   nodeEditRevision.value = graph.value?.project.revision ?? null;
   error.value = '';
@@ -1934,6 +1949,7 @@ function openParentEdit() {
   nodeForm.value = {
     version: selectedNode.value.version,
     description: selectedNode.value.description,
+    author: selectedNode.value.author ?? '',
     parentIds: [...(parentIdsOf.value.get(selectedNode.value.id) ?? [])],
     targetBranchId: '',
   };
@@ -1944,7 +1960,7 @@ function openParentEdit() {
 
 function openMerge() {
   nodeTaskId.value = '';
-  nodeForm.value = { version: '', description: '', parentIds: [...selectedNodeIds.value], targetBranchId: '' };
+  nodeForm.value = { version: '', description: '', author: props.currentAccount?.username ?? '', parentIds: [...selectedNodeIds.value], targetBranchId: '' };
   nodeDraftBaseline.value = nodeDraftValue();
   panel.value = 'merge';
 }
@@ -2059,12 +2075,14 @@ async function submitNode(): Promise<boolean> {
       const update = {
         version: nodeForm.value.version,
         description: nodeForm.value.description,
+        ...(currentNode.author !== undefined || nodeForm.value.author ? { author: nodeForm.value.author } : {}),
         taskId: nodeTaskId.value || null,
       };
       if (parentSelectionUnchanged.value) {
         graph.value = await props.repository.saveNode(props.projectId, current.project.revision, currentNode.id, update);
       } else if (normalizeVersion(update.version) === currentNode.version
-        && update.description.trim() === currentNode.description && update.taskId === currentNode.taskId) {
+        && update.description.trim() === currentNode.description && update.taskId === currentNode.taskId
+        && (update.author ?? '') === (currentNode.author ?? '')) {
         graph.value = await props.repository.saveNodeParents(props.projectId, current.project.revision, currentNode.id, nodeForm.value.parentIds);
       } else {
         graph.value = await props.repository.saveNodeWithParents(props.projectId, current.project.revision, currentNode.id, update, nodeForm.value.parentIds);
@@ -2260,6 +2278,7 @@ function createNode(current: ProjectGraph, form: typeof nodeForm.value): Version
     projectId: current.project.id,
     version: form.version.trim(),
     description: form.description.trim(),
+    author: form.author,
     taskId: nodeTaskId.value || null,
     releasedAt: null,
     testingAt: null,
@@ -3199,6 +3218,7 @@ function onIqanDialogClosed() {
       <aside v-if="selectedNode" class="graph-detail" aria-label="版本详情">
         <p class="eyebrow">VERSION DETAIL</p>
         <h3>{{ selectedNode.version }}</h3>
+        <p class="form-help">作者：{{ authorDisplay(selectedNode.author) }}</p>
         <section class="version-description-card" aria-label="改动说明">
           <div v-if="selectedNode.description.trim()" class="markdown-content" v-html="renderMarkdown(selectedNode.description)"></div>
           <p v-else class="markdown-empty">（无改动说明）</p>
@@ -3304,6 +3324,13 @@ function onIqanDialogClosed() {
           <label for="git-version">版本号 <span>必填，含日期文本，连续空白归一且区分大小写唯一</span></label>
           <p v-if="sharedWriteBlockedReason" class="form-help">{{ sharedWriteBlockedReason }}</p>
           <input id="git-version" v-model="nodeForm.version" required :disabled="saving || (panel === 'node-edit' ? !selectedWritable || !!selectedNode?.releasedAt : !newVersionWritable)" placeholder="例如：1479-1 20260115" />
+          <label for="git-author">作者 <span>账号显示名称，可留空</span></label>
+          <select id="git-author" v-model="nodeForm.author" :disabled="saving || (panel === 'node-edit' ? !selectedWritable : !newVersionWritable)" aria-describedby="git-author-help">
+            <option value="">未填写</option>
+            <option v-if="nodeForm.author && !authorAccounts.some(account => account.username === nodeForm.author)" :value="nodeForm.author" disabled>{{ nodeForm.author }}（历史作者，保留）</option>
+            <option v-for="account in authorAccounts" :key="account.id" :value="account.username">{{ authorDisplay(account.username) }}（{{ account.username }}）{{ account.disabled ? '（已禁用）' : '' }}</option>
+          </select>
+          <p id="git-author-help" class="form-help">{{ authorDirectoryStatus || '从已有账号选择；清空不会修改其他版本。' }}</p>
           <TaskPicker v-model="nodeTaskId" :tasks="graph.tasks" :disabled="saving" />
           <p class="form-help">每个版本可不关联任务，或关联一个任务；任务在项目任务看板中维护。</p>
         </section>

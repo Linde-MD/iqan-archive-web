@@ -505,9 +505,10 @@ export class ArchiveRepository {
 
   async saveNodeWithParents(
     projectId: string, revision: number, nodeId: string,
-    update: { version: string; description: string; taskId: string | null }, parentIds: readonly string[],
+    update: { version: string; description: string; taskId: string | null; author?: string }, parentIds: readonly string[],
   ): Promise<ProjectGraph> {
-    const values = { version: update.version, description: update.description, taskId: update.taskId };
+    const values = { version: update.version, description: update.description, taskId: update.taskId,
+      ...(update.author !== undefined ? { author: update.author } : {}) };
     const parents = [...parentIds];
     return this.change(projectId, revision, graph => setNodeParents(updateNode(graph, nodeId, values), nodeId, parents),
       false, { type: 'edit-node', nodeId, update: values, parentIds: parents });

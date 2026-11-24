@@ -71,6 +71,17 @@ it('目录和页面按需读取，完整加载不改变本地修订', async () =
   expect(s.paths.filter(path => path.endsWith('/graph'))).toHaveLength(1);
 });
 
+it('消息定位仅加载目标页面和任务，删除评论仍可定位任务，工作区变化不提交缓存', async () => {
+  const s = setup();
+  await s.sync.login('admin', 'test', true);
+  await s.sync.syncCommentTarget(s.graph.project.id, s.graph.tasks[0]!.id, () => true);
+  expect(s.paths.some(path => path.endsWith('/graph'))).toBe(false);
+  expect((await s.repository.getBoardView(s.graph.project.id)).tasks[0]!.id).toBe(s.graph.tasks[0]!.id);
+  const pages = await s.cache.pages.toArray();
+  await expect(s.sync.syncCommentTarget(s.graph.project.id, s.graph.tasks[0]!.id, () => false)).rejects.toThrow('工作区已变化');
+  expect(await s.cache.pages.toArray()).toEqual(pages);
+});
+
 it('离线可读已有页面，未缓存页面和完整项目明确失败', async () => {
   const s = setup();
   await s.sync.login('admin', 'test', true);

@@ -3,7 +3,7 @@ import { reactive, watch } from 'vue';
 import { ArchiveRepository, projectPageFromGraph, type SnapshotImportPlan } from './database';
 import type { RepositorySync } from './repository-sync';
 import { BACKEND_RECHECK_INTERVAL_MS, backendAddress, backendRequestOptions, probeBackendHosts, type BackendProbe } from '../local-backend';
-import { DomainError, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAssignee } from '../domain/model';
+import { DomainError, isVersionAuthor, normalizeVersion, orderedBranches, requireCondition, type ProjectGraph, type ProjectSnapshot, type TaskAssignee } from '../domain/model';
 import { parseProjectSnapshot, serializeProjectSnapshot } from '../domain/project-snapshot';
 import { validateGraph, validateTransition } from '../domain/graph';
 import { assertOfflineChanges } from '../domain/collaboration';
@@ -393,6 +393,16 @@ export class CollaborationRepository implements RepositorySync {
     return value.users.map(user);
   }
 
+  async commentDirectory(signal: AbortSignal): Promise<TaskAssignee[]> {
+    const value = object(await this.request('/comment-directory', 'GET', undefined, undefined, signal));
+    requireCondition(Array.isArray(value.users), 'RESPONSE', '成员账号目录格式无效。');
+    const users = value.users.map(taskAssignee);
+    requireCondition(users.every(user => !!user.username && isVersionAuthor(user.username))
+      && new Set(users.map(user => user.id)).size === users.length
+      && new Set(users.map(user => user.username)).size === users.length, 'RESPONSE', '成员账号目录身份无效或重复。');
+    return users;
+  }
+
   async listAssignees(): Promise<TaskAssignee[]> {
     await this.context();
     const source = this.state.source;
@@ -683,7 +693,7 @@ export class CollaborationRepository implements RepositorySync {
     return { graph: this.overlay(mirror, draft), nodes: draft.nodes, owner: draft.owner, deleted: mirror.deleted };
   }
 
-  async editDraft(id: string, revision: number, nodeId: string, update: { version: string; description: string; taskId: string | null }, parentIds: readonly string[]) {
+  async editDraft(id: string, revision: number, nodeId: string, update: { version: string; description: string; taskId: string | null; author?: string }, parentIds: readonly string[]) {
     const actor = this.actorKey();
     const mirror = await this.mirror(id, revision);
     const draft = await this.cache.drafts.get(mirror.key);
@@ -693,6 +703,7 @@ export class CollaborationRepository implements RepositorySync {
     const node = next.nodes.find(item => item.id === nodeId);
     requireCondition(node && !mirror.graph.nodes.some(item => item.id === nodeId), 'DRAFT_NODE', '只能修改尚未确认发布的新版本。');
     node.version = normalizeVersion(update.version); node.description = update.description.trim(); node.taskId = update.taskId;
+    if (update.author !== undefined) node.author = update.author;
     const allNodes = [...mirror.graph.nodes, ...next.nodes];
     requireCondition(allNodes.every(item => item.id === nodeId || item.version !== node.version), 'DUPLICATE_VERSION', '版本号已存在，请修改草稿版本号。');
     requireCondition(node.taskId === null || mirror.graph.tasks.some(task => task.id === node.taskId), 'TASK_REFERENCE', '所选任务已失效，请重新选择或清空。');
@@ -854,7 +865,7 @@ export class CollaborationRepository implements RepositorySync {
     await this.updateCounts();
   }
 
-  async syncCommentTarget(projectId: string, taskId: string, commentId: string, canApply: () => boolean) {
+  async syncCommentTarget(projectId: string, taskId: string, canApply: () => boolean) {
       this.assertOnline();
       const { source, user } = this.state;
       const token = this.token;
@@ -869,9 +880,9 @@ export class CollaborationRepository implements RepositorySync {
       const task = object(detail.task);
       requireCondition(page.kind === 'tasks' && summary.id === projectId && page.revision === summary.revision
         && detail.revision === summary.revision && task.id === taskId && task.projectId === projectId
-        && Array.isArray(task.comments) && task.comments.some(comment => object(comment).id === commentId)
+        && Array.isArray(task.comments)
         && Array.isArray(page.tasks) && Array.isArray(page.nodes) && Array.isArray(page.edges) && Array.isArray(page.branches),
-      'COMMENT_NOT_FOUND', '原任务或评论已删除，或项目已变化。');
+      'COMMENT_NOT_FOUND', '原任务已删除，或项目已变化。');
       await this.cache.transaction('rw', [this.cache.mirrors, this.cache.catalog, this.cache.pages, this.cache.drafts, this.cache.pending], async () => {
         const key = this.key(projectId);
         const previous = await this.cache.mirrors.get(key);
@@ -1108,6 +1119,10 @@ export class CollaborationRepository implements RepositorySync {
     const current = await this.get(id);
     requireCondition(current.project.revision === revision, 'STALE_REVISION', '本机副本已变化，请重新读取。');
     const next = transform(structuredClone(current));
+    const existingNodes = new Set(current.nodes.map(node => node.id));
+    for (const node of next.nodes) {
+      if (!existingNodes.has(node.id) && node.author === undefined && this.state.user) node.author = this.state.user.username;
+    }
     if (deletion) validateGraph(next); else validateTransition(current, next);
     const draft = await this.cache.drafts.get(mirror.key);
     if (!this.state.connected || draft) {

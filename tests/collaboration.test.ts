@@ -190,6 +190,30 @@ function setup() {
 }
 
 describe('共享副本与离线草稿', () => {
+  it('在线新增及扫描登记默认用户名，显式作者或清空不覆盖，旧节点不回填', async () => {
+    const s = setup();
+    const baseline = s.graph();
+    baseline.nodes.push(createNode(baseline, { version: 'legacy', description: '旧节点' }));
+    s.setGraph(baseline);
+    await s.client.login('admin', 'test', true);
+    let graph = await s.repository.get(baseline.project.id);
+    graph = await s.repository.addNode(graph.project.id, graph.project.revision,
+      createNode(graph, { version: 'new', description: '' }), [], null);
+    graph = await s.repository.addNode(graph.project.id, graph.project.revision,
+      { ...createNode(graph, { version: 'blank', description: '' }), author: '' }, [], null);
+    graph = await s.repository.register(graph.project.id, graph.project.revision, [{ fileName: '123_V1.idax', relativePath: '123_V1.idax' }]);
+    expect(graph.nodes.find(node => node.version === 'legacy')).not.toHaveProperty('author');
+    expect(graph.nodes.find(node => node.version === 'new')!.author).toBe(s.admin.username);
+    expect(graph.nodes.find(node => node.version === 'new')!.author).not.toBe(s.admin.displayName);
+    expect(graph.nodes.find(node => node.version === 'blank')!.author).toBe('');
+    expect(graph.nodes.find(node => node.version === 'V1')!.author).toBe(s.admin.username);
+    const node = graph.nodes.find(node => node.version === 'new')!;
+    graph = await s.repository.saveNodeWithParents(graph.project.id, graph.project.revision, node.id,
+      { version: node.version, description: '', taskId: null, author: 'member1' }, [graph.nodes[0]!.id]);
+    expect(graph.nodes.find(item => item.id === node.id)!.author).toBe('member1');
+    expect(parseProjectSnapshot(await s.repository.snapshot(graph.project.id)).nodes.find(item => item.id === node.id)!.author).toBe('member1');
+  });
+
   it('v2→v3 preserves legacy pending, mirrors and drafts without replaying old UUIDs', async () => {
     const s = setup();
     await s.client.login('admin', 'test', true);
@@ -1019,8 +1043,9 @@ describe('共享副本与离线草稿', () => {
     current = await s.repository.addNode(current.project.id, current.project.revision, first, [], null);
     const second = createNode(current, { version: 'V2', description: '草稿二' });
     current = await s.repository.addNode(current.project.id, current.project.revision, second, [first.id], null);
+    expect(current.nodes.map(node => node.author)).toEqual(['admin', 'admin']);
     current = await s.repository.saveNodeWithParents(current.project.id, current.project.revision, second.id,
-      { version: 'V2', description: '离线组合编辑', taskId: null }, []);
+      { version: 'V2', description: '离线组合编辑', taskId: null, author: '' }, []);
     expect(current.edges).toHaveLength(0);
     current = await s.repository.saveNodeWithParents(current.project.id, current.project.revision, second.id,
       { version: 'V2', description: '离线组合编辑', taskId: null }, [first.id]);
@@ -1032,6 +1057,7 @@ describe('共享副本与离线草稿', () => {
     const cached = await reopened.get(current.project.id);
     expect(cached.nodes.map(node => node.version)).toEqual(['V1a', 'V2']);
     expect(cached.nodes.find(node => node.id === second.id)?.description).toBe('离线组合编辑');
+    expect(cached.nodes.map(node => node.author)).toEqual(['admin', '']);
     expect(cached.edges[0]?.parentId).toBe(first.id);
     s.network(true);
     await reopened.reconnect();
@@ -1044,6 +1070,7 @@ describe('共享副本与离线草稿', () => {
     const preview = await reopened.previewDrafts(current.project.id);
     await reopened.syncDrafts(current.project.id, preview.graph.project.revision);
     expect(s.graph().nodes).toHaveLength(2);
+    expect(s.graph().nodes.map(node => node.author)).toEqual(['admin', '']);
     expect(reopened.state.draftCount).toBe(0);
     expect(await s.cache.drafts.count()).toBe(0);
     expect(projectWriteBlockedReason(reopened.permissions, current.project.id)).toBe('');

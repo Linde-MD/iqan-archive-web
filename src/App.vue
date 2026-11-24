@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { isNavigationFailure, NavigationFailureType, useRoute, useRouter } from 'vue-router';
 import { liveQuery } from 'dexie';
 import { ArchiveDatabase, ArchiveRepository, type SnapshotImportPlan } from './storage/database';
 import type { ProjectGraph, TaskAssignee } from './domain/model';
@@ -44,6 +44,7 @@ const commentsStatus = ref('');
 const commentInbox = ref<InstanceType<typeof CommentInbox>>();
 const commentDirectory = shallowRef<TaskAssignee[]>([]);
 const focusCommentId = computed(() => typeof route.query.comment === 'string' ? route.query.comment : '');
+const commentNavigationKey = ref(0);
 const inboxScope = computed(() => {
   const connection = db.backendConnection.state;
   return taskAccountId.value && collaboration.state.connected && !connection.testing && connection.host
@@ -81,8 +82,9 @@ const taskRefreshBlocked = ref(false);
 const view = ref<'files' | 'graph' | 'documents' | 'tasks'>('files');
 const taskBoardTargetId = ref('');
 const taskBoardDetailId = ref('');
-const commentDirectoryActive = computed(() => !isAccountRoute.value && view.value === 'tasks'
-  && !!taskBoardDetailId.value && taskBoardDetailId.value !== 'new');
+const graphAuthorDirectoryNeeded = ref(false);
+const commentDirectoryActive = computed(() => !isAccountRoute.value && (view.value === 'graph' && graphAuthorDirectoryNeeded.value
+  || view.value === 'tasks' && !!taskBoardDetailId.value && taskBoardDetailId.value !== 'new'));
 const taskBoardOptionsOpen = ref(false);
 const focusNodeId = ref('');
 const graphPanelRoute = ref<string[]>([]);
@@ -116,11 +118,14 @@ async function openCommentNotification(item: CommentNotification) {
     && !saving.value && !workspaceBusy.value && !taskRefreshBlocked.value && !graphRefreshBlocked.value
     && !editingProject.value && !deletion.value && !importPreview.value;
   if (!allowed()) throw new Error('请先保存或关闭当前编辑，再打开消息。');
-  await collaboration.syncCommentTarget(item.projectId, item.taskId, item.commentId, allowed);
+  await collaboration.syncCommentTarget(item.projectId, item.taskId, allowed);
   if (!allowed()) throw new Error('当前工作区已变化，请重新打开消息。');
   projects.value = await repository.listProjects();
   if (!allowed()) throw new Error('当前工作区已变化，请重新打开消息。');
-  await router.push({ path: projectPath(item.projectId, 'tasks', 'detail', item.taskId), query: { comment: item.commentId } });
+  const failure = await router.push({ path: projectPath(item.projectId, 'tasks', 'detail', item.taskId), query: { comment: item.commentId } });
+  if (failure && !isNavigationFailure(failure, NavigationFailureType.duplicated)) throw new Error('未能打开消息对应页面，消息仍未读。');
+  if (scope !== inboxScope.value) throw new Error('账号或后端已变化，请重新打开消息。');
+  commentNavigationKey.value++;
 }
 const pollProjectId = computed(() => !isAccountRoute.value && canWrite.value && !saving.value && !workspaceBusy.value
   && !editingProject.value && !deletion.value && !importPreview.value
@@ -907,10 +912,10 @@ onUnmounted(() => {
     </div>
 
     <ProjectFiles v-if="!isAccountRoute && activeProjectId && activeProject && view === 'files'" :key="`files-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="filesPanelBusy = $event" />
-    <VersionGraph v-if="!isAccountRoute && activeProjectId && view === 'graph'" :key="`graph-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" @busy="graphBusy = $event" @refresh-blocked="graphRefreshBlocked = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
+    <VersionGraph v-if="!isAccountRoute && activeProjectId && view === 'graph'" :key="`graph-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :archive-roots="archiveRoots" :focus-node-id="focusNodeId" :panel-route="graphPanelRoute" :current-account="collaboration.state.user" :author-accounts="commentDirectory" :author-directory-status="commentsStatus" @author-directory-needed="graphAuthorDirectoryNeeded = $event" @busy="graphBusy = $event" @refresh-blocked="graphRefreshBlocked = $event" @navigate-panel="navigateGraphPanel" @documents="navigateProject(activeProjectId, 'documents')" @task-board="openTaskBoard" />
     <ComparisonDocuments v-if="!isAccountRoute && activeProjectId && activeProject && view === 'documents'" :key="`documents-${collaboration.state.source}-${activeProjectId}-${archiveRootRevision}`" v-model:version-order="versionOrder" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :archive-roots="archiveRoots" @busy="documentsBusy = $event" @graph="openProjectGraph(activeProjectId)" />
     <TaskBoard v-if="!isAccountRoute && activeProjectId && activeProject && view === 'tasks'" :key="`tasks-${collaboration.state.source}-${activeProjectId}`" :repository="repository" :project-id="activeProjectId" :project-name="activeProject.name" :focus-task-id="taskBoardTargetId" :detail-task-id="taskBoardDetailId" :options-open="taskBoardOptionsOpen" :assignee-refresh-key="assigneeRefreshKey" :current-account-id="taskAccountId" :current-account-avatar="taskAccountId ? (collaboration.state.user?.avatar ?? null) : null"
-      :current-account-admin="canImport" :comments-enabled="commentsEnabled" :comments-status="commentsStatus" :comment-directory="commentDirectory" :focus-comment-id="focusCommentId" @retry-comments="commentInbox?.retry()"
+      :current-account-admin="canImport" :comments-enabled="commentsEnabled" :comments-status="commentsStatus" :comment-directory="commentDirectory" :focus-comment-id="focusCommentId" :focus-comment-key="commentNavigationKey" @retry-comments="commentInbox?.retry()"
       @busy="taskBoardBusy = $event" @refresh-blocked="taskRefreshBlocked = $event" @navigate-child="navigateTaskBoardChild" @graph="openVersionFromTaskBoard" />
     </div>
 

@@ -66,6 +66,21 @@ function snapshot(graph: ProjectGraph): ProjectSnapshot {
 }
 
 describe('项目 JSON 快照验证', () => {
+  it('可选版本作者往返保留，旧节点不回填，非法作者拒绝', () => {
+    const graph = graphFixture();
+    graph.nodes[1]!.author = 'member.one';
+    graph.nodes[2]!.author = '';
+    const parsed = parseProjectSnapshot(JSON.parse(serializeProjectSnapshot(snapshot(graph))));
+    expect(parsed.nodes[0]).not.toHaveProperty('author');
+    expect(parsed.nodes[1]!.author).toBe('member.one');
+    expect(parsed.nodes[2]!.author).toBe('');
+    for (const author of ['未知姓名', ' Admin ', 'a', 'a'.repeat(33), null, 1]) {
+      const invalid = structuredClone(snapshot(graph));
+      Object.assign(invalid.graph.nodes[1]!, { author });
+      expect(() => parseProjectSnapshot(invalid)).toThrow();
+    }
+  });
+
   it('解析 schemaVersion 8 并往返账号负责人、任务选项、日期和 Markdown 评论', () => {
     const graph = graphFixture();
     const parsed = parseProjectSnapshot(snapshot(graph));

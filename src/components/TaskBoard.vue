@@ -41,6 +41,7 @@ const props = defineProps<{
   commentsStatus?: string;
   commentDirectory?: TaskAssignee[];
   focusCommentId?: string;
+  focusCommentKey?: number;
 }>();
 const emit = defineEmits<{
   busy: [value: boolean];
@@ -94,6 +95,7 @@ const commentRecipientIds = computed(() => [...new Set([...legacyMentionIds.valu
 const commentMetadataSignature = computed(() => JSON.stringify([commentReplyToId.value, [...commentRecipientIds.value].sort()]));
 const commentMetadataBaseline = ref('');
 const commentList = ref<HTMLElement>();
+const missingCommentNotice = ref<HTMLElement>();
 const commentEditor = ref<InstanceType<typeof MarkdownEditor>>();
 const detailSidebar = ref<'comments' | 'versions'>('comments');
 const detailSection = ref<'information' | 'children'>('information');
@@ -1119,18 +1121,21 @@ function sendCommentShortcut(event: KeyboardEvent) {
   void saveComment();
 }
 
-watch([() => props.focusCommentId, () => taskDraft.value?.id,
+watch([() => props.focusCommentId, () => taskDraft.value?.id, () => props.focusCommentKey,
   () => sortedComments.value.some(comment => comment.id === props.focusCommentId)], async ([id]) => {
   if (!id || !taskDraft.value?.id) return;
   detailSidebar.value = 'comments';
   await nextTick();
+  if (props.focusCommentId !== id || taskDraft.value?.id !== props.detailTaskId) return;
   const target = [...(commentList.value?.querySelectorAll<HTMLElement>('[data-comment-id]') ?? [])]
     .find(element => element.dataset.commentId === id);
   if (target) {
     target.scrollIntoView({ block: 'center' });
     target.focus({ preventScroll: true });
+  } else {
+    missingCommentNotice.value?.focus({ preventScroll: true });
   }
-}, { flush: 'post' });
+}, { flush: 'post', immediate: true });
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -1460,7 +1465,7 @@ onUnmounted(() => {
             </section>
           <section v-show="detailSidebar === 'comments'" class="task-comments" aria-labelledby="task-comments-title">
             <h4 id="task-comments-title" class="visually-hidden">评论</h4>
-            <p v-if="focusCommentId && !sortedComments.some(comment => comment.id === focusCommentId)" class="task-comment-notice" role="status">原评论已删除或不可用。</p>
+            <p v-if="focusCommentId && taskDraft.id === detailTaskId && !sortedComments.some(comment => comment.id === focusCommentId)" ref="missingCommentNotice" class="task-comment-notice" role="status" tabindex="-1">原评论已删除或不可用。</p>
             <ul v-if="sortedComments.length" ref="commentList" class="task-comment-list">
               <li v-for="comment in sortedComments" :key="comment.id" class="task-comment" :class="{ 'is-focused-comment': focusCommentId === comment.id }" :data-comment-id="comment.id" tabindex="-1">
                 <span class="task-comment-avatar" aria-hidden="true"

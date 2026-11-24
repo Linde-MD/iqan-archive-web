@@ -243,7 +243,8 @@ export function parseProjectSnapshot(value: unknown): ProjectGraph {
       taskId: nullableText(item.taskId, 'node.taskId'),
       releasedAt: nullableText(item.releasedAt, 'node.releasedAt'),
       testingAt: nullableText(item.testingAt, 'node.testingAt'),
-    })),
+      ...(Object.hasOwn(item, 'author') ? { author: text(item.author, 'node.author') } : {}),
+    }), ['author']),
     edges: parseItems(source.edges, 'graph.edges', ['id', 'projectId', 'parentId', 'childId'], item => ({
       id: text(item.id, 'edge.id'),
       projectId: text(item.projectId, 'edge.projectId'),

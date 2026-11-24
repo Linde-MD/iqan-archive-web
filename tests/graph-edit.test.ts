@@ -17,6 +17,22 @@ function fixture(): ProjectGraph {
 }
 
 describe('节点与分支编辑', () => {
+  it('作者修改与父关系组合保存，旧命令保留作者，清空及已放行作者编辑有效', () => {
+    const graph = release(fixture(), 'B', '2026-01-01T00:00:00.000Z');
+    const changed = applyCollaborationCommand(graph, {
+      type: 'edit-node', nodeId: 'B', update: { version: 'B', description: '', taskId: null, author: 'member.one' }, parentIds: [],
+    });
+    expect(changed.nodes.find(node => node.id === 'B')!.author).toBe('member.one');
+    expect(changed.edges).toHaveLength(0);
+    const oldCommand = applyCollaborationCommand(changed, {
+      type: 'edit-node', nodeId: 'B', update: { version: 'B', description: '新说明', taskId: null }, parentIds: [],
+    });
+    expect(oldCommand.nodes.find(node => node.id === 'B')!.author).toBe('member.one');
+    expect(updateNode(oldCommand, 'B', { author: '' }).nodes.find(node => node.id === 'B')!.author).toBe('');
+    expect(() => updateNode(oldCommand, 'B', { author: '任意文本' })).toThrow('账号用户名');
+    expect(graph.nodes[1]).not.toHaveProperty('author');
+  });
+
   it('组合命令编辑测试中版本时为新祖先补齐测试状态，非法命令不修改原图', () => {
     const graph = fixture();
     graph.nodes.push({ id: 'C', projectId: graph.project.id, version: 'C', description: '', taskId: null, releasedAt: null, testingAt: null });

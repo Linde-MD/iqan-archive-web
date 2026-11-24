@@ -120,9 +120,14 @@ export interface VersionNode {
   projectId: string;
   version: string;
   description: string;
+  author?: string;
   taskId: string | null;
   releasedAt: string | null;
   testingAt: string | null;
+}
+
+export function isVersionAuthor(value: unknown): value is string {
+  return typeof value === 'string' && (value === '' || /^[a-z][a-z0-9._-]{2,31}$/.test(value));
 }
 
 export interface Edge {
